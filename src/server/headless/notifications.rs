@@ -620,12 +620,30 @@ impl HeadlessServer {
                 else {
                     return false;
                 };
+                // Capture client geometry only for lifecycle completion, not every status update.
+                let exit_focus = snapshot
+                    .is_nonkept_exit()
+                    .then(|| (self.shell_focus_targets(), self.focused_shell_tabs()));
                 let (changed, updates) =
                     self.app
-                        .apply_hc_update(terminal_id, runtime_token, snapshot);
+                        .apply_hc_update(terminal_id.clone(), runtime_token, snapshot);
                 for update in &updates {
                     self.forward_semantic_agent_notification(update);
                     self.forward_pane_state_update_notifications_to_clients(update);
+                }
+                if changed && !self.app.state.terminals.contains_key(&terminal_id) {
+                    if let Some((focus_before, focused_tabs_before)) = exit_focus {
+                        self.reconcile_client_shell_locations();
+                        self.finish_shell_location_reconciliation(
+                            focus_before,
+                            &focused_tabs_before,
+                        );
+                        self.reapply_controlled_shell_tab_geometry(false);
+                        self.shutdown_terminal_stream_clients(
+                            &terminal_id.to_string(),
+                            format!("terminal {terminal_id} exited"),
+                        );
+                    }
                 }
                 changed
             }

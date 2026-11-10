@@ -492,6 +492,8 @@ async fn run_connection(
 #[cfg(test)]
 mod app_tests;
 #[cfg(test)]
+mod exit_tests;
+#[cfg(test)]
 mod live_tests;
 #[cfg(test)]
 mod reconnect_tests;

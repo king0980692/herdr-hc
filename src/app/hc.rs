@@ -122,6 +122,43 @@ impl App {
         }) {
             return (false, Vec::new());
         }
+        let finished = snapshot.is_nonkept_exit()
+            && terminal.hc_snapshot.as_ref().is_some_and(|old| {
+                old.terminal
+                    .facts
+                    .get("state")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("live")
+            });
+        if finished {
+            let mut panes: Vec<_> = self
+                .state
+                .workspaces
+                .iter()
+                .flat_map(|workspace| &workspace.tabs)
+                .flat_map(|tab| &tab.panes)
+                .filter(|(_, pane)| pane.attached_terminal_id == terminal_id)
+                .map(|(id, _)| *id)
+                .collect();
+            if let Some(popup) = self
+                .state
+                .popup_pane
+                .as_ref()
+                .filter(|popup| popup.terminal_id == terminal_id)
+            {
+                panes.push(popup.pane_id);
+            }
+            if !panes.is_empty() {
+                self.cancel_hc_recovery(&terminal_id);
+                let mut updates = Vec::new();
+                for pane in panes {
+                    updates.extend(self.handle_confirmed_hc_pane_exit(pane));
+                }
+                self.render_dirty.request_generic();
+                self.render_notify.notify_one();
+                return (true, updates);
+            }
+        }
         let changed = terminal.hc_snapshot.as_ref().is_none_or(|old| {
             old.connected != snapshot.connected
                 || old.attached != snapshot.attached

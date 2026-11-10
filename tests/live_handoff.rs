@@ -717,6 +717,101 @@ fn hc_server_does_not_own_pane_ptys() {
 }
 
 #[test]
+fn hc_live_bash_exit_removes_pane_and_last_workspace_without_restarting_programs() {
+    let _lock = test_lock();
+    let base = unique_test_dir();
+    let config_home = base.join("config");
+    let runtime_dir = base.join("runtime");
+    let api_socket = runtime_dir.join("herdr.sock");
+    let server = spawn_server_with_env(
+        &config_home,
+        &runtime_dir,
+        &api_socket,
+        &[("SHELL", "/bin/bash")],
+    );
+    wait_for_socket(&api_socket, Duration::from_secs(10));
+    register_runtime_dir(&runtime_dir);
+    let created = request(
+        &api_socket,
+        serde_json::json!({"id":"create","method":"workspace.create","params":{"cwd":"/tmp","focus":true}}),
+    );
+    let root = created["result"]["root_pane"]["pane_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let survivor = support::hc::terminals(&runtime_dir).remove(0);
+    assert_ok(request(
+        &api_socket,
+        serde_json::json!({"id":"split","method":"pane.split","params":{"target_pane_id":root,"direction":"right","focus":false}}),
+    ));
+    let panes = request(
+        &api_socket,
+        serde_json::json!({"id":"panes","method":"pane.list","params":{}}),
+    );
+    let split = panes["result"]["panes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|pane| pane["pane_id"] != root)
+        .unwrap()["pane_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for (index, pane) in [split, root.clone()].iter().enumerate() {
+        assert_ok(request(
+            &api_socket,
+            serde_json::json!({"id":"exit","method":"pane.send_input","params":{"pane_id":pane,"text":"exit","keys":["Enter"]}}),
+        ));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let panes = request(
+                &api_socket,
+                serde_json::json!({"id":"panes","method":"pane.list","params":{}}),
+            );
+            let panes = panes["result"]["panes"].as_array().unwrap();
+            if panes.len() == 1 - index {
+                if index == 0 {
+                    assert_eq!(panes[0]["pane_id"], root);
+                }
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "bash exited but pane remained: {panes:?}"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        let terminals = support::hc::terminals(&runtime_dir);
+        assert_eq!(terminals.len(), 2, "exit launched a replacement program");
+        assert_eq!(
+            terminals
+                .iter()
+                .filter(|terminal| terminal["state"] == "live")
+                .count(),
+            1 - index
+        );
+        let original = terminals
+            .iter()
+            .find(|terminal| terminal["address"] == survivor["address"])
+            .unwrap();
+        if index == 0 {
+            assert_eq!(original["pid"], survivor["pid"]);
+        }
+        assert_eq!(original["argv"], survivor["argv"]);
+    }
+    let workspaces = request(
+        &api_socket,
+        serde_json::json!({"id":"workspaces","method":"workspace.list","params":{}}),
+    );
+    assert!(workspaces["result"]["workspaces"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    stop_presentation(server, &api_socket);
+    cleanup_test_base(&base);
+}
+
+#[test]
 fn hc_finished_source_preserves_binding_on_shutdown() {
     let _lock = test_lock();
     let base = unique_test_dir();
@@ -740,24 +835,21 @@ fn hc_finished_source_preserves_binding_on_shutdown() {
         .as_str()
         .expect("root pane id")
         .to_string();
-    let _restarted = restart_presentation(spawned, &api_socket, &runtime_dir, || {
-        spawn_server(&config_home, &runtime_dir, &api_socket)
-    });
+    let terminal = support::hc::terminals(&runtime_dir).remove(0);
+    stop_presentation(spawned, &api_socket);
 
-    assert_ok(request(
-        &api_socket,
-        serde_json::json!({"id":"finish-source","method":"pane.send_input","params":{"pane_id":pane_id,"text":"exit","keys":["Enter"]}}),
-    ));
-
+    // A historical finish while detached must survive restore; it is not a live pane exit.
+    let mut finish = std::process::Command::new(support::hc::private_cli(&runtime_dir));
+    support::hc::configure(&mut finish, &runtime_dir);
+    assert!(finish
+        .args(["send", terminal["address"].as_str().unwrap(), "exit"])
+        .status()
+        .unwrap()
+        .success());
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        let panes = request(
-            &api_socket,
-            serde_json::json!({"id":"test:panes","method":"pane.list","params":{}}),
-        );
         let terminals = support::hc::terminals(&runtime_dir);
         if terminals.len() == 1 && terminals[0]["state"] == "finished" {
-            assert_eq!(panes["result"]["panes"][0]["pane_id"], pane_id);
             break;
         }
         assert!(
@@ -767,7 +859,14 @@ fn hc_finished_source_preserves_binding_on_shutdown() {
         thread::sleep(Duration::from_millis(20));
     }
 
-    stop_presentation(_restarted, &api_socket);
+    let restarted = spawn_server(&config_home, &runtime_dir, &api_socket);
+    wait_for_socket(&api_socket, Duration::from_secs(10));
+    let panes = request(
+        &api_socket,
+        serde_json::json!({"id":"historical:panes","method":"pane.list","params":{}}),
+    );
+    assert_eq!(panes["result"]["panes"][0]["pane_id"], pane_id);
+    stop_presentation(restarted, &api_socket);
 
     let session: serde_json::Value = serde_json::from_slice(
         &fs::read(config_home.join("herdr-dev/session.json")).expect("saved session"),

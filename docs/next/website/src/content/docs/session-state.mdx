@@ -13,7 +13,10 @@ Herdr saves presentation and layout. **hc owns programs and terminal state**, lo
 | Presentation host stop or restart | Are not terminated by Herdr | Restore saved layout and attach exact hc bindings |
 | SSH loss or offline source | Are not terminated by the viewer disconnect | Keep layout and bindings unavailable until recovery |
 | Explicit pane close | May be terminated by an explicit hc close | Remove only after termination or absence is confirmed |
-| Source hc stop, program exit, or source machine loss | Continuation is not guaranteed | Never launch a replacement to fill the saved pane |
+| Observed program exit (`keep=false`, hc reason `exited`) | Already finished | Remove the pane and any empty tab/workspace; never launch a replacement |
+| Source hc stop or source machine loss | Continuation is not guaranteed | Never launch a replacement to fill the saved pane |
+
+A reported agent status of `done` is not a program exit. Kept terminals and historical bindings restored after a program has already finished remain in the layout. Source or transport loss is never treated as a normal shell exit.
 
 These guarantees concern Herdr's actions, not source-machine durability. Stopping hc ends its current programs; a saved record is not a live parked program.
 

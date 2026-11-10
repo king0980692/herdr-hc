@@ -715,8 +715,80 @@ async fn exercise_app(target: &Target) -> io::Result<()> {
         "closing the last hc pane automatically respawned a shell"
     );
     assert!(live_programs(&probe).await?.is_empty());
+
+    // Real bash exits must remove presentation without turning completion into kill/run.
+    restored.state.default_shell = "/bin/bash".into();
+    let ws = restored.create_workspace_with_options("/var/tmp".into(), true)?;
+    let root = restored.state.workspaces[ws].tabs[0].root_pane;
+    let root_id = restored.state.workspaces[ws]
+        .terminal_id(root)
+        .unwrap()
+        .clone();
+    let public = restored.public_pane_id(ws, root).unwrap();
+    app_request(
+        &mut restored,
+        "pane.split",
+        json!({"target_pane_id":public,"direction":"right","focus":false}),
+    )?;
+    let split_id = restored.state.workspaces[ws].tabs[0]
+        .panes
+        .values()
+        .find(|pane| pane.attached_terminal_id != root_id)
+        .unwrap()
+        .attached_terminal_id
+        .clone();
+    restored.spawn_popup_argv_command(
+        &["/bin/bash".into(), "--noprofile".into(), "--norc".into()],
+        Some("/var/tmp".into()),
+        Vec::new(),
+        Default::default(),
+    )?;
+    let popup_id = restored
+        .state
+        .popup_pane
+        .as_ref()
+        .unwrap()
+        .terminal_id
+        .clone();
+    for (index, id) in [popup_id, split_id, root_id].into_iter().enumerate() {
+        let binding = restored.state.terminals[&id].hc_binding.clone().unwrap();
+        let mut expected = live_programs(&probe).await?;
+        expected.remove(binding["address"].as_str().unwrap());
+        restored
+            .terminal_runtimes
+            .get(&id)
+            .unwrap()
+            .try_send_bytes(Bytes::from_static(if index == 1 {
+                b"exit 7\r"
+            } else {
+                b"exit\r"
+            }))
+            .map_err(io::Error::other)?;
+        timeout(Duration::from_secs(10), async {
+            while restored.state.terminals.contains_key(&id) {
+                let event = restored.event_rx.recv().await.ok_or_else(disconnected)?;
+                restored.handle_internal_event_with_render_impact(event);
+            }
+            Ok::<_, io::Error>(())
+        })
+        .await
+        .map_err(|_| invalid("bash exited but its pane remained"))??;
+        assert!(restored.terminal_runtimes.get(&id).is_none());
+        assert_eq!(
+            live_programs(&probe).await?,
+            expected,
+            "bash exit changed another source program"
+        );
+        restored.state.assert_invariants_for_test();
+    }
+    assert!(restored.state.workspaces.is_empty());
+    assert!(restored.state.popup_pane.is_none());
+    assert!(
+        !restored.ensure_default_workspace(),
+        "bash exit respawned the last shell"
+    );
     println!(
-        "App: create/split/tab/popup, attach-only transport recovery/PID + public-ID preservation, JSON binding roundtrip, detach/restore, mismatch/missing, exact close/no respawn verified"
+        "App: create/split/tab/popup, attach-only transport recovery/PID + public-ID preservation, JSON binding roundtrip, detach/restore, mismatch/missing, exact close/no respawn, bash exit removes popup/split/last workspace verified"
     );
     Ok(())
 }

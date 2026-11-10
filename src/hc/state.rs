@@ -60,6 +60,14 @@ pub struct RuntimeSnapshot {
 }
 
 impl RuntimeSnapshot {
+    /// A program exit is distinct from core shutdown, transport loss, and agent status.
+    pub fn is_nonkept_exit(&self) -> bool {
+        self.connected
+            && self.terminal.facts.get("state").and_then(Value::as_str) == Some("finished")
+            && self.terminal.facts.get("reason").and_then(Value::as_str) == Some("exited")
+            && self.terminal.facts.get("keep").and_then(Value::as_bool) == Some(false)
+    }
+
     pub fn reported_status(&self) -> Option<&Value> {
         if !self.connected
             || !self.attached

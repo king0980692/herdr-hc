@@ -134,6 +134,28 @@ impl App {
         {
             return Vec::new();
         }
+        self.handle_internal_event_after_runtime_fence(ev, false)
+    }
+
+    /// Called only after hc binding, runtime token, and live-to-finished checks.
+    pub(super) fn handle_confirmed_hc_pane_exit(
+        &mut self,
+        pane_id: crate::layout::PaneId,
+    ) -> Vec<crate::app::actions::PaneStateUpdate> {
+        self.handle_internal_event_after_runtime_fence(
+            AppEvent::PaneDied {
+                pane_id,
+                exit_reason: crate::platform::ChildExitReason::Exited,
+            },
+            true,
+        )
+    }
+
+    fn handle_internal_event_after_runtime_fence(
+        &mut self,
+        ev: AppEvent,
+        confirmed_hc_exit: bool,
+    ) -> Vec<crate::app::actions::PaneStateUpdate> {
         let ev = match ev {
             AppEvent::HcTerminalEffects {
                 enabled,
@@ -299,7 +321,9 @@ impl App {
                 .as_ref()
                 .is_some_and(|popup| popup.pane_id == *pane_id)
             {
-                if let Err(error) = self.close_popup_pane() {
+                if confirmed_hc_exit {
+                    self.detach_hc_popup_pane();
+                } else if let Err(error) = self.close_popup_pane() {
                     tracing::warn!(%error,"popup close failed");
                 }
                 return Vec::new();
@@ -307,7 +331,7 @@ impl App {
             if worktree_restore_failed {
                 worktree_restore_updates
                     .extend(self.publish_worktree_runtime_agent_release(*pane_id));
-            } else {
+            } else if !confirmed_hc_exit {
                 let expected_exit = self
                     .pending_worktree_remove_runtime_exits
                     .get_mut(pane_id)
@@ -354,16 +378,17 @@ impl App {
             }
         }
 
-        let checkpointed_pane_exit = matches!(
-            &ev,
-            AppEvent::PaneDied {
-                pane_id,
-                exit_reason,
-            } if (exit_reason.requires_session_checkpoint()
-                || (*exit_reason == crate::platform::ChildExitReason::Exited
-                    && (self.server_hangup_probe)()))
-                && self.find_pane(*pane_id).is_some() && !self.overlay_panes.contains_key(pane_id)
-        );
+        let checkpointed_pane_exit = !confirmed_hc_exit
+            && matches!(
+                &ev,
+                AppEvent::PaneDied {
+                    pane_id,
+                    exit_reason,
+                } if (exit_reason.requires_session_checkpoint()
+                    || (*exit_reason == crate::platform::ChildExitReason::Exited
+                        && (self.server_hangup_probe)()))
+                    && self.find_pane(*pane_id).is_some() && !self.overlay_panes.contains_key(pane_id)
+            );
         if checkpointed_pane_exit {
             self.checkpoint_session_before_pane_exit();
         }
@@ -441,7 +466,13 @@ impl App {
             };
         let terminal_cwd_reported = matches!(ev, AppEvent::TerminalCwdReported { .. });
         let previous_toast = self.state.toast.clone();
-        let mut pane_updates = self.state.handle_app_event(ev);
+        let mut pane_updates = match ev {
+            AppEvent::PaneDied { pane_id, .. } if confirmed_hc_exit => {
+                self.state.handle_pane_died(pane_id);
+                Vec::new()
+            }
+            ev => self.state.handle_app_event(ev),
+        };
         if update_ready.is_some() {
             self.state.latest_release_notes = crate::release_notes::load_latest();
         }
