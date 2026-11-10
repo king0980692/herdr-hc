@@ -3278,6 +3278,8 @@ impl HeadlessServer {
         }
         let mut changed = false;
 
+        self.app.run_hc_recovery(now);
+
         // No resize polling needed — server has no terminal.
         // Client resize messages drive size changes instead.
 

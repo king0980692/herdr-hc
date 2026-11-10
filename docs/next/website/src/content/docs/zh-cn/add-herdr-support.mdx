@@ -1,114 +1,66 @@
 ---
 title: 为你的智能体添加 Herdr 支持
-description: 在不为 Herdr 添加原生支持的情况下,从你自己的代码向 Herdr 上报编码智能体的状态和恢复命令。
+description: 通过源端 hc 与 OSC 7501 上报智能体状态，不依赖客户端本地 hook 或自动恢复进程。
 ---
 
-如果你在开发编码智能体,只靠你自己的代码就能让它在 Herdr 中获得一等支持。不需要向 Herdr 提交拉取请求,也不需要等待 Herdr 发布新版本。
+hc 窗格使用 **hc 的程序状态协议 OSC 7501** 上报。hc 拥有事实，Herdr 展示这些事实，并用实时上报的转换驱动等待和通知。不需要 Herdr 进程名或屏幕规则来判定状态。
 
-智能体向 Herdr 上报后,用户会得到:
-
-- 在侧边栏和 `herdr agent list` 中显示的智能体名称以及 `idle`、`working` 或 `blocked` 状态
-- 智能体完成或需要用户决策时的通知
-- `herdr agent wait` 以及其他等待智能体状态的自动化
-- Herdr 服务器重启后,同一个窗格中恢复同一个会话
-
-对于厂商没有提供集成的智能体,由 Herdr 维护集成。如果你维护自己的智能体,自己掌握集成就可以按自己的发布节奏修复问题。
+旧版 Herdr CLI／socket 上报和 resume 集成是独立的旧协议。hc 窗格以 `unsupported_runtime` 拒绝 `pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority` 和 `pane.release_agent`。
 
 ## 工作方式
 
-Herdr 窗格中的每个进程都会继承这些环境变量:
+在智能体的源端终端输出中发送状态。根报告包含 app 名称和真实状态。hc 保存报告，通过快照／事件公开，并在查看端重连时提供。实时附加上没有明确且可用的报告时，Herdr 显示 unknown，不根据输出或本地 PID 猜测。
 
-| 变量 | 含义 |
-| --- | --- |
-| `HERDR_ENV` | 在 Herdr 中为 `1` |
-| `HERDR_PANE_ID` | 智能体所在的窗格 |
-| `HERDR_BIN_PATH` | 管理这个窗格的 Herdr 可执行文件 |
-| `HERDR_SOCKET_PATH` | Herdr 的 API 套接字 |
-
-你的智能体通过 `"$HERDR_BIN_PATH"` 发送三类上报:
-
-1. **状态。** 每当 `idle`、`working` 或 `blocked` 发生变化时上报。
-2. **恢复命令。** 上报重新打开当前会话的命令。
-3. **释放。** 智能体退出时释放窗格。
-
-仅在 `HERDR_ENV=1` 且其他变量都存在时上报。在 Herdr 之外,集成不应执行任何操作。
+已保存 SSH 源端程序不会自动获得客户端的 `HERDR_BIN_PATH`、`HERDR_SOCKET_PATH`、`HERDR_PANE_ID` 或路由身份。本地 hc 启动可以携带 Herdr 上下文，但这些变量不赋予状态权威，旧上报方法仍被拒绝。不要寻找客户端 socket 或安装旧 hook 作为 hc 状态通道。路径和环境属于源机器。
 
 ## 上报状态
 
-```bash
-"$HERDR_BIN_PATH" pane report-agent "$HERDR_PANE_ID" \
-  --source my-agent \
-  --agent my-agent \
-  --state working \
-  --seq 1
+例如在 POSIX 源端终端上发送 working 报告：
+
+```sh
+printf '\033]7501;state=working:app=my-agent\007'
 ```
 
-- 一轮开始时上报 `working`,可以接收输入时上报 `idle`,需要用户做决定时上报 `blocked`。可以用 `--message` 说明阻塞原因。
-- `--agent` 是用户看到的名称。请使用你自己智能体的名称,不要使用 Herdr 已经支持的智能体的名称。
-- `--source` 用于标识你的集成。保持稳定且唯一。不要以 `herdr:` 开头,这个前缀由 Herdr 自己的集成使用。
-- `--seq` 可以省略,但建议加上。它必须随来自你的来源的每次上报递增,跨会话和智能体重启也要继续递增。时间戳就很合适。Herdr 会忽略编号不大于上次已接受编号的上报,所以迟到或乱序的上报不会覆盖更新的状态。
+只在真实变化发生时发送：`idle` 表示空闲、`working` 表示工作、`blocked` 表示需要决定、`done` 表示完成、`error` 表示失败。Herdr 将源端 `error` 映射为 blocked，聚焦后仍保留源端 `done`。不要仅因命令已提交、定时器到期或查看端连接就报告就绪或完成。
 
-如果想在不改变状态的情况下改变智能体的显示方式,例如标题或自定义状态文字,请参阅[自定义状态标签](/zh-cn/docs/integrations/#自定义状态标签)。
+此静态例子不是通用编码器。编码、可选字段及记录 ID 见 hc 的 [API 与状态文档](https://github.com/herdrdev/herdr-core/blob/main/schema/README.md)。不要把不可信文本直接插入终端控制序列。Herdr 不定义另一套状态载荷。
 
 ## 上报恢复命令
 
-把恢复当前会话的命令放在 `--` 之后。带上该会话需要的选项,例如模型或权限模式,这样恢复后的会话行为一致:
+不要为 hc 窗格发送旧版 `resume_argv` 或 `pane report-agent-session`。Herdr 恢复的是精确的永久 core ID 和终端地址，绝不运行 resume 命令、重启智能体或创建替代 shell。
 
-```bash
-"$HERDR_BIN_PATH" pane report-agent "$HERDR_PANE_ID" \
-  --source my-agent \
-  --agent my-agent \
-  --state idle \
-  --seq 2 \
-  --agent-session-id "$SESSION_ID" \
-  -- my-agent --resume "$SESSION_ID" --model my-model
-```
-
-命令可以附在任何一次状态上报中,只有会话变化时也可以用 `pane report-agent-session` 发送。每当智能体切换会话时,请重新上报。
-
-Herdr 服务器重启后,Herdr 会在同一目录中打开该窗格并在其中运行这条命令。命令必须遵守以下规则:
-
-- 第一个词是用户 `PATH` 上的普通命令名,例如 `my-agent`,不能是路径。
-- 任何参数都不能包含撇号或控制字符。
-- 最多 64 个参数,总长度不超过 8 KiB。
-- 你的来源必须先持有该窗格,所以请在发送命令之前或同时用 `report-agent` 上报状态。否则 Herdr 会返回 `resume_not_accepted`。
-
-违反前三条规则的命令会被 Herdr 以 `invalid_resume_argv` 拒绝,该次上报也不会生效。用户可以用 `[session] resume_agents_on_restore = false` 关闭恢复。
+用户明确要求的新启动与重连不同。丢失或结果不确定的启动不能自动重试。见[会话状态与恢复](/zh-cn/docs/session-state/)。
 
 ## 退出时释放
 
-```bash
-"$HERDR_BIN_PATH" pane release-agent "$HERDR_PANE_ID" \
-  --source my-agent \
-  --agent my-agent \
-  --seq 3
+使用协议的 clear 报告撤销根状态记录：
+
+```sh
+printf '\033]7501;state=clear\007'
 ```
 
-释放会立即从窗格中清除智能体的名称、状态和恢复命令。只在用户真正退出时释放。如果智能体在同一个进程中用一个会话替换另一个会话,请上报新会话,而不是释放。
-
-如果智能体退出时没有释放,Herdr 会在窗格回到空闲的 shell 提示符后察觉,并清除该智能体及其恢复命令。通常需要一两秒。这只是兜底机制,不能代替释放。
+清除状态不是终止程序。适当时应如实报告完成或失败，不把取消或断线当作成功。正常退出时的清理不能覆盖崩溃或强制终止。不要为 hc 调用旧 `pane release-agent` 端点。
 
 ## 不要拖慢智能体
 
-- 不要让 Herdr 拖慢你的智能体。在后台或用较短的超时发送上报,并忽略失败。
-- 只发送最新状态。如果一次上报正在发送时积累了多个变化,丢弃较旧的那些。
-- 恢复命令需要 Herdr 0.9.2 或更高版本。旧版会忽略它,状态上报和释放照常工作。
+- 只上报真实源端状态，不上报查看端本地聚焦或重连事件。
+- 限制报告量并保持顺序，重连后不把旧转换重放成新工作。
+- 报告不可用时，不回退到客户端本地 API、进程查询或屏幕分类。
+- 状态是信息，不是批准对话框的授权，也不是所有后台任务已结束的证明。
 
 ## 直接使用套接字
 
-`HERDR_BIN_PATH` 和 CLI 是可移植的选择,包括在 Windows 上。如果你的智能体需要直接 IPC,可以发送 [Socket API](/zh-cn/docs/socket-api/) 中说明的等效 `pane.report_agent`、`pane.report_agent_session` 和 `pane.release_agent` 请求。恢复命令放在 `resume_argv` 数组中。
+需要直接访问运行时的集成应使用 hc 的公开 API 和传输。`hc schema` 描述 API；`hc connect` 通过标准输入／输出承载协议，包括 SSH。hc 分帧不是 Herdr 私有 socket 或端点 codec，两者的协议代际互相独立。
+
+呈现自动化仍使用独立的 Herdr [Socket API](/zh-cn/docs/socket-api/)。已保存源端请求应固定到发现的主机实例，断线后绝不重放可能已生效的操作。
 
 ## 检查你的集成
 
-在 Herdr 窗格中启动你的智能体,然后查看 Herdr 看到了什么:
+使用目标呈现主机提供的明确 ID，不依赖继承的 `--current` 身份：
 
 ```bash
-herdr pane get "$HERDR_PANE_ID"
+herdr pane get w1:p1
 herdr agent list
 ```
 
-要在不影响日常会话的情况下测试恢复,请使用单独的命名会话:
-
-1. 启动 `herdr --session my-agent-test`,然后在一个窗格中运行你的智能体。
-2. 用 `herdr session stop my-agent-test` 停止该会话。
-3. 再次启动 `herdr --session my-agent-test`。窗格应当运行你的恢复命令,智能体应当再次上报。
+在一次性命名会话中验证真实的 idle、working、blocked、done 和 clear 转换。分离并仅重启 Herdr 呈现主机，确认相同 hc 绑定和源端程序仍存活，没有新启动、输入重放或完成通知重放。不要用停止 hc 来代替重启查看端。

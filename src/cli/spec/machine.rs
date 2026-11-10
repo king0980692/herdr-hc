@@ -23,7 +23,7 @@ pub(super) fn command() -> Command {
         )
         .subcommand(
             Command::new("add")
-                .about("Prepare the remote Herdr server and save an SSH machine")
+                .about("Verify installed hc over SSH and save a machine for local presentation")
                 .arg(
                     Arg::new("ssh-target")
                         .value_name("SSH_TARGET")
@@ -35,8 +35,12 @@ pub(super) fn command() -> Command {
                     ),
                 )
                 .arg(
+                    option("hc-path", "PATH")
+                        .help("Use this absolute source-local hc executable path (default: hc on the remote PATH)"),
+                )
+                .arg(
                     option("remote-session", "NAME")
-                        .help("Select a session explicitly (default without an interactive terminal)"),
+                        .help("Select the hc source session (default without an interactive terminal)"),
                 ),
         )
         .subcommand(

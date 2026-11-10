@@ -77,35 +77,22 @@ impl App {
             return encode_error(id, "pane_not_found", "pane not found");
         };
         let shell_config = crate::pane::PaneShellConfig::new(&default_shell, self.state.shell_mode);
-        let split_result = match params.ratio {
-            Some(ratio) => ws.split_pane_with_ratio(
-                target_pane_id,
-                direction,
-                ratio,
-                rows,
-                cols,
-                split_cwd,
-                scrollback_limit_bytes,
-                host_terminal_theme,
-                host_terminal_appearance,
-                shell_config,
-                extra_env,
-                params.focus,
-            ),
-            None => ws.split_pane(
-                target_pane_id,
-                direction,
-                rows,
-                cols,
-                split_cwd,
-                scrollback_limit_bytes,
-                host_terminal_theme,
-                host_terminal_appearance,
-                shell_config,
-                extra_env,
-                params.focus,
-            ),
-        };
+        let split_result = ws.split_pane_with_runtime(
+            target_pane_id,
+            direction,
+            params.ratio,
+            rows,
+            cols,
+            split_cwd,
+            scrollback_limit_bytes,
+            host_terminal_theme,
+            host_terminal_appearance,
+            shell_config,
+            extra_env,
+            params.focus,
+            None,
+            &self.terminal_factory,
+        );
         let (target_tab_idx, new_pane) = match split_result {
             Some(Ok(result)) => result,
             Some(Err(err)) => return encode_error(id, "pane_split_failed", err.to_string()),
@@ -1249,7 +1236,7 @@ impl App {
                     .terminals
                     .get(&source_terminal_id)
                     .map(|terminal| terminal.cwd.clone())
-                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
+                    .unwrap_or_else(|| self.resolve_new_terminal_cwd(None));
                 let moved_pane_id = moved.pane_id;
                 let workspace = crate::workspace::Workspace::from_existing_pane(
                     label,
@@ -1259,6 +1246,7 @@ impl App {
                     self.event_tx.clone(),
                     self.render_notify.clone(),
                     self.render_dirty.clone(),
+                    !self.terminal_factory.is_saved_source(),
                 );
                 self.state.workspaces.push(workspace);
                 let target_ws_idx = self.state.workspaces.len() - 1;
@@ -1388,6 +1376,7 @@ impl App {
                 self.event_tx.clone(),
                 self.render_notify.clone(),
                 self.render_dirty.clone(),
+                !self.terminal_factory.is_saved_source(),
             );
             workspace.id = context.previous_workspace_id;
             workspace.worktree_space = context.previous_worktree_space;
@@ -1988,6 +1977,13 @@ impl App {
         }
         let workspace_snapshot = self.workspace_info(ws_idx);
         let terminal_id = self.state.terminal_id_for_pane(ws_idx, pane_id);
+        let terminated = if self.state.close_pane_would_close_workspace(ws_idx, pane_id) {
+            self.terminate_hc_workspaces(&self.state.workspace_close_indices(ws_idx))
+        } else {
+            self.terminate_hc_terminals(terminal_id.iter().cloned())
+        };
+        terminated
+            .map_err(|error| encode_error(id.clone(), "hc_close_failed", error.to_string()))?;
         let should_close_workspace = {
             let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
                 return Err(pane_not_found(id, &target.pane_id));

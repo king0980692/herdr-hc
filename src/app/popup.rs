@@ -13,7 +13,37 @@ pub(crate) struct PopupGeometry {
 }
 
 impl App {
-    pub(crate) fn close_popup_pane(&mut self) -> bool {
+    pub(crate) fn close_popup_pane(&mut self) -> std::io::Result<bool> {
+        let Some(popup) = self.state.popup_pane.as_ref() else {
+            return Ok(false);
+        };
+        self.terminate_hc_terminals([popup.terminal_id.clone()])?;
+        Ok(self.remove_popup_presentation())
+    }
+
+    /// Losing an owning tab drops presentation, not a different hc program's lifetime.
+    pub(crate) fn detach_hc_popup_pane(&mut self) -> bool {
+        let Some(id) = self
+            .state
+            .popup_pane
+            .as_ref()
+            .map(|popup| popup.terminal_id.clone())
+        else {
+            return false;
+        };
+        if !self
+            .state
+            .terminals
+            .get(&id)
+            .is_some_and(|terminal| terminal.hc_authority)
+        {
+            return false;
+        }
+        drop(self.terminal_runtimes.remove(&id));
+        self.remove_popup_presentation()
+    }
+
+    fn remove_popup_presentation(&mut self) -> bool {
         let Some(popup) = self.state.popup_pane.take() else {
             return false;
         };
@@ -44,22 +74,25 @@ impl App {
             extra_env,
             geometry,
             |pane_id, rows, cols, cwd, launch_env, app| {
-                TerminalRuntime::spawn_shell_command(
-                    pane_id,
-                    rows,
-                    cols,
-                    cwd,
-                    command,
-                    launch_env,
-                    crate::pane::AgentDetection::Disabled,
-                    app.state.pane_scrollback_limit_bytes,
-                    app.state.host_terminal_theme,
-                    app.pane_host_terminal_appearance(),
-                    app.event_tx.clone(),
-                    app.render_notify.clone(),
-                    app.render_dirty.clone(),
-                )
-                .map(|runtime| (runtime, None))
+                app.terminal_factory
+                    .spawn(
+                        pane_id,
+                        rows,
+                        cols,
+                        cwd,
+                        app.state.pane_scrollback_limit_bytes,
+                        app.state.host_terminal_theme,
+                        app.pane_host_terminal_appearance(),
+                        crate::terminal::TerminalCommand::Line(
+                            command,
+                            crate::pane::AgentDetection::Disabled,
+                        ),
+                        launch_env,
+                        app.event_tx.clone(),
+                        app.render_notify.clone(),
+                        app.render_dirty.clone(),
+                    )
+                    .map(|runtime| (runtime, None))
             },
         )
     }
@@ -76,22 +109,25 @@ impl App {
             extra_env,
             geometry,
             |pane_id, rows, cols, cwd, launch_env, app| {
-                TerminalRuntime::spawn_argv_command(
-                    pane_id,
-                    rows,
-                    cols,
-                    cwd,
-                    argv,
-                    launch_env,
-                    crate::pane::AgentDetection::Disabled,
-                    app.state.pane_scrollback_limit_bytes,
-                    app.state.host_terminal_theme,
-                    app.pane_host_terminal_appearance(),
-                    app.event_tx.clone(),
-                    app.render_notify.clone(),
-                    app.render_dirty.clone(),
-                )
-                .map(|runtime| (runtime, Some(argv.to_vec())))
+                app.terminal_factory
+                    .spawn(
+                        pane_id,
+                        rows,
+                        cols,
+                        cwd,
+                        app.state.pane_scrollback_limit_bytes,
+                        app.state.host_terminal_theme,
+                        app.pane_host_terminal_appearance(),
+                        crate::terminal::TerminalCommand::Argv(
+                            argv,
+                            crate::pane::AgentDetection::Disabled,
+                        ),
+                        launch_env,
+                        app.event_tx.clone(),
+                        app.render_notify.clone(),
+                        app.render_dirty.clone(),
+                    )
+                    .map(|runtime| (runtime, Some(argv.to_vec())))
             },
         )
     }
@@ -133,7 +169,7 @@ impl App {
         let cwd = cwd.or_else(|| {
             active_tab.cwd_for_pane(focused_pane, &self.state.terminals, &self.terminal_runtimes)
         });
-        let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
+        let cwd = cwd.unwrap_or_else(|| self.resolve_new_terminal_cwd(None));
         let pane_id = PaneId::alloc();
         let terminal_id = TerminalId::alloc();
         let launch_env = PaneLaunchEnv::from_extra(extra_env).without_pane_identity();
@@ -157,6 +193,7 @@ impl App {
             Some(argv) => TerminalState::new(terminal_id.clone(), cwd).with_launch_argv(argv),
             None => TerminalState::new(terminal_id.clone(), cwd),
         };
+        let terminal = terminal.with_runtime(&runtime);
         self.terminal_runtimes.insert(terminal_id.clone(), runtime);
         self.state.terminals.insert(terminal_id.clone(), terminal);
         self.state.popup_pane = Some(crate::app::state::PopupPaneState {
@@ -228,7 +265,7 @@ mod tests {
         let mut app = app_with_popup();
         app.state.mode = Mode::Navigate;
 
-        assert!(app.close_popup_pane());
+        assert!(app.close_popup_pane().unwrap());
 
         assert_eq!(app.state.mode, Mode::Terminal);
     }
@@ -240,7 +277,7 @@ mod tests {
         app.state.active = None;
         app.state.mode = Mode::Navigate;
 
-        assert!(app.close_popup_pane());
+        assert!(app.close_popup_pane().unwrap());
 
         assert_eq!(app.state.mode, Mode::Navigate);
     }
@@ -253,7 +290,7 @@ mod tests {
             .direct_attach_resize_locks
             .insert(terminal_id.clone());
 
-        assert!(app.close_popup_pane());
+        assert!(app.close_popup_pane().unwrap());
 
         assert!(!app.state.direct_attach_resize_locks.contains(&terminal_id));
     }

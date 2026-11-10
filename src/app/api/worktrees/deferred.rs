@@ -18,6 +18,10 @@ impl App {
         respond_to: std::sync::mpsc::Sender<String>,
         client_local: bool,
     ) -> bool {
+        if let Some(response) = self.saved_source_worktree_rejection(&request) {
+            Self::send_api_response(respond_to, response);
+            return true;
+        }
         match request.method {
             crate::api::schema::Method::WorktreeList(_)
             | crate::api::schema::Method::WorktreeOpen(_) => {
@@ -259,6 +263,15 @@ impl App {
             );
             return;
         };
+        if self
+            .state
+            .pane_ids_for_workspace(ws_idx)
+            .into_iter()
+            .any(|pane| self.state.hc_owns_pane(pane))
+        {
+            Self::send_api_response(respond_to,encode_error(id,"unsupported_runtime","worktree removal cannot use the legacy process/respawn path for hc-owned panes"));
+            return;
+        }
         if let Err(err) = self.require_restored_worktree_ready(ws_idx) {
             Self::send_api_response(respond_to, encode_error(id, err.code, err.message));
             return;

@@ -985,11 +985,7 @@ impl AppState {
         else {
             return false;
         };
-        if tab.zoomed {
-            tab.layout.focused() == pane_id
-        } else {
-            tab.layout.pane_ids().contains(&pane_id)
-        }
+        tab.pane_visible(pane_id)
     }
 
     pub fn is_active_pane(

@@ -63,15 +63,7 @@ pub(crate) fn compute_tab_surface_for(
             .tabs
             .get(target.tab_index)
     });
-    let split_borders = tab
-        .map(|tab| {
-            if tab.zoomed {
-                Vec::new()
-            } else {
-                tab.layout.splits(area)
-            }
-        })
-        .unwrap_or_default();
+    let split_borders = tab.map(|tab| tab.visible_splits(area)).unwrap_or_default();
     let pane_infos = target.map_or_else(Vec::new, |target| {
         compute_pane_infos_for_tab(
             app,

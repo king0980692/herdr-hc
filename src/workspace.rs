@@ -60,7 +60,11 @@ pub struct WorkspaceGitStatusSnapshot {
 
 pub(crate) fn discover_workspace_git_identity(
     cwd: &std::path::Path,
+    filesystem_local: bool,
 ) -> (Option<GitSpaceMetadata>, String, PathBuf) {
+    if !filesystem_local {
+        return (None, fallback_label_from_cwd(cwd), cwd.to_path_buf());
+    }
     let space = git_space_metadata(cwd);
     let auto_label = space
         .as_ref()
@@ -241,6 +245,7 @@ impl Workspace {
         events: mpsc::Sender<AppEvent>,
         render_notify: Arc<Notify>,
         render_dirty: Arc<RenderSignal>,
+        filesystem_local: bool,
     ) -> Self {
         let id = generate_workspace_id();
         let root_pane = moved.pane_id;
@@ -248,7 +253,7 @@ impl Workspace {
         let mut public_pane_numbers = HashMap::new();
         public_pane_numbers.insert(root_pane, 1);
         let (cached_git_space, cached_auto_label, cached_git_status_key) =
-            discover_workspace_git_identity(&identity_cwd);
+            discover_workspace_git_identity(&identity_cwd, filesystem_local);
         Self {
             id,
             custom_name: label,
@@ -256,7 +261,11 @@ impl Workspace {
             cached_identity_cwd: identity_cwd.clone(),
             cached_auto_label,
             cached_git_status_key,
-            cached_git_branch: git_branch(&identity_cwd),
+            cached_git_branch: if filesystem_local {
+                git_branch(&identity_cwd)
+            } else {
+                None
+            },
             cached_git_ahead_behind: None,
             cached_git_space,
             worktree_space: None,
@@ -272,80 +281,9 @@ impl Workspace {
         }
     }
 
-    pub fn new(
-        initial_cwd: PathBuf,
-        rows: u16,
-        cols: u16,
-        scrollback_limit_bytes: usize,
-        host_terminal_theme: crate::terminal_theme::TerminalTheme,
-        host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
-        shell_config: crate::pane::PaneShellConfig<'_>,
-        events: mpsc::Sender<AppEvent>,
-        render_notify: Arc<Notify>,
-        render_dirty: Arc<RenderSignal>,
-    ) -> std::io::Result<(Self, TerminalState, TerminalRuntime)> {
-        Self::new_with_tab(
-            initial_cwd,
-            rows,
-            cols,
-            scrollback_limit_bytes,
-            host_terminal_theme,
-            host_terminal_appearance,
-            shell_config,
-            events,
-            render_notify,
-            render_dirty,
-            None,
-            Vec::new(),
-        )
-    }
-
+    // Creation carries geometry, launch policy and render hooks through one source factory.
     #[allow(clippy::too_many_arguments)]
-    pub fn new_with_extra_env(
-        initial_cwd: PathBuf,
-        rows: u16,
-        cols: u16,
-        scrollback_limit_bytes: usize,
-        host_terminal_theme: crate::terminal_theme::TerminalTheme,
-        host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
-        shell_config: crate::pane::PaneShellConfig<'_>,
-        events: mpsc::Sender<AppEvent>,
-        render_notify: Arc<Notify>,
-        render_dirty: Arc<RenderSignal>,
-        extra_env: Vec<(String, String)>,
-    ) -> std::io::Result<(Self, TerminalState, TerminalRuntime)> {
-        if extra_env.is_empty() {
-            return Self::new(
-                initial_cwd,
-                rows,
-                cols,
-                scrollback_limit_bytes,
-                host_terminal_theme,
-                host_terminal_appearance,
-                shell_config,
-                events,
-                render_notify,
-                render_dirty,
-            );
-        }
-        Self::new_with_tab(
-            initial_cwd,
-            rows,
-            cols,
-            scrollback_limit_bytes,
-            host_terminal_theme,
-            host_terminal_appearance,
-            shell_config,
-            events,
-            render_notify,
-            render_dirty,
-            None,
-            extra_env,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn new_with_tab(
+    pub(crate) fn new_with_tab(
         initial_cwd: PathBuf,
         rows: u16,
         cols: u16,
@@ -358,6 +296,7 @@ impl Workspace {
         render_dirty: Arc<RenderSignal>,
         argv: Option<&[String]>,
         extra_env: Vec<(String, String)>,
+        factory: &crate::terminal::TerminalFactory,
     ) -> std::io::Result<(Self, TerminalState, TerminalRuntime)> {
         let id = generate_workspace_id();
         let launch_env = PaneLaunchEnv::from_extra(extra_env).with_identity(
@@ -365,41 +304,32 @@ impl Workspace {
             public_tab_id_for_number(&id, 1),
             public_pane_id_for_number(&id, 1),
         );
-        let (tab, terminal, runtime) = if let Some(argv) = argv {
-            Tab::new_argv_command(
-                1,
-                initial_cwd.clone(),
-                rows,
-                cols,
-                argv,
-                scrollback_limit_bytes,
-                host_terminal_theme,
-                host_terminal_appearance,
-                &launch_env,
-                events,
-                render_notify,
-                render_dirty,
-            )?
-        } else {
-            Tab::new(
-                1,
-                initial_cwd.clone(),
-                rows,
-                cols,
-                scrollback_limit_bytes,
-                host_terminal_theme,
-                host_terminal_appearance,
-                shell_config,
-                &launch_env,
-                events,
-                render_notify,
-                render_dirty,
-            )?
-        };
+        let (tab, terminal, runtime) = Tab::new_with_runtime(
+            1,
+            initial_cwd.clone(),
+            rows,
+            cols,
+            scrollback_limit_bytes,
+            host_terminal_theme,
+            host_terminal_appearance,
+            shell_config,
+            &launch_env,
+            events,
+            render_notify,
+            render_dirty,
+            argv,
+            factory,
+        )?;
         let mut public_pane_numbers = HashMap::new();
         public_pane_numbers.insert(tab.root_pane, 1);
+        let filesystem_local = !factory.is_saved_source();
+        let initial_cwd = if !filesystem_local && initial_cwd.as_os_str().is_empty() {
+            terminal.cwd.clone()
+        } else {
+            initial_cwd
+        };
         let (cached_git_space, cached_auto_label, cached_git_status_key) =
-            discover_workspace_git_identity(&initial_cwd);
+            discover_workspace_git_identity(&initial_cwd, filesystem_local);
         Ok((
             Self {
                 id,
@@ -408,7 +338,11 @@ impl Workspace {
                 cached_identity_cwd: initial_cwd.clone(),
                 cached_auto_label,
                 cached_git_status_key,
-                cached_git_branch: git_branch(&initial_cwd),
+                cached_git_branch: if filesystem_local {
+                    git_branch(&initial_cwd)
+                } else {
+                    None
+                },
                 cached_git_ahead_behind: None,
                 cached_git_space,
                 worktree_space: None,
@@ -459,55 +393,7 @@ impl Workspace {
         }
     }
 
-    pub fn create_tab(
-        &mut self,
-        rows: u16,
-        cols: u16,
-        cwd: PathBuf,
-        scrollback_limit_bytes: usize,
-        host_terminal_theme: crate::terminal_theme::TerminalTheme,
-        host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
-        shell_config: crate::pane::PaneShellConfig<'_>,
-        extra_env: Vec<(String, String)>,
-    ) -> std::io::Result<(usize, TerminalState, TerminalRuntime)> {
-        self.create_tab_with_runtime(
-            rows,
-            cols,
-            cwd,
-            scrollback_limit_bytes,
-            host_terminal_theme,
-            host_terminal_appearance,
-            shell_config,
-            None,
-            extra_env,
-        )
-    }
-
-    pub fn create_tab_argv_command(
-        &mut self,
-        rows: u16,
-        cols: u16,
-        cwd: PathBuf,
-        argv: &[String],
-        extra_env: Vec<(String, String)>,
-        scrollback_limit_bytes: usize,
-        host_terminal_theme: crate::terminal_theme::TerminalTheme,
-        host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
-    ) -> std::io::Result<(usize, TerminalState, TerminalRuntime)> {
-        self.create_tab_with_runtime(
-            rows,
-            cols,
-            cwd,
-            scrollback_limit_bytes,
-            host_terminal_theme,
-            host_terminal_appearance,
-            crate::pane::PaneShellConfig::new("", crate::config::ShellModeConfig::NonLogin),
-            Some(argv),
-            extra_env,
-        )
-    }
-
-    fn create_tab_with_runtime(
+    pub(crate) fn create_tab_with_runtime(
         &mut self,
         rows: u16,
         cols: u16,
@@ -518,6 +404,7 @@ impl Workspace {
         shell_config: crate::pane::PaneShellConfig<'_>,
         argv: Option<&[String]>,
         extra_env: Vec<(String, String)>,
+        factory: &crate::terminal::TerminalFactory,
     ) -> std::io::Result<(usize, TerminalState, TerminalRuntime)> {
         let number = self.next_public_tab_number;
         self.next_public_tab_number += 1;
@@ -536,37 +423,22 @@ impl Workspace {
             .map(|tab| tab.render_dirty.clone())
             .expect("workspace must always have at least one tab");
 
-        let (tab, terminal, runtime) = if let Some(argv) = argv {
-            Tab::new_argv_command(
-                number,
-                cwd,
-                rows,
-                cols,
-                argv,
-                scrollback_limit_bytes,
-                host_terminal_theme,
-                host_terminal_appearance,
-                &launch_env,
-                events,
-                render_notify,
-                render_dirty,
-            )?
-        } else {
-            Tab::new(
-                number,
-                cwd,
-                rows,
-                cols,
-                scrollback_limit_bytes,
-                host_terminal_theme,
-                host_terminal_appearance,
-                shell_config,
-                &launch_env,
-                events,
-                render_notify,
-                render_dirty,
-            )?
-        };
+        let (tab, terminal, runtime) = Tab::new_with_runtime(
+            number,
+            cwd,
+            rows,
+            cols,
+            scrollback_limit_bytes,
+            host_terminal_theme,
+            host_terminal_appearance,
+            shell_config,
+            &launch_env,
+            events,
+            render_notify,
+            render_dirty,
+            argv,
+            factory,
+        )?;
         self.register_new_pane_with_number(tab.root_pane, pane_number);
         self.tabs.push(tab);
         Ok((self.tabs.len() - 1, terminal, runtime))
@@ -618,176 +490,9 @@ impl Workspace {
         self.close_tab(self.active_tab)
     }
 
+    // Split routing carries pane identity, geometry, launch context, and focus policy.
     #[allow(clippy::too_many_arguments)]
-    pub fn split_focused_command(
-        &mut self,
-        direction: Direction,
-        rows: u16,
-        cols: u16,
-        cwd: Option<PathBuf>,
-        command: &str,
-        extra_env: Vec<(String, String)>,
-        scrollback_limit_bytes: usize,
-        host_terminal_theme: crate::terminal_theme::TerminalTheme,
-        host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
-    ) -> std::io::Result<crate::workspace::tab::NewPane> {
-        let pane_number = self.next_public_pane_number;
-        let tab_number = self
-            .active_tab()
-            .map(|tab| tab.number)
-            .expect("workspace must always have at least one tab");
-        let launch_env = self.launch_env_for_new_pane(tab_number, pane_number, extra_env);
-        let new_pane = self
-            .active_tab_mut()
-            .expect("workspace must always have at least one tab")
-            .split_focused_command(
-                direction,
-                rows,
-                cols,
-                cwd,
-                command,
-                &launch_env,
-                scrollback_limit_bytes,
-                host_terminal_theme,
-                host_terminal_appearance,
-            )?;
-        self.register_new_pane_with_number(new_pane.pane_id, pane_number);
-        Ok(new_pane)
-    }
-
-    // Workspace split routing carries pane identity, geometry, host context, and focus policy.
-    #[allow(clippy::too_many_arguments)]
-    pub fn split_pane(
-        &mut self,
-        pane_id: PaneId,
-        direction: Direction,
-        rows: u16,
-        cols: u16,
-        cwd: Option<PathBuf>,
-        scrollback_limit_bytes: usize,
-        host_terminal_theme: crate::terminal_theme::TerminalTheme,
-        host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
-        shell_config: crate::pane::PaneShellConfig<'_>,
-        extra_env: Vec<(String, String)>,
-        focus_new_pane: bool,
-    ) -> Option<std::io::Result<(usize, crate::workspace::tab::NewPane)>> {
-        self.split_pane_with_runtime(
-            pane_id,
-            direction,
-            None,
-            rows,
-            cols,
-            cwd,
-            scrollback_limit_bytes,
-            host_terminal_theme,
-            host_terminal_appearance,
-            shell_config,
-            extra_env,
-            focus_new_pane,
-            None,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn split_pane_with_ratio(
-        &mut self,
-        pane_id: PaneId,
-        direction: Direction,
-        ratio: f32,
-        rows: u16,
-        cols: u16,
-        cwd: Option<PathBuf>,
-        scrollback_limit_bytes: usize,
-        host_terminal_theme: crate::terminal_theme::TerminalTheme,
-        host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
-        shell_config: crate::pane::PaneShellConfig<'_>,
-        extra_env: Vec<(String, String)>,
-        focus_new_pane: bool,
-    ) -> Option<std::io::Result<(usize, crate::workspace::tab::NewPane)>> {
-        self.split_pane_with_runtime(
-            pane_id,
-            direction,
-            Some(ratio),
-            rows,
-            cols,
-            cwd,
-            scrollback_limit_bytes,
-            host_terminal_theme,
-            host_terminal_appearance,
-            shell_config,
-            extra_env,
-            focus_new_pane,
-            None,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn split_pane_argv_command(
-        &mut self,
-        pane_id: PaneId,
-        direction: Direction,
-        rows: u16,
-        cols: u16,
-        cwd: Option<PathBuf>,
-        argv: &[String],
-        extra_env: Vec<(String, String)>,
-        scrollback_limit_bytes: usize,
-        host_terminal_theme: crate::terminal_theme::TerminalTheme,
-        host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
-        focus_new_pane: bool,
-    ) -> Option<std::io::Result<(usize, crate::workspace::tab::NewPane)>> {
-        self.split_pane_with_runtime(
-            pane_id,
-            direction,
-            None,
-            rows,
-            cols,
-            cwd,
-            scrollback_limit_bytes,
-            host_terminal_theme,
-            host_terminal_appearance,
-            crate::pane::PaneShellConfig::new("", crate::config::ShellModeConfig::NonLogin),
-            extra_env,
-            focus_new_pane,
-            Some(argv),
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn split_pane_argv_command_with_ratio(
-        &mut self,
-        pane_id: PaneId,
-        direction: Direction,
-        ratio: f32,
-        rows: u16,
-        cols: u16,
-        cwd: Option<PathBuf>,
-        argv: &[String],
-        extra_env: Vec<(String, String)>,
-        scrollback_limit_bytes: usize,
-        host_terminal_theme: crate::terminal_theme::TerminalTheme,
-        host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
-        focus_new_pane: bool,
-    ) -> Option<std::io::Result<(usize, crate::workspace::tab::NewPane)>> {
-        self.split_pane_with_runtime(
-            pane_id,
-            direction,
-            Some(ratio),
-            rows,
-            cols,
-            cwd,
-            scrollback_limit_bytes,
-            host_terminal_theme,
-            host_terminal_appearance,
-            crate::pane::PaneShellConfig::new("", crate::config::ShellModeConfig::NonLogin),
-            extra_env,
-            focus_new_pane,
-            Some(argv),
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn split_pane_with_runtime(
+    pub(crate) fn split_pane_with_runtime(
         &mut self,
         pane_id: PaneId,
         direction: Direction,
@@ -801,44 +506,30 @@ impl Workspace {
         shell_config: crate::pane::PaneShellConfig<'_>,
         extra_env: Vec<(String, String)>,
         focus_new_pane: bool,
-        argv: Option<&[String]>,
+        command: Option<crate::terminal::TerminalCommand<'_>>,
+        factory: &crate::terminal::TerminalFactory,
     ) -> Option<std::io::Result<(usize, crate::workspace::tab::NewPane)>> {
         let tab_idx = self.find_tab_index_for_pane(pane_id)?;
         let pane_number = self.next_public_pane_number;
         let tab_number = self.tabs[tab_idx].number;
         let launch_env = self.launch_env_for_new_pane(tab_number, pane_number, extra_env);
         let tab = &mut self.tabs[tab_idx];
-        let new_pane = match if let Some(argv) = argv {
-            tab.split_pane_argv(
-                pane_id,
-                focus_new_pane,
-                direction,
-                ratio,
-                rows,
-                cols,
-                cwd,
-                argv,
-                &launch_env,
-                scrollback_limit_bytes,
-                host_terminal_theme,
-                host_terminal_appearance,
-            )
-        } else {
-            tab.split_pane_shell(
-                pane_id,
-                focus_new_pane,
-                direction,
-                ratio,
-                rows,
-                cols,
-                cwd,
-                scrollback_limit_bytes,
-                host_terminal_theme,
-                host_terminal_appearance,
-                shell_config,
-                &launch_env,
-            )
-        } {
+        let new_pane = match tab.split_pane_with_runtime(
+            pane_id,
+            focus_new_pane,
+            direction,
+            ratio,
+            rows,
+            cols,
+            cwd,
+            scrollback_limit_bytes,
+            host_terminal_theme,
+            host_terminal_appearance,
+            shell_config,
+            &launch_env,
+            command,
+            factory,
+        ) {
             Ok(new_pane) => new_pane,
             Err(err) => return Some(Err(err)),
         };
@@ -1426,6 +1117,14 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hc_saved_source_identity_has_no_local_git_metadata() {
+        let cwd = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let (space, label, key) = super::discover_workspace_git_identity(cwd, false);
+        assert!(space.is_none());
+        assert_eq!(label, super::fallback_label_from_cwd(cwd));
+        assert_eq!(key, cwd);
+    }
     use super::*;
 
     #[test]
@@ -1570,7 +1269,7 @@ mod tests {
         let (base, repo, checkout) =
             self::git::test_support::create_repo_with_linked_worktree("linked-auto-label");
 
-        let (space, auto_label, _) = discover_workspace_git_identity(&checkout);
+        let (space, auto_label, _) = discover_workspace_git_identity(&checkout, true);
 
         assert_eq!(
             space.unwrap().repo_name,

@@ -27,7 +27,7 @@ herdr --version               # バージョンを表示
 
 - デフォルトではなく名前付きセッションを使う場合は `--session <name>` を追加します。
 - リモート接続でサーバーのキーバインドを使う場合は `--remote-keybindings server` を追加します。
-- 実験的なライブハンドオフには、`herdr --remote` または `herdr update` で明示的な `--handoff` が必要です。通常のセットアップや接続には使いません。[更新](/ja/docs/install/)を参照してください。
+- 実験的な `--handoff` は従来の Herdr 所有 PTY の機能で、hc の復旧・移行用ではありません。hc アタッチは PTY 転送ではなく再接続を使います。[セッション状態と復元](/ja/docs/session-state/)を参照してください。
 
 ステータスコマンド:
 
@@ -53,19 +53,20 @@ herdr api schema --output herdr-api.schema.json
 herdr machine list
 herdr machine add workbox
 herdr machine add workbox --label "Build machine"
+herdr machine add workbox --remote-session agents --hc-path /home/user/.local/opt/hc/bin/hc
 herdr machine rename <profile-id> --label "New name"
 herdr machine disable <profile-id>
 herdr machine enable <profile-id>
 herdr machine remove <profile-id>
 ```
 
-対話型ターミナルでは、`machine add` は実行中のセッションを検出し、複数あれば選択できます。実行中のセッションがない場合や Herdr がインストールされていない場合は `default` を使います。インストール済みバイナリへの問い合わせに失敗した場合は、明示的な選択が必要です。検出を省略するには `--remote-session <name>` を追加します。非対話型コマンドでは、このフラグがない限り `default` を使います。スクリプトでは `machine list` に `--json` を追加できます。詳しくは[マシンへの接続](/ja/docs/connecting-machines/)を参照してください。
+`machine add` は SSH 越しにインストール済み **hc** を確認し、接続先とソースセッションを保存します。任意の `--hc-path <接続先の絶対パス>` で並存する実行ファイルを選び、設定・状態確認・再接続・TUI に共通して使います。省略時は接続先 PATH を使い、失敗しても別ファイルへフォールバックしません。その後は通常の `herdr` を実行するだけで、専用の起動コマンドは不要です。`--remote-session <name>` で hc セッションを選択し、省略時は `default` を使います。リモート Herdr のセッション検出は行いません。リモート Herdr のインストール、起動、更新、置き換えや、ターミナルプログラムの作成は一切行いません。セットアップが失敗した場合はプロファイルを保存しません。スクリプトでは `machine list` に `--json` を追加できます。セットアップと復旧については[マシンへの接続](/ja/docs/connecting-machines/)を参照してください。
 
-`machine add` はリモート側の Herdr が必要な機能を備えているか確認し、必要な場合だけ承認を得てインストールまたは更新します。指定したセッションのバックグラウンドサーバーを起動してからプロファイルを保存します。互換性があればリリースバージョンは一致しなくてもかまいません。インストールや再起動の承認が必要な場合は、対話型ターミナルで実行してください。セットアップが失敗またはキャンセルされた場合、プロファイルは保存されません。実行中サーバーの置き換えには明示的な承認が必要で、デフォルトの回答は No です。停止するとペインのプロセスも終了します。`machine add` は実験的なハンドオフを暗黙に有効にしません。
+有効な各プロファイルは、独立した**ローカル**表示ホストを使います。Herdr がローカルで描画し、hc が接続先のプログラム、ターミナル、明示的に報告された状態を所有します。既存プログラムを自動で取り込まず、保存済みバインディングだけに再アタッチします。
 
 変更は、開いているローカルの Herdr クライアントに通常 1 秒以内に自動反映されます。追加または有効化したマシンにはバックグラウンドで接続し、名前の変更では再接続しません。削除または無効化すると、そのマシンだけが切断され、リモートセッションは動き続けます。表示中のマシンを削除すると Local に戻ります。Local に接続できない場合は、再接続するまで利用不可と表示します。各プロファイルは、不透明な ID、ラベル、SSH 接続先、明示的なリモートセッション名、有効状態をクライアントの状態ファイルに保存します。パスワード、秘密鍵、その他の SSH 認証情報は保存しません。
 
-`herdr machine status [<label-or-id>] [--json]` は SSH とリモート Herdr を非対話式で確認します。`reachable` は今回の確認結果で、TUI の接続状態ではありません。ターミナルで `herdr machine reconnect <label-or-id>` を実行すると認証と検証を行いますが、インストールや更新は行いません。開いているクライアントは 30 秒以内に再試行します。`! auth` または `! error` をクリックすると再試行し、失敗した場合は最新のエラーと CLI コマンドを表示します。折りたたみ時は `!` です。対応環境は [SSH 認証の復旧](/ja/docs/connecting-machines/#ssh-認証の復旧)を参照してください。セットアップには `herdr --remote workbox` を使い、名前付きセッションの場合だけ `--session <name>` を追加します。
+`herdr machine status [<label-or-id>] [--json]` は SSH と hc を新たに非対話式で確認します。`reachable` はその確認結果で、TUI と接続先の現在の接続状態ではありません。ターミナルで `herdr machine reconnect <label-or-id>` を実行すると、対応する SSH 認証と hc の確認を行いますが、どちらの実行環境もインストール・更新しません。バックグラウンド試行は厳密にホスト鍵を検証し、プロンプトを表示せず、最大 30 秒のバックオフを使います。SSH の通信タイムアウトとは別の制限です。[接続の問題](/ja/docs/connecting-machines/#接続の問題)を参照してください。明示的な従来の `--remote` アタッチは、この保存済み hc 接続とは別の経路です。
 
 ワークスペース、タブ、ペインの ID とエージェント名はサーバーごとに独立しています。UI での選択は CLI の接続先を変えません。保存済み SSH マシンへ API コマンドを送るには、グローバルな**プレフィックス** `--machine <label-or-id>` を指定します。
 
@@ -73,16 +74,16 @@ herdr machine remove <profile-id>
 herdr --machine "Build machine" agent list
 herdr --machine <profile-id> pane list
 herdr --machine "Build machine" agent prompt w1:p1 "review this change"
-herdr --machine "Build machine" worktree create --cwd /srv/project --branch review
+herdr --machine "Build machine" workspace list
 ```
 
-有効なプロファイル ID または一意のラベル（大文字・小文字を区別）を指定します。任意の SSH ホスト名は使えません。保存済みのリモートセッションを使うため、`--session` や `--remote` との併用はエラーです。省略時のローカル動作は変わりません。
+有効なプロファイル ID または一意のラベル（大文字・小文字を区別）を指定します。任意の SSH ホスト名は使えません。保存済みの hc ソースセッションを使うため、`--session` や `--remote` との併用はエラーです。省略時は既存のローカルセッション・ソケットの動作を維持します。
 
-対応するのは `workspace`、`worktree`、`tab`、`pane`、`notification`、`agent`（`attach` とローカルの `explain --file` 以外）、`api snapshot`、`status server`、API ベースのプラグイン操作（`link`、`unlink`、`enable`、`disable`、`list`、`action`、`log`、`pane`）です。サーバー操作は `stop`、`reload-config`、`agent-manifests`、`reload-agent-manifests` に対応します。ローカルのインストール・設定、プラグインのインストール、セッション管理、対話的な端末接続は転送しません。
+API 経由の操作には `workspace`、`tab`、`pane`、`notification`、`agent`（`attach` とローカルの `explain --file` 以外）、`api snapshot`、`status server`、API ベースのプラグインコマンドが含まれます。接続先の Git 検出と `worktree` ファイルシステム操作は未対応で、同名のクライアント側パスに触れずに失敗します。ローカルのインストール・設定、プラグインのインストール、セッション管理、対話的な端末接続は転送しません。プラグイン定義はローカル表示ホストに属し、ターミナルコマンドは接続先で実行します。従来のエージェント manifest の再読み込みで hc の報告状態を置き換えることはありません。
 
-JSON API を非対話 SSH で転送します。API の内容を SSH のシェルコマンドに埋め込むことはありません。開いた TUI は不要で、サーバーのインストール・起動・再起動も自動では行いません。ローカル CLI とリモート Herdr を更新し、実行中サーバーの API プロトコルとの互換性を保ってください。認証、接続、互換性のエラーで Local にフォールバックしたり、要求を自動再送したりすることはありません。
+開いている TUI は不要です。CLI はプロファイルのローカル表示ホストを起動でき、そのインスタンスに固定した JSON 要求を送ります。hc の操作は別途 SSH 越しに行います。ホストが置き換わった場合は古い要求を拒否します。要求、結果不明のプログラム起動、入力を自動で再実行・再送することはありません。実行環境がない、または非互換の場合は Local にフォールバックせず失敗します。必要に応じてローカル Herdr または接続先の hc を明示的に更新してください。表示ホストを停止してもビューアーをデタッチするだけで、hc プログラムは終了しません。
 
-呼び出し元のローカルペイン ID は継承しません。リモート ID を明示してください。`--current` でローカルペインを指定することはできません。リモート worktree パスには絶対パス、`~`、または `~/` で始まるパスを指定します（サーバー側で展開）。プラグインの link パスは絶対パスが必要です。対象は 1 台ずつで、一覧の統合や別の TUI の接続を使った転送は含みません。
+マシン指定のコマンドはローカルペイン ID を継承しません。その表示ホストの ID を明示してください。`--current` で呼び出し元のローカルペインを指定することはできません。ターミナルの cwd と argv は接続先の値で、クライアントのファイルシステムを指しません。対象は 1 台ずつで、一覧の統合や別の TUI の接続を使った転送は含みません。
 
 ## シェル補完
 
@@ -170,6 +171,8 @@ herdr workspace create --cwd ~/project --label api --no-focus
 
 ## Worktree
 
+保存済み hc 接続先の Git・worktree 操作は `unsupported_runtime` で拒否し、同名ローカルパスを操作しません。hc ペインの従来のプロセス終了・respawn による削除も拒否します。以下のコマンドは接続先ファイルシステムの実装ではありません。
+
 ```bash
 herdr worktree list [--workspace ID | --cwd PATH] [--trust-repository]
 herdr worktree create [--workspace ID | --cwd PATH] [--branch NAME] [--base REF] [--path PATH] [--label TEXT] [--focus] [--no-focus] [--trust-repository]
@@ -223,9 +226,11 @@ herdr pane move <pane_id> --new-workspace [--label TEXT] [--tab-label TEXT] [--f
 herdr pane close <pane_id>
 ```
 
+保存済み SSH プログラムに `HERDR_PANE_ID` は自動設定しないため、対象表示ホストの明示的 ID を使ってください。ローカル hc は呼び出し元のコンテキストを持てますが、SSH 越しの継承を前提にしないでください。
+
 `--current` を受け付けるペインコマンドは、Herdr ペイン内から実行した場合、呼び出し元の `HERDR_PANE_ID` を使います。`pane split` では、明示したペイン ID または `--pane ID` がそのペインを分割します。対象を省略すると `HERDR_PANE_ID` があれば呼び出し元ペインを、なければフォーカス中のペインを使います。`--current` は呼び出し元ペインを必須とし、`HERDR_PANE_ID` がない場合はエラーになります。分割レスポンスでは、新しいペイン ID は `.result.pane.pane_id` にあります。
 
-`pane move` の後続コマンドには `.result.move_result.pane.pane_id` を使います。別ワークスペースへの移動ではワークスペース修飾付きのペイン ID が変わり、以前の値は `.result.move_result.previous_pane_id` に残ります。実行中プロセスの `HERDR_PANE_ID`、`HERDR_TAB_ID`、`HERDR_WORKSPACE_ID` は起動時の値のままですが、Herdr は以前のペイン ID をそのターミナルの別名として保持するため、`--current` を使うペインコマンドは引き続き解決できます。ライブエージェント名もターミナルに追従します。
+`pane move` 後は `.result.move_result.pane.pane_id` を使い、旧公開 ID は `.result.move_result.previous_pane_id` で確認します。hc core／アドレスは変わりません。古い継承 ID から接続経路を推測しないでください。表示別名は恒久的な接続先識別子ではありません。
 
 出力を読む:
 
@@ -252,6 +257,8 @@ herdr pane run <pane_id> <command>
 `pane run` は現在の bracketed paste モードを尊重し、テキストと Enter をアトミックに送信します。コマンドには `send-text` + `send-keys Enter` よりこちらを使ってください。個別の送信操作は低レベルのままで、コマンドを送信しません。
 
 カスタムフックからエージェント状態を報告する:
+
+以下のエージェント、セッション／resume、release、権威クリア、ペインメタデータ報告は**従来の実行環境専用**です。hc ペインは `pane report-metadata` を含め `unsupported_runtime` で拒否します。事実と状態は接続先 hc／OSC 7501 で報告し、`agent rename` は表示別名として使います。保存済み SSH プログラムへクライアント経路変数や公開ペイン ID は自動注入しません。ローカル起動コンテキストも状態の権威は与えません。
 
 ```bash
 herdr pane report-agent <pane_id> \
@@ -283,9 +290,7 @@ herdr pane release-agent <pane_id> \
 
 `--` の後の引数は、サーバー再起動後にこのセッションを再開するために Herdr が実行するコマンドです。最初の引数は `PATH` 上の単純なコマンド名でなければならず、どの引数にもアポストロフィを含めることはできません。
 
-公式インテグレーションがネイティブセッション参照を報告している場合、`pane get`、`pane list`、`agent get`、`agent list` は読み取り専用の `agent_session` オブジェクトを含みます。ネイティブセッション参照が保存されていない場合、このフィールドは省略されます。
-
-これらのコマンドは、ペインを制御しているフォアグラウンドプロセスの cwd を解決できる場合に `foreground_cwd` を含みます。既存の `cwd` フィールドは、ラベルと follow-cwd 挙動に使われるペイン/ワークスペースの cwd のままです。
+従来の公式インテグレーションは読み取り専用の `agent_session` を設定できますが、hc の復元・準備完了の信号ではありません。hc ペインの cwd とフォアグラウンド情報は接続先スナップショットから取得し、クライアントのローカルプロセスは調べません。`cwd` はラベルと follow-cwd に使う値で、接続先ファイルシステムのパスです。
 
 意味的な状態を奪わずに、表示専用のペインメタデータを報告する:
 
@@ -335,15 +340,17 @@ herdr agent explain --file PATH --agent LABEL [--json|--verbose]
 
 `agent start` は既存の利用可能なシェルペインを起動対象にします。対話シェル自身がフォアグラウンドを所有し、フォアグラウンドのコマンド、エディタ、エージェントが動いていない必要があります。トポロジーは別に作成します。名前はライブエージェント間で一意で、`[a-z][a-z0-9_-]{0,31}` に一致する必要があります。対応する kind は `pi`、`claude`、`codex`、`gemini`、`cursor`、`devin`、`agy`、`cline`、`omp`、`mastracode`、`opencode`、`copilot`、`kimi`、`kiro`、`droid`、`amp`、`grok`、`hermes`、`kilo`、`qodercli`、`qwen`、`letta`、`maki`、`muse` です。名前は現在のペイン占有者に属し、そのエージェントの終了、release、置換で消えます。一時的に検出できないだけでは消えません。
 
+hc のシェル受け入れには、接続先のルートプロセスがフォアグラウンド対話シェルであるという明確な情報が必要です。要求した kind、予約名、送信済みコマンドは起動予定にすぎず、識別や準備完了の証拠ではありません。有効な明示的報告まで状態は `unknown` です。再試行できるのは送信前の `agent_pane_busy` だけで、送信後のタイムアウトや切断で起動・入力を自動再送しません。
+
 成功した start は、期待したエージェントが同じターミナルを所有し、対話入力の準備ができてから返ります。起動中の検出状態が `blocked` の場合、コマンドは直ちに `agent_not_ready` を返します。名前は `agent read` と `agent send-keys` で引き続き使用でき、検出状態が `idle` になるとプロンプトを送信できるようになります。デフォルトの起動タイムアウトは 30000 ミリ秒で、明示する値は 3000 より大きく 300000 以下でなければなりません。
 
 `agent prompt` は現在の bracketed paste モードを尊重し、working 中でもテキストと遅延した Enter を順序付きの 1 回の送信として書き込みます。`--wait` なしの成功は書き込みの完了を示し、ターンの開始を保証しません。Windows の Codex では Enter の前にペースト境界が送られるため、送信はプロンプトのサイズに依存しません。呼び出し側のタイムアウトには送信時間も含まれます。エージェントがすでに `blocked` の場合は、入力を送信せずに `agent_blocked` を返します。`--wait` を使う場合、別の non-working 状態から受け付けたプロンプトでは、送信後の最大 5 秒間に `working` または `blocked` が観測される必要があります。観測できなければ Herdr は `agent_prompt_stalled` を返し、呼び出し側のタイムアウトが先に切れた場合は通常の `timeout` エラーを返します。これにより、無関係な `idle`、`done`、またはセッションの変化によって待機が誤って完了することを防ぎます。活動を観測した後、要求された最初の安定状態を待ちます。個々のターンは追跡しません。すでに working の場合、進行中ターンの完了が待機を満たすことがあります。`--until` は一致状態を絞り込み、`--wait` なしでは拒否されます。単独の `agent wait` は現在の状態が一致すれば即座に返ります。どちらもデフォルトは `idle`、`done`、`blocked` です。
 
-`idle` と `done` はどちらも入力可能な状態です。CLI/API はサーバーの既読状態を使い、未確認の idle を `done` とします。明示的な `pane focus` / `agent focus` は対象を既読にしますが、読み取りでは変わりません。各 TUI クライアントは表示済みの完了を独立して管理するため、Done バッジが CLI やほかのクライアントと異なる場合があります。`blocked` は承認または質問 UI を Herdr が認識した状態です。`unknown` はエージェントが存在するものの確実に分類できない状態で、作業の成功を意味しません。
+hc の `idle` と `done` は接続先の明示的な報告です。フォーカスや読み取りで接続先の `done` を `idle` に変えません。接続先の `blocked` と `error` は blocked に対応し、報告の欠落、切断、認識できない状態は完了ではなく `unknown` です。クライアントの注意マーカーは権威を変えません。通知はライブの報告による変化だけで発生し、再接続のスナップショットでは再生しません。従来の既読・画面分類ルールは古い Herdr 所有 PTY だけに適用します。
 
 `agent send-keys` は `enter`、`up`、`esc`、`ctrl+c` などの論理キーを送ります。Herdr は 1 バイトも書き込む前に全キーを検証します。`agent read` は解決されたターミナルストリームを読み、`agent rename` は検出済みエージェントに名前を付けます。
 
-`agent explain` は、スクリーン検出が使うのと同じ下部バッファの検出スナップショットの分類を実行中のサーバーに依頼します。そのためライブの出力はサーバーのアクティブなマニフェストキャッシュを反映します。これは `agent.explain` ソケットメソッドを使うので、Herdr のアップグレード後にライブ explain を使う前に、サーバーを再起動するか更新済みサーバーへハンドオフしてください。保存済みフィクスチャをローカルで説明するには `--file PATH --agent LABEL` を使います。デフォルトの出力には、エージェント、最終状態、マニフェストのソースとバージョン、リージョンの証拠付きでマッチしたルール、そしてフォールバック・スキップ・警告の理由が表示されます。`--verbose` を付けると、可視の証拠フラグ、キャッシュされたリモートバージョン、ローカルオーバーライドのシャドーイング、リモート更新状況、マッチャーとリージョンの証拠付きの評価済みルール全リストが表示されます。issue の報告やテストには `--json` を付けてください。
+`agent explain` はサーバーの検出スナップショットと有効なマニフェストキャッシュを使う従来の診断です。hc の権威ある報告状態を分類・上書きしません。hc の状態を変えるために接続先を再起動したり、ハンドオフを要求したりしないでください。保存済みフィクスチャをローカルで説明するには `--file PATH --agent LABEL` を使います。デフォルトの出力には、エージェント、最終状態、マニフェストのソースとバージョン、リージョンの証拠付きでマッチしたルール、そしてフォールバック・スキップ・警告の理由が表示されます。`--verbose` を付けると、可視の証拠フラグ、キャッシュされたリモートバージョン、ローカルオーバーライドのシャドーイング、リモート更新状況、マッチャーとリージョンの証拠付きの評価済みルール全リストが表示されます。issue の報告やテストには `--json` を付けてください。
 
 通常のターミナル、サーバー、テスト、シェル、低レベルなターミナル制御には `pane send-text`、`pane send-keys`、`pane run`、`terminal attach` を使ってください。Enter 付きでコマンドを送信したいときは `pane run` を使います。
 
@@ -477,9 +484,9 @@ herdr plugin pane close <pane_id>
 
 `plugin pane open` は、プラグインがリンクされ、有効で、現在のプラットフォームと互換であることを要求します。マニフェストで宣言された `[[panes]]` コマンドを Herdr 管理のターミナルペインとして起動します。マニフェストのデフォルトは `overlay` で、アクティブなペインの上に一時的なズームオーバーレイを開きます。分割、新しいタブ、ズームされたペイン、またはタブレイアウトを変更しないセッションモーダルな `popup` として開くこともできます。`--width` と `--height` は、外側のポップアップ寸法をターミナルセル数または `80%` のような割合で指定します。省略した寸法はデフォルトでターミナルの半分になり、小さすぎる値はポップアップの最小サイズに制限されます。ポップアップは Herdr ペインではなく、`HERDR_PANE_ID` を受け取らず、pane API やエージェント API に参加しません。ターミナル以外のネイティブなプラグインペインは今後の対応面です。
 
-新しいペインでは `TERM_PROGRAM=herdr` として識別され、`TERM_PROGRAM_VERSION` には Herdr のバージョンが設定されます。`TERM=xterm-256color` と `COLORTERM=truecolor` は維持されます。リサイズ時に Herdr がテキストを折り返し直すため、`fish_handle_reflow=0` も設定します。継承した値や明示的な `fish_handle_reflow` の指定は優先されます。Herdr は、明示的な起動環境の値を適用する前に、継承した外側のターミナルのセッションマーカー（iTerm2、WezTerm、Kitty、Windows Terminal、tmux、screen、Zellij）、iTerm2 の `LC_TERMINAL` 識別子、既知の Claude Code、Codex、OMP セッションマーカーを削除します。これにより、新しいペインがサーバーを最初に起動したターミナルやエージェントのセッションを名乗ることを防ぎます。API キーやディスプレイ設定を含む通常の環境変数は、アタッチ中クライアントの環境に置き換えられず、引き続き継承されます。SSH エージェント転送には独自の再接続処理があります。このクリーンアップによって既存ペインのプロセスは変更されません。
+hc 経由で実行し、保存済み SSH 起動には接続先の既定値、ローカル起動にはローカル設定を使います。保存済み SSH 起動ではクライアントの環境、API 資格情報、実行パス、公開 ID、API ソケットを一括コピーしません。接続先の資格情報と SSH-agent 環境は接続先に属します。ターミナルプラグインも接続先で動き、実行ファイル・設定はコピーせず、見つからなければローカルへフォールバックせず失敗します。
 
-`--env KEY=VALUE` はプロセスを起動するコマンドで繰り返し指定できます。新しく起動されるプロセスにのみ適用されます。`HERDR_SOCKET_PATH`、`HERDR_BIN_PATH`、`HERDR_ENV`、`HERDR_WORKSPACE_ID`、`HERDR_TAB_ID`、`HERDR_PANE_ID`、`HERDR_PLUGIN_ID`、`HERDR_PLUGIN_ROOT`、`HERDR_PLUGIN_CONFIG_DIR`、`HERDR_PLUGIN_STATE_DIR`、`HERDR_PLUGIN_ENTRYPOINT_ID`、`HERDR_PLUGIN_CONTEXT_JSON` のような Herdr 管理の変数は、呼び出し側が与えた環境変数と衝突した場合も権威を保ちます。
+新規起動だけに意図した値を指定するには `--env KEY=VALUE` を繰り返します。値は接続先への上書きで、クライアントパス探索ではありません。秘密を送る前に対象を確認してください。ローカル hc は Herdr ペイン・プラグインのコンテキストを持てますが、保存済み SSH 起動では自動エクスポートしません。どちらも状態の権威を与えません。
 
 ## 読み取りソース
 
@@ -493,6 +500,8 @@ herdr plugin pane close <pane_id>
 この表は読み取り時の意味です。`pane wait-output` に限り、`recent` と `recent-unwrapped` はどちらも recent の折り返し前スナップショットを検索し、デフォルト表記は `recent` です。
 
 ## 環境変数
+
+この表は Herdr・クライアント設定とローカル起動コンテキストであり、保存済み SSH プログラムへの注入の保証ではありません。特に `HERDR_PROCESS_DETECTION` で hc 状態の推論は有効になりません。
 
 | 変数 | 目的 |
 | --- | --- |

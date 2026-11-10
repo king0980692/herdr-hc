@@ -96,6 +96,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | 通知 | `notification.show` |
 | 客户端 | `client.window_title.set`、`client.window_title.clear` |
 | 会话 | `session.snapshot` |
+| 运行时 | `runtime.source`、`runtime.request` |
 | 工作区 | `workspace.create`、`workspace.list`、`workspace.get`、`workspace.focus`、`workspace.rename`、`workspace.move`、`workspace.move_block`、`workspace.report_metadata`、`workspace.close` |
 | Worktree | `worktree.list`、`worktree.create`、`worktree.open`、`worktree.remove` |
 | 标签页 | `tab.create`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.close` |
@@ -337,8 +338,7 @@ UI 上下文变化时,该投影会重新求值。它控制展开和折叠的侧�
 和 `state_change_seq`。要过滤插件上报的窗格元数据,使用 `{"token":"name"}`
 作为字段。值可以是字符串、布尔值、无符号整数或上下文对象。上下文值包括
 `current_workspace_id` 和 `current_tab_id`，并且只能与对应的 ID 字段比较。在保存机器客户端中，所选服务器的视图应用于合并后的智能体列表。当前工作区和标签页上下文也包含所选机器，因此其他机器上的相同 ID 不会匹配；而 `status` 为 `blocked` 等独立条件仍可匹配任意已连接机器上的智能体。
-有效 status 值为 `idle`、`working`、`blocked`、`done` 和 `unknown`;`done`
-表示 idle 且尚未查看。
+有效 status 值为 `idle`、`working`、`blocked`、`done` 和 `unknown`。hc 的 `done` 是源端明确完成，聚焦后仍为 done；已查看标记仅用于呈现。Idle 且未查看的解释只适用于旧版。
 
 排序字段包括 `workspace_order`、`tab_order`、`pane_order`、`attention`、
 `status`、`agent`、`seen`、`state_change_seq` 或 `{"token":"name"}`。排序是
@@ -363,6 +363,8 @@ source 不匹配时,活动视图保持不变。set 和 clear 响应使用
 `type: "agent_view"`,并报告 `active`、`source` 和可选的 `label`。
 
 ## 插件 API
+
+插件定义与本地 action／hook 属于呈现主机。已保存 SSH 终端命令通过源端 hc 执行，不复制客户端插件文件、私有 API 路径或身份上下文；本地 hc 上下文仍在本地。不要从插件元数据推断 hc 状态，也不要调用旧窗格上报方法。见[运行时源路由](#运行时源路由)。
 
 插件 API 是面向可执行工作流工具的早期宿主面。插件是带 `herdr-plugin.toml` 清单的包。清单声明可分享的动作、事件钩子、终端窗格入口点和链接处理器。动作和窗格仅限清单声明;运行时动作注册和运行时 argv 窗格创建不在 v1 范围内。
 
@@ -510,9 +512,31 @@ Herdr 在本地 socket 上使用换行分隔的 JSON。在 Unix 上,那个 socke
 
 对插件来说,需要可移植的 Windows 行为时,优先调用 `HERDR_BIN_PATH` 和 CLI 包装命令。原始 socket 客户端要自己负责使用平台原生的本地 socket 形式。
 
+## 运行时源路由
+
+对 hc 呈现主机，用 `runtime.source` 发现固定源端：
+
+```json
+{"id":"discover","method":"runtime.source","params":{}}
+```
+
+结果包含 `host_instance`、源端 `generation`、`connected`、`core_id`、`error`、`retired`，以及适用时的已保存配置路由字段。`host_instance` 标识此呈现主机，不是永久 hc core 或终端绑定。离线发现不允许另选源端。
+
+后续请求固定到返回的主机实例：
+
+```json
+{"id":"outer","method":"runtime.request","params":{"host_instance":"<returned-host-instance>","request":{"id":"inner","method":"pane.list","params":{}}}}
+```
+
+外层 ID 优先。主机被替换或退役后，以 `stale_runtime_source` 拒绝，不转发操作；嵌套 `runtime.request` 返回 `invalid_request`。CLI `--machine` 使用此隔离。源端丢失、拒绝或缺少支持都不会回退 Local。重新发现是只读操作，不授权重放结果不确定的动作、启动或输入。
+
+hc 终端绑定使用永久 core ID 和规范源端本地地址，不使用此主机实例、公共窗格 ID 或 PID。源端 cwd、前台事实和明确上报状态是权威。这些方法不通过 Herdr 端点 codec 公开 hc 分帧。见[连接机器](/zh-cn/docs/connecting-machines/)。
+
 ## 智能体状态上报
 
-集成用 `pane.report_agent` 上报智能体状态。
+**以下仅为旧版协议：**hc 窗格以 `unsupported_runtime` 拒绝 `pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority` 和 `pane.release_agent`。源端 hc／OSC 7501 才是上报权威；旧示例、元数据令牌、resume 命令和已查看规则不能覆盖它。聚焦不清除源端 done，重连不重放通知。见[为你的智能体添加 Herdr 支持](/zh-cn/docs/add-herdr-support/)。
+
+旧版集成用 `pane.report_agent` 上报智能体状态。
 
 ```json
 {

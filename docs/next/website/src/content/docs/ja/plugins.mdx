@@ -262,6 +262,8 @@ enable では実行されません。Herdr はこれらを非同期で開始し�
 
 ## コマンドと環境
 
+ローカルのプラグイン action・hook とターミナルプログラムは別の実行面です。**保存済み SSH ターミナルは接続先 hc で実行**し、実行ファイル・設定、クライアント API パス、ペイン ID、ローカル SSH-agent プロキシはコピーしません。見つからないコマンドは失敗し、ローカルで代行しません。ローカル hc はローカルコンテキストを持てます。以下の注入は SSH 越しの保証ではなく、すべての hc ペインは従来の状態・メタデータ報告を拒否します。
+
 ランタイムコマンドは、プラグインディレクトリを作業ディレクトリとして実行されます。
 Herdr は `HERDR_SOCKET_PATH`、`HERDR_BIN_PATH`、`HERDR_ENV=1`、
 `HERDR_PLUGIN_ID`、`HERDR_PLUGIN_ROOT`、`HERDR_PLUGIN_CONFIG_DIR`、

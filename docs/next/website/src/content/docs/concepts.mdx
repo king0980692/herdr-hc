@@ -3,7 +3,7 @@ title: Concepts
 description: Understand Herdr workspaces, tabs, panes, agents, sessions, and modes.
 ---
 
-Herdr is a terminal workspace manager. It keeps real terminal processes running and adds structure around them.
+Herdr is a terminal workspace manager. hc owns real terminal programs and state; Herdr adds presentation, layout, and input routing around exact source bindings.
 
 ## Workspace
 
@@ -19,7 +19,7 @@ Tabs are addressable from the CLI and socket API.
 
 ## Pane
 
-A pane is a real terminal. Herdr renders the terminal output, sends input back to the process, and preserves the pane across client detach.
+A pane presents an hc terminal bound by permanent core ID and canonical source-local address. Herdr renders its output and routes input without owning a local child process. Client detach preserves the binding; explicit close may terminate only that exact program after confirmation.
 
 Panes can be split right or down. They can be renamed manually, read from the CLI, sent input, and closed.
 
@@ -36,7 +36,7 @@ mouse_capture = false
 
 ## Agent
 
-An agent is a process Herdr recognizes inside a pane. Herdr detects agents from foreground processes, screen manifests, and optional integrations.
+For hc-owned panes, an agent's identity and semantic state come from explicit source hc status reports, including OSC 7501. Herdr does not infer status from screens, a client-local PID, legacy hooks, or a pending launch. Without a current report on a live attachment, status is `unknown`.
 
 Agent states are:
 
@@ -44,17 +44,17 @@ Agent states are:
 | --- | --- |
 | `blocked` | The agent needs input, approval, or a decision. |
 | `working` | The agent is actively running. |
-| `done` | The agent finished and you have not looked at it yet. |
-| `idle` | The agent is finished or waiting and has been seen. |
-| `unknown` | Herdr cannot confidently classify the state. |
+| `done` | The source explicitly reports completion. |
+| `idle` | The source explicitly reports idle. |
+| `unknown` | A current usable source status is unavailable or unrecognized. |
 
-Each client tracks which completions it has displayed. Viewing a completion in one client does not clear another client's Done badge. CLI/API statuses use the server's seen state, so they need not match a particular client's badge; both `idle` and `done` mean ready for input.
+Viewing or focusing an hc pane does not change source `done` to `idle`. Client-local attention markers are presentation, not source state. Only live reported transitions notify; reconnecting does not replay completion notifications. A status is not proof that every background job has finished or authorization to approve a prompt.
 
 ## Session
 
 A session is a persistent Herdr server namespace. The default `herdr` command attaches to the default session.
 
-Named sessions are separate runtime namespaces:
+Named Herdr sessions are separate presentation namespaces, not hc core identities:
 
 ```bash
 herdr session list
@@ -62,23 +62,25 @@ herdr session attach work
 herdr session attach side-project
 ```
 
-Use workspaces first. Use named sessions when you need completely separate panes, sockets, and persisted runtime state.
+Use workspaces first. Use named sessions for separate presentation panes, sockets, and saved layout. Programs remain owned by their hc source; changing a Herdr session name does not retarget their bindings.
 
 ## Client and server
 
 By default, Herdr runs as a background server plus one or more attached clients.
 
-The server owns panes and process state. The client is the terminal UI attached to that server.
+The Herdr host owns layout and presentation. The client is its terminal UI. hc independently owns programs, terminal state, cwd, and reported status. Saved SSH machines use local Herdr presentation connected to source hc over SSH, not a remote Herdr renderer.
 
 With one attached client, all tabs follow its size as before. With multiple clients, each can view its own workspace and tab. Different viewed tabs follow their respective clients; when clients view the same tab, the last one to focus, select, or interact with it controls that tab's pane sizes.
 
 Detach the client with `ctrl+b q`. The server and agents continue running.
 
-If you want to end the session and stop its panes, stop the server:
+To stop only the presentation host, leaving hc programs untouched:
 
 ```bash
 herdr server stop
 ```
+
+To terminate a bound program, explicitly close its pane. An uncertain close retains the pane and binding. See [Session state and restore](/docs/session-state/).
 
 ## Modes
 

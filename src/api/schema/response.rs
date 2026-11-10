@@ -278,6 +278,19 @@ pub enum ResponseResult {
         projection_revision: u64,
     },
     Ok {},
+    RuntimeSource {
+        host_instance: String,
+        profile_id: Option<String>,
+        target: Option<String>,
+        session: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hc_path: Option<String>,
+        generation: u64,
+        connected: bool,
+        core_id: Option<String>,
+        error: Option<String>,
+        retired: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

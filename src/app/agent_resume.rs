@@ -233,6 +233,18 @@ impl App {
         cols: u16,
         allow_empty_theme: bool,
     ) -> bool {
+        if self.terminal_factory.is_hc()
+            || self
+                .state
+                .terminals
+                .get(&terminal_id)
+                .is_some_and(|terminal| terminal.hc_authority)
+        {
+            if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
+                terminal.pending_agent_resume_plan = None;
+            }
+            return false;
+        }
         let host_terminal_theme = self.state.host_terminal_theme;
         if host_terminal_theme.is_empty() && !allow_empty_theme {
             return false;

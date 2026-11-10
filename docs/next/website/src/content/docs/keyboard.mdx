@@ -41,6 +41,12 @@ Panes:
 | Resize mode | `prefix+r` |
 | Copy mode | `prefix+[` |
 
+Pane zoom expands the focused pane vertically by hiding top/bottom siblings on
+its layout path. Left/right columns, including sidebar panes, remain visible at
+their existing width. Toggle zoom again to restore the original layout. Temporary
+overlays and plugin panes explicitly opened with `placement = "zoomed"` still use
+full-tab zoom.
+
 Tabs:
 
 | Action | Key |

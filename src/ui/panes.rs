@@ -102,11 +102,16 @@ pub(crate) fn new_pane_terminal_size(
         NewPanePlacement::Alone => alone(),
         NewPanePlacement::Existing { ws_idx, pane } => tab_for(ws_idx, pane)
             .and_then(|tab| {
-                if tab.zoomed && tab.layout.focused() == pane {
+                let panes = tab.visible_panes(area);
+                if tab.zoomed && panes.len() == 1 && tab.layout.focused() == pane {
                     let multi_pane = tab.layout.pane_count() > 1;
                     return Some(pane_inner_rect(area, zoomed_pane_borders(app, multi_pane)));
                 }
-                let panes = tab.layout.panes(area);
+                let panes = if panes.iter().any(|info| info.id == pane) {
+                    panes
+                } else {
+                    tab.layout.panes(area)
+                };
                 let index = panes.iter().position(|info| info.id == pane)?;
                 Some(laid_out(panes, index))
             })
@@ -320,8 +325,9 @@ pub(super) fn resize_tab_panes(
     cell_size: crate::kitty_graphics::HostCellSize,
 ) {
     let multi_pane = tab.layout.pane_count() > 1;
+    let panes = tab.visible_panes(area);
 
-    if tab.zoomed {
+    if tab.zoomed && panes.len() == 1 {
         let focused_id = tab.layout.focused();
         if let Some((terminal_id, rt)) =
             runtime_for_tab_pane(app, terminal_runtimes, workspace_index, tab, focused_id)
@@ -341,7 +347,7 @@ pub(super) fn resize_tab_panes(
     }
 
     for info in apply_pane_chrome(
-        tab.layout.panes(area),
+        panes,
         app.pane_borders,
         app.pane_gaps,
         app.pane_outer_borders,
@@ -383,8 +389,9 @@ pub(super) fn compute_pane_infos_for_tab(
     };
 
     let multi_pane = tab.layout.pane_count() > 1;
+    let panes = tab.visible_panes(area);
 
-    if tab.zoomed {
+    if tab.zoomed && panes.len() == 1 {
         let focused_id = tab.layout.focused();
         let borders = zoomed_pane_borders(app, multi_pane);
         let pane_inner = pane_inner_rect(area, borders);
@@ -417,7 +424,7 @@ pub(super) fn compute_pane_infos_for_tab(
     }
 
     let mut pane_infos = apply_pane_chrome(
-        tab.layout.panes(area),
+        panes,
         app.pane_borders,
         app.pane_gaps,
         app.pane_outer_borders,
@@ -601,7 +608,12 @@ fn render_pane_borders(
         } else {
             app.palette.overlay0
         };
-        cell.set_style(Style::default().fg(color));
+        let modifier = if focused {
+            Modifier::BOLD
+        } else {
+            Modifier::empty()
+        };
+        cell.set_style(Style::default().fg(color).add_modifier(modifier));
     }
 
     render_pane_border_titles(app, ws, pane_infos, frame);
@@ -1303,7 +1315,9 @@ mod tests {
 
         let buffer = terminal.backend().buffer();
         assert_eq!(buffer[(1, 1)].style().fg, Some(app.palette.accent));
+        assert!(buffer[(1, 1)].modifier.contains(Modifier::BOLD));
         assert_eq!(buffer[(2, 1)].style().fg, Some(app.palette.overlay0));
+        assert!(!buffer[(2, 1)].modifier.contains(Modifier::BOLD));
     }
 
     #[tokio::test]
@@ -1412,7 +1426,7 @@ mod tests {
     async fn zoomed_multi_pane_keeps_border_space() {
         let mut app = AppState::test_new();
         let mut workspace = Workspace::test_new("test");
-        let focused_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        let focused_pane = workspace.test_split(ratatui::layout::Direction::Vertical);
         workspace.zoomed = true;
         workspace.tabs[0].runtimes.insert(
             focused_pane,
@@ -1436,6 +1450,100 @@ mod tests {
         assert_eq!(info.rect, area);
         assert_eq!(info.scrollbar_rect, None);
         assert_eq!(info.inner_rect, Rect::new(11, 4, 37, 6));
+    }
+
+    #[tokio::test]
+    async fn vertical_zoom_keeps_sidebar_geometry_visibility_and_terminal_sizes() {
+        let mut app = AppState::test_new();
+        let mut workspace = Workspace::test_new("test");
+        let top = workspace.tabs[0].root_pane;
+        let sidebar = workspace.test_split(Direction::Horizontal);
+        workspace.tabs[0].layout.focus_pane(top);
+        let bottom = workspace.test_split(Direction::Vertical);
+        workspace.zoomed = true;
+        for pane in [top, bottom, sidebar] {
+            workspace.tabs[0].runtimes.insert(
+                pane,
+                TerminalRuntime::test_with_scrollback_bytes(40, 8, 1024, b"ready\n"),
+            );
+        }
+        app.workspaces = vec![workspace];
+        app.active = Some(0);
+        let area = Rect::new(10, 3, 80, 24);
+        let runtimes = TerminalRuntimeRegistry::new();
+        let cell_size = crate::kitty_graphics::HostCellSize::default();
+        let surface =
+            crate::ui::tab_surface::compute_tab_surface(&app, &runtimes, area, true, cell_size);
+        assert_eq!(
+            surface.pane_infos.iter().map(|p| p.id).collect::<Vec<_>>(),
+            [bottom, sidebar]
+        );
+        assert_eq!(surface.pane_infos[0].rect, Rect::new(10, 3, 40, 24));
+        assert_eq!(surface.pane_infos[1].rect, Rect::new(50, 3, 40, 24));
+        assert_eq!(surface.split_borders.len(), 1);
+        assert_eq!(surface.split_borders[0].path, Vec::<bool>::new());
+        assert!(!app.pane_visible_on_active_surface(0, top));
+        assert!(app.pane_visible_on_active_surface(0, bottom));
+        assert!(app.pane_visible_on_active_surface(0, sidebar));
+        for info in &surface.pane_infos {
+            assert_eq!(
+                app.workspaces[0].tabs[0].runtimes[&info.id].current_size(),
+                (info.inner_rect.height, info.inner_rect.width)
+            );
+            assert_eq!(
+                new_pane_terminal_size(
+                    &app,
+                    area,
+                    NewPanePlacement::Existing {
+                        ws_idx: 0,
+                        pane: info.id
+                    }
+                ),
+                (info.inner_rect.height, info.inner_rect.width)
+            );
+        }
+        assert_eq!(
+            app.workspaces[0].tabs[0].runtimes[&top].current_size(),
+            (8, 40)
+        );
+        let larger = Rect::new(10, 3, 100, 30);
+        resize_tab_panes(
+            &app,
+            &runtimes,
+            0,
+            &app.workspaces[0].tabs[0],
+            larger,
+            cell_size,
+        );
+        let infos = compute_pane_infos(&app, &runtimes, larger, false, cell_size);
+        for info in infos {
+            assert_eq!(
+                app.workspaces[0].tabs[0].runtimes[&info.id].current_size(),
+                (info.inner_rect.height, info.inner_rect.width)
+            );
+        }
+        assert_eq!(
+            app.workspaces[0].tabs[0].runtimes[&top].current_size(),
+            (8, 40)
+        );
+
+        // Temporary overlays still cover the whole tab, even across sibling columns.
+        app.workspaces[0].tabs[0]
+            .panes
+            .get_mut(&bottom)
+            .unwrap()
+            .full_zoom = true;
+        let surface =
+            crate::ui::tab_surface::compute_tab_surface(&app, &runtimes, area, false, cell_size);
+        assert_eq!(surface.pane_infos.len(), 1);
+        assert_eq!(surface.pane_infos[0].rect, area);
+        assert!(surface.split_borders.is_empty());
+        assert!(!app.pane_visible_on_active_surface(0, sidebar));
+        app.workspaces[0].tabs[0].zoomed = false;
+        assert_eq!(
+            compute_pane_infos(&app, &runtimes, area, false, cell_size).len(),
+            3
+        );
     }
 
     #[tokio::test]

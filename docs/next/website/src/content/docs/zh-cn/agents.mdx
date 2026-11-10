@@ -9,13 +9,13 @@ Herdr 为同时运行多个编程智能体而生。每个智能体都待在一�
 
 ## 受支持的智能体
 
-智能体获得 Herdr 支持有两种方式:由 Herdr 支持它,或由它自己支持 Herdr。无论哪种方式,你都能看到每个智能体的 `idle`、`working` 和 `blocked` 状态,在它完成或需要你处理时收到通知,并能在脚本中等待它。
+hc 窗格使用明确的源端状态，不依赖 Herdr 支持列表。智能体不报告也能运行，但没有权威智能体状态。下面的兼容目录描述**旧版 Herdr 拥有 PTY** 的检测和上报，列入目录不表示它会发送 hc 状态。
 
 其他智能体在 Herdr 窗格中照常运行,只是显示为普通终端。
 
 ### 由 Herdr 支持
 
-Herdr 能识别这些智能体,并从它们在屏幕上绘制的内容读取状态。要在 Herdr 服务器重启后回到同一个会话,请用 `herdr integration install <name>` 安装该智能体的集成。每个集成会安装什么,见[集成](/zh-cn/docs/integrations/)。
+这些智能体在旧版 Herdr PTY 上有屏幕规则和可选集成。本目录及其集成说明不会为 hc 启用检测或自动 resume。旧版安装器见[集成](/zh-cn/docs/integrations/)。
 
 | 智能体 | 集成 | 说明 |
 | --- | --- | --- |
@@ -45,7 +45,7 @@ Herdr 能识别这些智能体,并从它们在屏幕上绘制的内容读取状�
 
 ### 由智能体自身支持
 
-这些智能体会自己向 Herdr 上报状态。无需安装任何东西,在 Herdr 窗格中运行即可。
+这些智能体提供过旧版 Herdr 上报。hc 需要改由源端 hc／OSC 7501 报告，旧 CLI 或 socket 上报会被拒绝。
 
 <ul class="agent-logos">
   <li><a href="https://commandcode.ai"><span class="agent-logo" style={{ '--logo': "url('/assets/agent-icons/command-code.svg')" }} aria-hidden="true"></span>Command Code</a></li>
@@ -55,23 +55,27 @@ Herdr 能识别这些智能体,并从它们在屏幕上绘制的内容读取状�
   <li><a href="https://github.com/PrimeIntellect-ai/prime-agent"><span class="agent-logo" style={{ '--logo': "url('/assets/agent-icons/prime-agent.svg')" }} aria-hidden="true"></span>Prime Agent</a></li>
 </ul>
 
-同时上报恢复命令的智能体,会在 Herdr 服务器重启后回到同一个会话。
+旧版 resume 命令支持不适用于 hc。hc 重连原绑定，不运行 resume 命令，也不替换已退出的智能体。
 
-如果你在开发编程智能体,[为你的智能体添加 Herdr 支持](/zh-cn/docs/add-herdr-support/)介绍了如何加入这个列表。只需调用几次 Herdr 的 CLI 或 socket,不需要修改 Herdr。
+如果你在开发编程智能体,[为你的智能体添加 Herdr 支持](/zh-cn/docs/add-herdr-support/)介绍了如何加入这个列表。hc 使用源端报告，不使用旧 Herdr CLI／socket 上报，无需修改 Herdr。
 
 ## 状态如何判定
 
-对于由 Herdr 支持的智能体,Herdr 在每个窗格中找到智能体进程,并读取窗格的实时底部,而不是你滚动到的位置。检测清单中的规则决定该屏幕表示 `idle`、`working` 还是 `blocked`。如果集成也上报状态,Herdr 会使用这些上报,而不是读取屏幕。
+hc 的身份与状态来自实时源端附加上的明确报告。源端 `idle`、`working`、`blocked`、`done` 保持各自语义，`error` 映射为 blocked。报告缺失、断线或无法识别时保持 `unknown`。本地 PID、屏幕、旧 hook 和待启动名称都不能替代报告。
 
-对于自身支持 Herdr 的智能体,由智能体自己的上报决定状态。
+查看或聚焦不清除源端 `done`。只有实时状态转换触发通知，重连快照不重放通知。源端报告方式见[为你的智能体添加 Herdr 支持](/zh-cn/docs/add-herdr-support/)。
 
 ## 虚拟机与沙箱包装器
+
+**以下仅为旧版诊断。** hc 不使用客户端进程检查、包装器提示或子进程组推断来决定智能体状态。
 
 在 Linux 和 macOS 上,宿主可见的包装器可能会向 Herdr 隐藏真实的智能体进程。在包装器命令上设置 `HERDR_AGENT=<agent>`,告诉 Herdr 应使用哪个已有智能体的屏幕清单。例如,在 Linux 上运行 `HERDR_AGENT=claude fence -- claude`,或在 macOS 上运行 `HERDR_AGENT=claude nono run --profile claude-code -- claude`。这个提示的作用范围只限于该前台进程;仅在 VM 或容器内部设置时 Herdr 无法看到它,而且除非所有继承的前台进程都应被视为该智能体,否则不要全局 export。
 
 某些受限的 Linux 运行环境不会公开终端前台进程组。原生检测不可用时,以 `HERDR_PROCESS_DETECTION=child-groups` 启动 Herdr 服务器,即可选择启用直接子进程组推断。原生检测仍然优先,默认的 `native` 模式不会执行此推断。这个选择加入模式属于尽力而为,较新的后台任务可能会被误判为前台任务。该变量由服务器读取且需要重启;请在远程服务器环境中设置,而不是在连接客户端上设置。
 
 ## blocked 状态
+
+hc 的 blocked 只来自源端 `blocked` 或 `error`，不来自屏幕匹配。Unknown 不回退为 idle。以下屏幕清单与挂起进程规则仅适用于旧 PTY。
 
 对屏幕清单类智能体,blocked 检测刻意从严。只有当实时底部缓冲区快照匹配已知可见的审批、提问或权限 UI 时,Herdr 才标记 `blocked`。对已知智能体,如果没有任何清单规则匹配,Herdr 会回退到 `idle`,并在 explain 输出中把该回退标记为 `default_known_agent_idle_fallback`。
 
@@ -82,6 +86,8 @@ Antigravity 和 Grok 回到提示符时即被视为 idle,即使后台任务、�
 用 Ctrl+Z 挂起智能体后,只要同一个进程仍在 shell 或其他非智能体命令后面存活,其名称、会话引用和钩子权限就会保留。用 `fg` 返回后继续使用该身份。另一个被识别的智能体接管前台的情况不在此范围内。保留身份不代表挂起的智能体能接收输入;发送提示前请检查窗格。
 
 ## 检测清单
+
+这些是**旧版屏幕诊断**，不是 hc 权威。重载清单或执行 `agent explain` 不能改变 hc 上报状态。
 
 内置清单打包在 Herdr 内部。Herdr 还会向 herdr.dev 检查远程清单更新,并自动应用有效的按智能体规则更新,不需要重启 Herdr。远程清单存放在 Herdr 的状态目录中。设置 `[update] manifest_check = false` 可以禁用后台远程清单检查。
 
@@ -120,7 +126,7 @@ fi
 
 侧边栏会把状态向上汇总。
 
-一个 blocked 的智能体会让它的窗格、标签页和工作区看起来是 blocked。一个 working 的智能体会让工作区看起来处于活跃状态。一个 done 的智能体在你查看之前会一直保持可见。
+上报 blocked 的智能体会让窗格、标签页和工作区显示 blocked；working 使工作区显示活跃。查看后源端 `done` 仍保持 done，客户端关注标记不改变源端状态。
 
 这就是 Herdr 的主要工作流: 启动多个智能体,让它们并行工作,用侧边栏看哪个项目需要决策、哪个还在运行、哪个已经可以审阅。
 
@@ -136,6 +142,8 @@ herdr agent rename reviewer --clear
 目标使用唯一的实时智能体名称,或当前承载该智能体的窗格 ID。终端 ID 和单独的智能体 kind 标签不能作为目标。
 
 ## 自定义状态标签
+
+以下 CLI 上报示例**仅适用于旧版**，包括窗格元数据令牌。hc 以 `unsupported_runtime` 拒绝这些方法；请使用源端 hc 状态／标题事实。手动 `agent rename` 仍是呈现别名。
 
 集成只把生命周期状态作为语义状态上报。展示自定义应通过窗格元数据令牌单独添加。
 

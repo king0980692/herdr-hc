@@ -32,6 +32,7 @@ impl ConnectionTarget {
 #[derive(Debug, Clone)]
 pub struct ApiClient {
     target: ConnectionTarget,
+    source_instance: Option<String>,
 }
 
 impl ApiClient {
@@ -40,7 +41,15 @@ impl ApiClient {
     }
 
     pub fn for_target(target: ConnectionTarget) -> Self {
-        Self { target }
+        Self {
+            target,
+            source_instance: None,
+        }
+    }
+
+    pub(crate) fn with_source_instance(mut self, instance: String) -> Self {
+        self.source_instance = Some(instance);
+        self
     }
 
     pub fn socket_path(&self) -> PathBuf {
@@ -54,7 +63,7 @@ impl ApiClient {
 
     pub fn request_value(&self, request: &Request) -> Result<serde_json::Value, ApiClientError> {
         let mut stream = self.connect()?;
-        write_request(&mut stream, request)?;
+        write_request(&mut stream, request, self.source_instance.as_deref())?;
 
         let mut reader = BufReader::new(stream);
         read_json_line(&mut reader)
@@ -68,7 +77,7 @@ impl ApiClient {
         let mut stream = self.connect()?;
         set_timeout_best_effort(&stream, TimeoutKind::Send, timeout)?;
         set_timeout_best_effort(&stream, TimeoutKind::Recv, timeout)?;
-        write_request(&mut stream, request)?;
+        write_request(&mut stream, request, self.source_instance.as_deref())?;
 
         let mut reader = BufReader::new(stream);
         read_json_line(&mut reader)
@@ -96,7 +105,7 @@ impl ApiClient {
         let response = match timeout {
             Some(timeout) => {
                 let mut stream = self.connect()?;
-                write_request(&mut stream, &request)?;
+                write_request(&mut stream, &request, self.source_instance.as_deref())?;
                 crate::ipc::set_local_stream_polling(&mut stream, true)?;
                 let mut reader = BufReader::new(DeadlineReader {
                     stream: &mut stream,
@@ -182,8 +191,20 @@ impl From<serde_json::Error> for ApiClientError {
     }
 }
 
-fn write_request(stream: &mut LocalStream, request: &Request) -> Result<(), ApiClientError> {
-    stream.write_all(serde_json::to_string(request)?.as_bytes())?;
+fn write_request(
+    stream: &mut LocalStream,
+    request: &Request,
+    source_instance: Option<&str>,
+) -> Result<(), ApiClientError> {
+    // Source discovery is unscoped; every subsequent request is pinned to that host instance.
+    let special = matches!(request.method, Method::RuntimeSource(_));
+    let encoded = match source_instance.filter(|_| !special) {
+        Some(instance) => serde_json::to_string(
+            &serde_json::json!({"id":request.id,"method":"runtime.request","params":{"host_instance":instance,"request":request}}),
+        )?,
+        None => serde_json::to_string(request)?,
+    };
+    stream.write_all(encoded.as_bytes())?;
     stream.write_all(b"\n")?;
     stream.flush()?;
     Ok(())

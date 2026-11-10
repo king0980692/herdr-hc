@@ -264,6 +264,8 @@ users can review code that will run automatically.
 
 ## Commands and environment
 
+Local plugin actions/hooks and terminal programs are different execution surfaces. **Saved SSH terminal commands run through source hc**: Herdr does not copy plugin executables/configs, client API paths, pane IDs, or local SSH-agent proxies there. Missing source commands fail, never run locally instead. Local hc launches can carry local context. The environment injection described below is not a promise across SSH; legacy pane status/metadata report methods remain rejected for all hc panes.
+
 Runtime commands run with the plugin directory as their working directory. Herdr
 injects `HERDR_SOCKET_PATH`, `HERDR_BIN_PATH`, `HERDR_ENV=1`,
 `HERDR_PLUGIN_ID`, `HERDR_PLUGIN_ROOT`, `HERDR_PLUGIN_CONFIG_DIR`,

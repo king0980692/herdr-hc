@@ -392,18 +392,34 @@ impl App {
                 &self.terminal_runtimes,
             )
         });
-        let new_pane = ws.split_focused_command(
-            Direction::Horizontal,
-            rows,
-            cols,
-            cwd,
-            command,
-            env,
-            self.state.pane_scrollback_limit_bytes,
-            self.state.host_terminal_theme,
-            host_terminal_appearance,
-        )?;
+        let (_, new_pane) = ws
+            .split_pane_with_runtime(
+                previous_focus,
+                Direction::Horizontal,
+                None,
+                rows,
+                cols,
+                cwd,
+                self.state.pane_scrollback_limit_bytes,
+                self.state.host_terminal_theme,
+                host_terminal_appearance,
+                crate::pane::PaneShellConfig::new("", crate::config::ShellModeConfig::NonLogin),
+                env,
+                true,
+                Some(crate::terminal::TerminalCommand::Line(
+                    command,
+                    crate::pane::AgentDetection::Enabled,
+                )),
+                &self.terminal_factory,
+            )
+            .ok_or_else(|| std::io::Error::other("focused pane disappeared"))??;
         let new_pane_id = new_pane.pane_id;
+        if let Some(pane) = ws
+            .active_tab_mut()
+            .and_then(|tab| tab.panes.get_mut(&new_pane_id))
+        {
+            pane.full_zoom = true;
+        }
         self.terminal_runtimes
             .insert(new_pane.terminal.id.clone(), new_pane.runtime);
         self.state
@@ -479,28 +495,38 @@ impl App {
                 .get_mut(ws_idx)
                 .ok_or_else(|| std::io::Error::other("active workspace disappeared"))?;
             let previous_zoomed = ws.active_tab().map(|tab| tab.zoomed).unwrap_or(false);
-            let result = ws.split_pane_argv_command(
+            let result = ws.split_pane_with_runtime(
                 previous_focus,
                 Direction::Horizontal,
+                None,
                 rows,
                 cols,
                 cwd,
-                argv,
-                extra_env,
                 self.state.pane_scrollback_limit_bytes,
                 self.state.host_terminal_theme,
                 host_terminal_appearance,
+                crate::pane::PaneShellConfig::new("", crate::config::ShellModeConfig::NonLogin),
+                extra_env,
                 true,
+                Some(crate::terminal::TerminalCommand::Argv(
+                    argv,
+                    crate::pane::AgentDetection::Enabled,
+                )),
+                &self.terminal_factory,
             );
             let (tab_idx, new_pane) = match result {
                 Some(Ok(result)) => result,
                 Some(Err(err)) => return Err(err),
                 None => return Err(std::io::Error::other("focused pane disappeared")),
             };
-            ws.tabs
+            let tab = ws
+                .tabs
                 .get_mut(tab_idx)
-                .ok_or_else(|| std::io::Error::other("plugin overlay tab disappeared"))?
-                .zoomed = true;
+                .ok_or_else(|| std::io::Error::other("plugin overlay tab disappeared"))?;
+            tab.zoomed = true;
+            if let Some(pane) = tab.panes.get_mut(&new_pane.pane_id) {
+                pane.full_zoom = true;
+            }
             self.overlay_panes.insert(
                 new_pane.pane_id,
                 super::OverlayPaneState {

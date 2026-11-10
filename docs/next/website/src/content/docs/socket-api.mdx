@@ -100,6 +100,7 @@ Raw socket method names use dot notation:
 | Notification | `notification.show` |
 | Client | `client.window_title.set`, `client.window_title.clear` |
 | Session | `session.snapshot` |
+| Runtime | `runtime.source`, `runtime.request` |
 | Workspace | `workspace.create`, `workspace.list`, `workspace.get`, `workspace.focus`, `workspace.rename`, `workspace.move`, `workspace.move_block`, `workspace.report_metadata`, `workspace.close` |
 | Worktree | `worktree.list`, `worktree.create`, `worktree.open`, `worktree.remove` |
 | Tab | `tab.create`, `tab.list`, `tab.get`, `tab.focus`, `tab.rename`, `tab.move`, `tab.close` |
@@ -419,7 +420,7 @@ list. Current workspace and tab context includes that selected machine, so an
 identical ID on another machine does not match; independent filter branches,
 such as `status` being `blocked`, still match agents on any connected machine.
 Effective status values are `idle`, `working`, `blocked`, `done`, and `unknown`;
-`done` means idle and not yet seen.
+For hc, `done` is explicit source completion and remains done after focus; seen markers are presentation only. The idle-but-unseen interpretation is legacy-only.
 
 Sort fields are `workspace_order`, `tab_order`, `pane_order`, `attention`,
 `status`, `agent`, `seen`, `state_change_seq`, or `{"token":"name"}`. Sorts are
@@ -447,6 +448,8 @@ A source mismatch leaves the active view unchanged. Set and clear responses use
 `type: "agent_view"` and report `active`, `source`, and optional `label`.
 
 ## Plugin APIs
+
+Plugin definitions and local actions/hooks belong to the presentation host. Saved SSH terminal commands execute through source hc without copying client plugin files, private API paths, or identity context. Local hc launch context remains local. Do not infer hc status from plugin metadata or expect legacy pane report methods to work; see [Runtime source routing](#runtime-source-routing).
 
 The plugin API is an early interface for executable workflow tools. A plugin is
 a package with a `herdr-plugin.toml` manifest. The manifest declares startup
@@ -653,9 +656,31 @@ For plugins, prefer invoking `HERDR_BIN_PATH` and the CLI wrappers when you need
 portable Windows behavior. Raw socket clients are responsible for using the
 platform-native local socket form.
 
+## Runtime source routing
+
+For an hc presentation host, discover the pinned source with `runtime.source`:
+
+```json
+{"id":"discover","method":"runtime.source","params":{}}
+```
+
+The result includes `host_instance`, source `generation`, `connected`, `core_id`, `error`, `retired`, and saved-profile routing fields where applicable. `host_instance` identifies this presentation host, not the permanent hc core or a terminal binding. Offline discovery is not permission to choose another source.
+
+Pin subsequent requests to the returned host instance:
+
+```json
+{"id":"outer","method":"runtime.request","params":{"host_instance":"<returned-host-instance>","request":{"id":"inner","method":"pane.list","params":{}}}}
+```
+
+The outer ID wins. A replaced or retired host returns `stale_runtime_source` without forwarding the action; nested `runtime.request` returns `invalid_request`. CLI `--machine` routing uses this fence. Source loss, rejection, or missing support never falls back to Local. Rediscovery is read-only; it does not authorize replaying an uncertain action, program launch, or input.
+
+hc terminal bindings use permanent core ID plus canonical source-local address, not this host instance, public pane IDs, or PIDs. Source cwd, foreground facts, and explicitly reported status are authoritative. These methods do not expose hc framing through Herdr's endpoint codecs. See [Connecting machines](/docs/connecting-machines/).
+
 ## Agent state reporting
 
-Integrations report agent state with `pane.report_agent`.
+**Legacy-only contract below:** hc-owned panes reject `pane.report_agent`, `pane.report_agent_session`, `pane.report_metadata`, `pane.clear_agent_authority`, and `pane.release_agent` with `unsupported_runtime`. Source hc / OSC 7501 is the reporting authority; these legacy examples, metadata tokens, resume commands, and seen-state rules cannot override it. Focus does not clear source done, and reconnect does not replay notifications. See [Add Herdr support to your agent](/docs/add-herdr-support/).
+
+Legacy integrations report agent state with `pane.report_agent`.
 
 ```json
 {

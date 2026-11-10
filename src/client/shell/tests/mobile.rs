@@ -77,6 +77,7 @@ fn mobile_switcher_can_activate_an_online_saved_machine() {
         label: "Build".into(),
         target: "build".into(),
         session: "agents".into(),
+        hc_path: None,
         enabled: true,
     };
     let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());

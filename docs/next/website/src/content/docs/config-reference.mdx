@@ -5,6 +5,8 @@ description: Every canonical config.toml key, with types, defaults, and allowed 
 
 import ConfigReference from '../../components/ConfigReference.astro';
 
+Runtime scope: retained detection, hook, and agent-resume keys do not override hc facts or relaunch hc bindings. Local launch configuration and saved-source defaults are different; see [Configuration](/docs/configuration/) and [Session state and restore](/docs/session-state/).
+
 Browse every canonical key Herdr reads from `config.toml` in a flat, filterable list. For setup guidance
 and the reasoning behind these options, see [Configuration](/docs/configuration/).
 

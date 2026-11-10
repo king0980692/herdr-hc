@@ -5,7 +5,7 @@ description: Run Herdr locally, inside SSH, or through remote attach.
 
 Run Herdr where the work lives. Attach from wherever you are.
 
-Herdr is a background session server plus one or more terminal clients. Panes keep running in the server. Clients attach, detach, and render the session.
+hc owns programs and terminal state. Herdr runs a presentation host plus terminal clients for layout, rendering, and input. A viewer or presentation host can detach without terminating source programs. A compatible upstream hc must be installed separately; see [Install Herdr](/docs/install/).
 
 ## Local work
 
@@ -25,11 +25,13 @@ Reattach later:
 herdr
 ```
 
-If you want to end the session and stop its panes, stop the server:
+To stop the presentation host without stopping hc programs:
 
 ```bash
 herdr server stop
 ```
+
+To terminate a program, explicitly close its bound pane and wait for confirmation. Restarting the host attaches saved bindings without launching replacement shells or agents.
 
 ## Remote work through normal SSH
 
@@ -40,7 +42,7 @@ ssh you@server
 herdr
 ```
 
-This works like a terminal multiplexer. Your shell is remote. The Herdr server is remote. The agents and panes run on the remote machine. Detach with `ctrl+b q`, disconnect, then SSH back and run `herdr` again.
+This works like a terminal multiplexer. Herdr's presentation host and hc are both on that remote machine; hc owns its shells and agents. Detach with `ctrl+b q`, disconnect, then SSH back and run `herdr` again.
 
 Use this path when you already live inside an SSH shell, when you are on a phone or tablet SSH client, or when you want the simplest setup.
 
@@ -70,7 +72,16 @@ On iPhone, apps like [moshi](https://getmoshi.app/) work well.
 
 ## Remote work from your local terminal
 
-Attach through SSH without opening a shell first:
+For local presentation backed by source hc over SSH, save the target and open Herdr:
+
+```bash
+herdr machine add workbox --label Workbox
+herdr
+```
+
+Select Workbox in the machine selector. Setup checks installed hc; it does not install or run remote Herdr or create a terminal program. See [Connecting machines](/docs/connecting-machines/) for recovery and source-filesystem limitations.
+
+The remaining `--remote` examples in this section describe the **separate legacy remote-Herdr path**, not saved hc profiles. Explicitly attach to a compatible remote Herdr without opening a shell first:
 
 ```bash
 herdr --remote workbox
@@ -98,6 +109,6 @@ herdr --remote workbox
 
 ## Which path to use
 
-Use `herdr` for local work. Use `ssh you@server` then `herdr` when you want Herdr to behave like tmux on that remote shell or when you are using a phone SSH client. Use `herdr --remote <host>` for a local UI attached to one remote session, including local clipboard image paste. To keep Local and several SSH machines in one window, save them with `herdr machine add <host> --label <label>`; see [Connecting machines](/docs/connecting-machines/).
+Use `herdr` for local work, or `ssh you@server` then `herdr` to run both presentation and hc at the source, including from a phone SSH client. For local presentation with Local and saved SSH sources in one window, use `herdr machine add <host> --label <label>`; see [Connecting machines](/docs/connecting-machines/). Keep explicit `herdr --remote <host>` for legacy remote-Herdr compatibility, not hc setup or migration.
 
 For remote bootstrap details, named remote sessions, custom binaries, and direct terminal attach, see [Persistence and remote access](/docs/persistence-remote/).

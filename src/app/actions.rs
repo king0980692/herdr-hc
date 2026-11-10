@@ -306,7 +306,7 @@ impl AppState {
                     .get_mut(&terminal_id)?
                     .expire_agent_metadata_at(scheduled_deadline, now)?;
                 let change = mutation.effective_state_change?;
-                let seen = self.apply_pane_state_change(ws_idx, pane_id, &change, false)?;
+                let seen = self.apply_pane_state_change(ws_idx, pane_id, &change, false, false)?;
                 let update = PaneStateUpdate {
                     pane_id,
                     ws_idx,
@@ -1389,8 +1389,102 @@ impl AppState {
         changed
     }
 
+    pub(crate) fn hc_owns_pane(&self, pane_id: PaneId) -> bool {
+        let find = |id| {
+            self.workspaces
+                .iter()
+                .find_map(|workspace| workspace.pane_state(id))
+                .map(|pane| &pane.attached_terminal_id)
+        };
+        let id = find(pane_id)
+            .or_else(|| {
+                self.pane_id_aliases
+                    .get(&pane_id.raw())
+                    .and_then(|id| find(*id))
+            })
+            .or_else(|| {
+                self.popup_pane
+                    .as_ref()
+                    .filter(|pane| pane.pane_id == pane_id)
+                    .map(|pane| &pane.terminal_id)
+            });
+        id.and_then(|id| self.terminals.get(id))
+            .is_some_and(|terminal| terminal.hc_authority)
+    }
+
     pub fn handle_app_event(&mut self, event: AppEvent) -> Vec<PaneStateUpdate> {
+        if event
+            .legacy_runtime_pane()
+            .is_some_and(|pane| self.hc_owns_pane(pane))
+        {
+            return Vec::new();
+        }
         match event {
+            AppEvent::HcSourceChanged { .. }
+            | AppEvent::HcRecoveryReady
+            | AppEvent::HcTerminalEffects { .. } => Vec::new(),
+            AppEvent::HcTerminalUpdated {
+                terminal_id,
+                snapshot,
+                ..
+            } => {
+                let matches = self
+                    .terminals
+                    .get(&terminal_id)
+                    .and_then(|terminal| terminal.hc_binding.as_ref())
+                    .is_some_and(|binding| {
+                        binding["core_id"].as_str() == Some(&snapshot.binding.core_id)
+                            && binding["address"].as_str() == Some(&snapshot.binding.address)
+                    });
+                if !matches {
+                    return Vec::new();
+                }
+                let pane = self
+                    .workspaces
+                    .iter()
+                    .flat_map(|workspace| &workspace.tabs)
+                    .flat_map(|tab| &tab.panes)
+                    .find(|(_, pane)| pane.attached_terminal_id == terminal_id)
+                    .map(|(id, _)| *id);
+                let Some(pane) = pane else {
+                    if let Some(terminal) = self.terminals.get_mut(&terminal_id) {
+                        terminal.apply_hc_snapshot(snapshot);
+                    }
+                    return Vec::new();
+                };
+                let cwd = self
+                    .terminals
+                    .get(&terminal_id)
+                    .map(|terminal| terminal.cwd.clone());
+                let notify = self
+                    .terminals
+                    .get(&terminal_id)
+                    .and_then(|terminal| terminal.hc_snapshot.as_ref())
+                    .is_some_and(|old| old.connected && old.attached)
+                    && snapshot
+                        .reported_status()
+                        .and_then(|status| status.get("state"))
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|state| matches!(state, "blocked" | "error" | "done"));
+                let updates = self
+                    .update_terminal_state_with_completion_policy(pane, !notify, |terminal| {
+                        Some(TerminalStateMutation {
+                            effective_state_change: terminal.apply_hc_snapshot(snapshot),
+                            ..TerminalStateMutation::default()
+                        })
+                    })
+                    .into_iter()
+                    .collect();
+                if cwd
+                    != self
+                        .terminals
+                        .get(&terminal_id)
+                        .map(|terminal| terminal.cwd.clone())
+                {
+                    self.mark_session_dirty();
+                }
+                updates
+            }
             AppEvent::PaneDied { pane_id, .. } => {
                 self.handle_pane_died(pane_id);
                 Vec::new()
@@ -1752,16 +1846,25 @@ impl AppState {
         let change = mutation.effective_state_change.or(unchanged_change)?;
         let suppress_completion = force_suppress_completion
             || (change.state == AgentState::Idle && suppress_acquisition_completion);
+        // Source reports may notify, but never synthesize legacy completion/seen facts.
+        let suppress_legacy_completion =
+            suppress_completion || self.terminals[&terminal_id].hc_authority;
         if change.previous_state != change.state {
             self.next_agent_state_change_seq += 1;
             if let Some(terminal) = self.terminals.get_mut(&terminal_id) {
                 terminal.last_agent_state_change_seq = Some(self.next_agent_state_change_seq);
-                terminal.last_agent_completion_seq = (!suppress_completion
+                terminal.last_agent_completion_seq = (!suppress_legacy_completion
                     && is_completion_transition(&change))
                 .then_some(self.next_agent_state_change_seq);
             }
         }
-        let seen = self.apply_pane_state_change(ws_idx, pane_id, &change, suppress_completion)?;
+        let seen = self.apply_pane_state_change(
+            ws_idx,
+            pane_id,
+            &change,
+            suppress_completion,
+            suppress_legacy_completion,
+        )?;
         let update = PaneStateUpdate {
             pane_id,
             ws_idx,
@@ -1832,6 +1935,7 @@ impl AppState {
         pane_id: PaneId,
         change: &EffectiveStateChange,
         suppress_completion: bool,
+        suppress_legacy_completion: bool,
     ) -> Option<bool> {
         let is_active_tab = self.pane_is_in_active_tab(ws_idx, pane_id);
         let suppress_active_tab_notifications =
@@ -1843,7 +1947,7 @@ impl AppState {
 
         if change.state != AgentState::Idle {
             pane.seen = true;
-        } else if !suppress_completion && is_completion_transition(change) {
+        } else if !suppress_legacy_completion && is_completion_transition(change) {
             pane.seen = suppress_active_tab_notifications;
         }
         let seen = pane.seen;
@@ -4389,7 +4493,7 @@ mod tests {
             ratatui::layout::Rect::new(0, 0, 100, 20),
         );
 
-        assert_eq!(state.view.pane_infos.len(), 1);
+        assert_eq!(state.view.pane_infos.len(), 2);
         assert_eq!(state.view.pane_infos[0].id, root);
 
         state.navigate_pane(NavDirection::Right);
@@ -4401,9 +4505,15 @@ mod tests {
 
         assert!(state.workspaces[0].zoomed);
         assert_eq!(state.workspaces[0].focused_pane_id(), Some(right));
-        assert_eq!(state.view.pane_infos.len(), 1);
-        assert_eq!(state.view.pane_infos[0].id, right);
-        assert!(state.view.pane_infos[0].inner_rect.x > state.view.pane_infos[0].rect.x);
+        assert_eq!(state.view.pane_infos.len(), 2);
+        let focused = state
+            .view
+            .pane_infos
+            .iter()
+            .find(|info| info.is_focused)
+            .unwrap();
+        assert_eq!(focused.id, right);
+        assert!(focused.inner_rect.x > focused.rect.x);
     }
 
     #[test]
@@ -4463,7 +4573,7 @@ mod tests {
     }
 
     #[test]
-    fn swap_pane_direction_stays_zoomed_and_mutates_hidden_layout() {
+    fn swap_pane_direction_stays_zoomed_and_swaps_visible_columns() {
         let mut state = app_with_workspaces(&["test"]);
         let root = state.workspaces[0].tabs[0].root_pane;
         let right = state.workspaces[0].test_split(Direction::Horizontal);
@@ -4484,8 +4594,8 @@ mod tests {
 
         assert!(state.workspaces[0].zoomed);
         assert_eq!(state.workspaces[0].focused_pane_id(), Some(root));
-        assert_eq!(state.view.pane_infos.len(), 1);
-        assert_eq!(state.view.pane_infos[0].id, root);
+        assert_eq!(state.view.pane_infos.len(), 2);
+        assert_eq!(state.view.pane_infos[1].id, root);
 
         state.workspaces[0].zoomed = false;
         crate::ui::compute_view_with_runtime_registry(

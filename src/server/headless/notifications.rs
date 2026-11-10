@@ -610,6 +610,25 @@ impl HeadlessServer {
                 }
                 changed
             }
+            AppEvent::HcTerminalUpdated { .. } => {
+                self.sync_foreground_client_state();
+                let AppEvent::HcTerminalUpdated {
+                    terminal_id,
+                    runtime_token,
+                    snapshot,
+                } = ev
+                else {
+                    return false;
+                };
+                let (changed, updates) =
+                    self.app
+                        .apply_hc_update(terminal_id, runtime_token, snapshot);
+                for update in &updates {
+                    self.forward_semantic_agent_notification(update);
+                    self.forward_pane_state_update_notifications_to_clients(update);
+                }
+                changed
+            }
             AppEvent::WorktreeRemoveFinished(result) => {
                 let focus_before = self.shell_focus_targets();
                 let focused_tabs_before = self.focused_shell_tabs();

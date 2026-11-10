@@ -3,7 +3,7 @@ title: Windows support
 description: Native Windows support, workflows, and known limitations.
 ---
 
-Native Windows support is generally available.
+Released Windows support uses the legacy Herdr-owned ConPTY backend. The capability matrix and process-detection descriptions below refer to that backend, **not qualification of this draft's native-hc migration**. Windows hc qualification remains pending; do not infer it from existing release support. hc status always comes from explicit source reports, not Windows process-tree or screen detection.
 
 Herdr on Windows uses ConPTY and Windows process/runtime behavior instead of the Unix PTY model Herdr was originally built around. Most core workflows are supported, but some capabilities differ from Linux and macOS or remain platform-dependent. Windows may receive more platform-specific fixes as those remaining gaps close.
 

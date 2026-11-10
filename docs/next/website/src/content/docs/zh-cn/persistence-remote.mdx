@@ -3,15 +3,15 @@ title: 持久化与远程访问
 description: 从 Herdr 分离、稍后重新连接、使用命名会话,以及通过 SSH 连接。
 ---
 
-Herdr 让窗格在后台服务器中持续运行。你的终端客户端可以分离,稍后再重新连接。
+Herdr 的后台主机保存呈现与布局，hc 拥有程序和终端状态。终端客户端可以分离并稍后重新连接，不停止 hc 程序。
 
 关于本地、SSH 和 `herdr --remote` 工作流,参见[使用 Herdr 的工作方式](/zh-cn/docs/how-to-work/)。
 
 ## 分离与重新连接
 
-用 `ctrl+b q` 分离客户端;窗格和智能体继续运行。再次运行 `herdr` 即可重新连接。用 `herdr server stop` 停止会话及其窗格。
+用 `ctrl+b q` 分离客户端，窗格和智能体继续运行。再次运行 `herdr` 即可重新连接。`herdr server stop` 停止呈现主机，不停止 hc 程序。要终止已绑定程序，请明确关闭其窗格并等待终止确认。
 
-在服务器完全停止后再次启动时,Herdr 会恢复保存的会话形态。关于分离、服务器重启、屏幕历史回放、智能体原生会话恢复和实时交接各自能保留什么,参见[会话状态与恢复](/zh-cn/docs/session-state/)。
+呈现主机再次启动时，恢复已保存的布局并附加精确的 hc 绑定，绝不重新启动程序或恢复智能体。缺失或不匹配的绑定保持不可用；旧程序不会被导入或重启。hc 身份与恢复规则见[连接机器](/zh-cn/docs/connecting-machines/)，持久化状态和旧运行时流程见[会话状态与恢复](/zh-cn/docs/session-state/)。
 
 在 Linux 和 macOS 上,服务器忽略 `SIGHUP`,因此启动它的 shell 挂断不会停止窗格。要主动停止服务器,请使用 `herdr server stop` 或 `SIGTERM`;原先使用 `SIGHUP` 的脚本需要修改。关闭日志会记录停止原因。
 
@@ -27,7 +27,7 @@ herdr session stop work
 herdr session delete side-project
 ```
 
-命名会话拥有自己的窗格、标签页、工作区、socket 和运行时状态。它仍然共享同一个全局配置文件。
+命名呈现会话拥有自己的窗格、标签页、工作区、socket 和已保存绑定；hc 仍拥有其绑定的程序。呈现会话共享同一个全局配置文件。
 
 删除会话时，请使用 `herdr session list` 显示的完整名称，大小写必须一致。在不区分大小写的文件系统上，`herdr session delete foo` 会拒绝删除名为 `Foo` 的会话。
 
@@ -41,11 +41,11 @@ herdr session delete side-project --json
 
 ## 已保存的 SSH 机器
 
-要在一个 Herdr 窗口中使用 Local 和多台 SSH 机器，请参阅[连接机器](/zh-cn/docs/connecting-machines/)。该指南涵盖设置、切换、重连、配置和远程自动化。移除已保存的机器只会断开客户端，不会停止远程会话。
+要在一个 Herdr 窗口中使用 Local 和多台 SSH 机器，请参阅[连接机器](/zh-cn/docs/connecting-machines/)。已保存机器使用本地呈现及通过 SSH 连接的源端 hc，不依赖远程 Herdr 安装或渲染。移除已保存机器只分离查看端，不停止 hc 程序。
 
 ## 通过 SSH 远程连接
 
-[使用 Herdr 的工作方式](/zh-cn/docs/how-to-work/)比较了几种远程连接方式：先 SSH 到服务器再运行 `herdr`，使用已保存的 SSH 机器集中管理多个目标，或从本地直接连接一个远程会话：
+本节描述明确使用**旧版 `--remote`** 连接远程 Herdr 服务器的路径，不是已保存的 hc 机器路径。这里的远程 Herdr 安装、兼容性与 handoff 行为不适用于已保存配置。[使用 Herdr 的工作方式](/zh-cn/docs/how-to-work/)比较了几种连接方式：先 SSH 到服务器再运行 `herdr`，使用[已保存的 SSH 机器](/zh-cn/docs/connecting-machines/)集中管理多个目标，或明确连接旧运行时的远程 Herdr：
 
 ```bash
 herdr --remote workbox
@@ -73,7 +73,7 @@ Host workbox
 herdr --remote workbox
 ```
 
-远程连接和已保存的 SSH 机器支持 Linux、macOS 和 Windows 客户端，目标可以是 x86_64 或 aarch64 的 Linux/macOS 主机，也可以是 x86_64 的 Windows 主机。Windows ARM64 主机通过 Windows 的 x64 模拟运行 x64 构建，仅提供尽力而为的支持，可能存在错误和其他问题。当主机报告 ARM64 时，显式远程连接和已保存机器的设置过程会显示模拟运行提示。只要两端支持稳定端点代数，版本就不必一致。Linux/macOS 上优先使用远程 `PATH` 中兼容的 `herdr`，再检查常见的直接安装、Homebrew、mise 和 Nix profile 路径。Windows 上检查 `PATH` 和当前有效的托管版本。如果没有兼容的二进制文件，交互式运行会询问是否安装或更新；非交互式运行直接失败，不修改主机。Linux/macOS 安装到 `~/.local/bin/herdr`，Windows 安装包含应用本地 ConPTY 运行时的完整软件包。如果 `~/.local/bin` 不在远程 `PATH` 中，Herdr 会发出警告。
+旧版远程连接支持 Linux、macOS 和 Windows 客户端，目标可以是 x86_64 或 aarch64 的 Linux/macOS 主机，也可以是 x86_64 的 Windows 主机。Windows ARM64 主机通过 Windows 的 x64 模拟运行 x64 构建，仅提供尽力而为的支持，可能存在错误和其他问题。当主机报告 ARM64 时，明确使用的旧版远程连接会显示模拟运行提示。只要两端支持稳定端点代数，版本就不必一致。Linux/macOS 上优先使用远程 `PATH` 中兼容的 `herdr`，再检查常见的直接安装、Homebrew、mise 和 Nix profile 路径。Windows 上检查 `PATH` 和当前有效的托管版本。如果没有兼容的二进制文件，交互式运行会询问是否安装或更新；非交互式运行直接失败，不修改主机。Linux/macOS 安装到 `~/.local/bin/herdr`，Windows 安装包含应用本地 ConPTY 运行时的完整软件包。如果 `~/.local/bin` 不在远程 `PATH` 中，Herdr 会发出警告。
 
 默认情况下,`herdr --remote` 通过一个临时 SSH 配置运行远程设置和桥接: 先包含你的 SSH 配置,再补充兜底的保活设置。已有的用户保活设置优先。Linux 和 macOS 客户端还会添加一个私有的单次连接 control socket 来复用连接;Windows OpenSSH 不使用此方式。设置 `[remote].manage_ssh_config = false` 可以不用 Herdr 生成的配置或 control socket,而使用普通 `ssh`。
 
@@ -86,7 +86,7 @@ herdr --remote workbox
 
 认证失败时，先通过 `ssh workbox` 确认普通 SSH 连接正常。
 
-仅有版本差异不会替换或重启运行中的远程服务器。缺少必要兼容性或独立后台运行支持的服务器，会在停止前询问。已保存机器还需要画面传输和健康探测能力，详见[连接机器](/zh-cn/docs/connecting-machines/)。默认回答为 No；停止服务器会结束窗格进程。进行这次一次性升级时，可对受支持的服务器加上 `--handoff`，通过实验性实时交接保留窗格进程：
+仅有版本差异不会替换或重启运行中的远程服务器。缺少必要兼容性或独立后台运行支持的服务器，会在停止前询问。默认回答为 No；停止服务器会结束窗格进程。进行这次一次性升级时，可对受支持的服务器加上 `--handoff`，通过实验性实时交接保留窗格进程：
 
 ```bash
 herdr --remote workbox --handoff

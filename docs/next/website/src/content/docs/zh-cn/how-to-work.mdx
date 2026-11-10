@@ -5,7 +5,7 @@ description: 在本地、SSH 内或通过远程连接运行 Herdr。
 
 在工作所在的地方运行 Herdr,从你所在的任何地方连接。
 
-Herdr 由一个后台会话服务器和一个或多个终端客户端组成。窗格在服务器中持续运行。客户端负责连接、分离和渲染会话。
+hc 拥有程序与终端状态。Herdr 的呈现主机和终端客户端负责布局、渲染与输入。查看端或呈现主机分离不会终止源端程序。需要单独安装兼容的上游 hc，见[安装 Herdr](/zh-cn/docs/install/)。
 
 ## 本地工作
 
@@ -25,11 +25,13 @@ Herdr 会自动启动或连接到本地后台会话。你不需要管理 socket�
 herdr
 ```
 
-如果想结束会话并停止其中的窗格,停止服务器:
+停止呈现主机但不停止 hc 程序：
 
 ```bash
 herdr server stop
 ```
+
+要终止程序，请明确关闭已绑定窗格并等待确认。呈现主机重启只附加已保存绑定，不启动替代 shell 或智能体。
 
 ## 通过普通 SSH 的远程工作
 
@@ -40,7 +42,7 @@ ssh you@server
 herdr
 ```
 
-这和终端复用器的用法一样。你的 shell 在远程,Herdr 服务器在远程,智能体和窗格都运行在远程机器上。用 `ctrl+b q` 分离并断开连接,之后再 SSH 回去,重新运行 `herdr`。
+这和终端复用器的用法一样。Herdr 呈现主机和 hc 都在远程机器上，hc 拥有 shell 和智能体。用 `ctrl+b q` 分离并断开连接,之后再 SSH 回去,重新运行 `herdr`。
 
 当你本来就工作在 SSH shell 里、在手机或平板的 SSH 客户端上,或者想要最简单的配置时,用这条路径。
 
@@ -70,7 +72,16 @@ herdr
 
 ## 从本地终端远程工作
 
-不先打开 shell,直接通过 SSH 连接:
+要在本地呈现、通过 SSH 使用源端 hc，请保存目标并打开 Herdr：
+
+```bash
+herdr machine add workbox --label Workbox
+herdr
+```
+
+在机器选择器选择 Workbox。设置只检查已安装的 hc，不安装或运行远程 Herdr，也不创建终端程序。恢复及源端文件系统限制见[连接机器](/zh-cn/docs/connecting-machines/)。
+
+本节余下的 `--remote` 示例属于**独立的旧版远程 Herdr 路径**，不是已保存 hc 配置。要明确连接兼容的远程 Herdr，不必先打开 shell：
 
 ```bash
 herdr --remote workbox
@@ -98,6 +109,6 @@ herdr --remote workbox
 
 ## 该用哪条路径
 
-本地工作用 `herdr`。想让 Herdr 在远程 shell 上表现得像 tmux,或者在用手机 SSH 客户端时,用 `ssh you@server` 再 `herdr`。需要通过本地 UI 操作一个远程会话并粘贴本地剪贴板图像时，使用 `herdr --remote <host>`。要在同一窗口使用 Local 和多台 SSH 机器，可通过 `herdr machine add <host> --label <label>` 保存目标；参见[连接机器](/zh-cn/docs/connecting-machines/)。
+本地工作用 `herdr`；通过 `ssh you@server` 再 `herdr`，可以在源端同时运行呈现与 hc，也适用于手机 SSH 客户端。要在一个窗口本地呈现 Local 和已保存 SSH 源端，用 `herdr machine add <host> --label <label>`，见[连接机器](/zh-cn/docs/connecting-machines/)。明确使用的 `herdr --remote <host>` 保留给旧版远程 Herdr 兼容连接，不用于 hc 设置或迁移。
 
 关于远程引导细节、命名远程会话、自定义二进制和直接终端附加,参见[持久化与远程访问](/zh-cn/docs/persistence-remote/)。

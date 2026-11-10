@@ -334,6 +334,9 @@ impl App {
                 "workspace has linked worktree workspaces; use --group (close_group=true in the API) to close the group",
             );
         }
+        if let Err(error) = self.terminate_hc_workspaces(&close_indices) {
+            return encode_error(id, "hc_close_failed", error.to_string());
+        }
         let closed_workspaces = close_indices
             .iter()
             .map(|index| {

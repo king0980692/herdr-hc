@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::io;
 
-use crate::api::client::{ApiClient, ConnectionTarget};
+use crate::api::client::ApiClient;
 use crate::client::endpoint::{EndpointCatalog, SavedSshEndpoint};
 
 thread_local! {
@@ -11,7 +11,7 @@ thread_local! {
 
 struct MachineTarget {
     profile: SavedSshEndpoint,
-    bridge: Option<crate::remote::SavedSshApiBridge>,
+    bridge: Option<ApiClient>,
     #[cfg(test)]
     client_override: Option<ApiClient>,
 }
@@ -75,12 +75,11 @@ pub(super) fn api_client() -> io::Result<ApiClient> {
         }
         if target.bridge.is_none() {
             target.bridge = Some(
-                crate::remote::SavedSshApiBridge::start(
+                crate::remote::saved_source_api_client(
                     target.profile.id.as_str(),
                     &target.profile.target,
                     &target.profile.session,
-                    true,
-                    true,
+                    target.profile.hc_path.as_deref(),
                 )
                 .map_err(|error| {
                     io::Error::new(
@@ -94,58 +93,19 @@ pub(super) fn api_client() -> io::Result<ApiClient> {
             .bridge
             .as_ref()
             .ok_or_else(|| io::Error::other("machine bridge unavailable"))?;
-        Ok(ApiClient::for_target(ConnectionTarget::SocketPath(
-            bridge.socket_path().to_owned(),
-        )))
+        Ok(bridge.clone())
     })
 }
 
 pub(super) fn server_status(
     client: &ApiClient,
 ) -> Result<crate::api::RuntimeStatus, crate::api::client::ApiClientError> {
-    let probe = || {
-        if is_remote() {
-            client.status_with_timeout(std::time::Duration::from_secs(15))
-        } else {
-            client.status()
-        }
-    };
-    let error = match probe() {
-        Ok(status) => return Ok(status),
-        Err(error) => error,
-    };
-    // Only this read-only probe may rediscover and retry. Requests that follow
-    // the probe must never be replayed after an ambiguous SSH failure.
-    TARGET.with(|target| {
-        let mut target = target.borrow_mut();
-        let Some(target) = target.as_mut() else {
-            return Err(error);
-        };
-        let Some(bridge) = target.bridge.as_ref() else {
-            return Err(error);
-        };
-        let failure = bridge.reported_failure();
-        let stale_metadata = bridge.used_cached_metadata
-            && failure
-                .as_ref()
-                .is_some_and(crate::remote::SavedSshApiBridge::stale_metadata_failure);
-        if !bridge.can_retry || (!stale_metadata && !bridge.recover_transport()) {
-            return Err(failure.map(Into::into).unwrap_or(error));
-        }
-        if stale_metadata {
-            bridge.invalidate_metadata();
-        }
-        target.bridge.take();
-        target.bridge = Some(crate::remote::SavedSshApiBridge::start(
-            target.profile.id.as_str(),
-            &target.profile.target,
-            &target.profile.session,
-            !stale_metadata,
-            false,
-        )?);
-        Ok(())
-    })?;
-    probe()
+    // Never rediscover or replay this command across a source host restart.
+    if is_remote() {
+        client.status_with_timeout(std::time::Duration::from_secs(15))
+    } else {
+        client.status()
+    }
 }
 
 pub(super) fn remote_error(error: io::Error) -> io::Error {
@@ -154,11 +114,6 @@ pub(super) fn remote_error(error: io::Error) -> io::Error {
         let Some(target) = target.as_ref() else {
             return error;
         };
-        let error = target
-            .bridge
-            .as_ref()
-            .and_then(|bridge| bridge.reported_failure())
-            .unwrap_or(error);
         io::Error::new(
             error.kind(),
             format!(
@@ -171,7 +126,7 @@ pub(super) fn remote_error(error: io::Error) -> io::Error {
 
 pub(super) fn restart_guidance() -> String {
     TARGET.with(|target| match target.borrow().as_ref() {
-        Some(target) => format!("Update Herdr and restart the server on machine '{}' (session {}). Stopping the server exits its pane processes.", target.profile.label, target.profile.session),
+        Some(target) => format!("Update local Herdr, then restart this machine's local source host with `herdr --machine {} server stop`. hc programs remain running.",target.profile.id),
         None => crate::session::active_restart_after_update_guidance(),
     })
 }

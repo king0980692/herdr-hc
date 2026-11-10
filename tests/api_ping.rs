@@ -153,6 +153,7 @@ fn spawn_herdr_with_options(
         cmd.env("PATH", path);
     }
 
+    support::hc::configure_pty(&mut cmd, runtime_dir);
     let child = pair.slave.spawn_command(cmd).unwrap();
     register_spawned_herdr_pid(child.process_id());
 
@@ -1227,6 +1228,10 @@ fn agent_methods_round_trip_over_socket() {
             base.display()
         ),
     );
+    assert!(
+        created.get("error").is_none(),
+        "workspace create failed: {created}"
+    );
     let workspace_id = created["result"]["workspace"]["workspace_id"]
         .as_str()
         .unwrap()
@@ -1256,7 +1261,8 @@ fn agent_methods_round_trip_over_socket() {
             pane_id
         ),
     );
-    assert_eq!(reported["result"]["type"], "ok");
+    assert_eq!(reported["error"]["code"], "unsupported_runtime");
+    support::hc::report_agent(&socket_path, &pane_id, "pi", "working");
 
     let listed = send_request(
         &socket_path,
@@ -1308,7 +1314,10 @@ fn agent_methods_round_trip_over_socket() {
         &socket_path,
         r#"{"id":"agent_send_keys","method":"agent.send_keys","params":{"target":"worker","keys":["enter"]}}"#,
     );
-    assert_eq!(sent["error"]["code"], "agent_not_ready");
+    assert_eq!(
+        sent["result"]["type"], "ok",
+        "source-reported agent accepts input: {sent}"
+    );
 
     let tab_created = send_request(
         &socket_path,
@@ -1325,14 +1334,7 @@ fn agent_methods_round_trip_over_socket() {
         .as_str()
         .unwrap();
 
-    let second_reported = send_request(
-        &socket_path,
-        &format!(
-            r#"{{"id":"agent_second_report","method":"pane.report_agent","params":{{"pane_id":"{}","source":"test","agent":"codex","state":"idle"}}}}"#,
-            second_pane_id
-        ),
-    );
-    assert_eq!(second_reported["result"]["type"], "ok");
+    support::hc::report_agent(&socket_path, second_pane_id, "codex", "idle");
 
     let second_renamed = send_request(
         &socket_path,
@@ -2300,7 +2302,7 @@ fn events_subscribe_streams_output_and_agent_status_events() {
     let fake_pi = bin_dir.join("pi");
     fs::write(
         &fake_pi,
-        "#!/bin/sh\nprintf 'Working...\\n'\nsleep 1\nprintf '\\033[2J\\033[Hdone\\n'\n",
+        "#!/bin/sh\nprintf '\\033]7501;state=working:app=pi\\007Working...\\n'\nsleep 1\nprintf '\\033]7501;state=idle:app=pi\\007\\033[2J\\033[Hdone\\n'\nread -r hold\n",
     )
     .unwrap();
     #[cfg(unix)]
@@ -2426,7 +2428,7 @@ fn pane_info_and_subscriptions_expose_done_agent_status() {
     fs::write(
         &fake_pi,
         format!(
-            "#!/bin/sh\nprintf 'starting\\n'\nsleep 4\nprintf 'Working...\\n'\nsleep 1\nprintf '\\033[2J\\033[Hdone\\n'\nwhile [ ! -f '{}' ]; do sleep 0.05; done\n",
+            "#!/bin/sh\nprintf 'starting\\n'\nsleep 4\nprintf '\\033]7501;state=working:app=pi\\007Working...\\n'\nsleep 1\nprintf '\\033]7501;state=done:app=pi\\007\\033[2J\\033[Hdone\\n'\nwhile [ ! -f '{}' ]; do sleep 0.05; done\n",
             stop_file.display()
         ),
     )
@@ -2554,7 +2556,8 @@ fn pane_info_and_subscriptions_expose_done_agent_status() {
             background_pane_id
         ),
     );
-    assert_eq!(pane_after_focus["result"]["pane"]["agent_status"], "idle");
+    // Focusing presentation must not rewrite the core's reported state.
+    assert_eq!(pane_after_focus["result"]["pane"]["agent_status"], "done");
 
     fs::write(&stop_file, "stop").unwrap();
 
@@ -2562,7 +2565,7 @@ fn pane_info_and_subscriptions_expose_done_agent_status() {
 }
 
 #[test]
-fn metadata_status_subscription_filter_and_ttl_expiry_are_observable() {
+fn hc_status_subscriptions_reject_legacy_metadata_and_local_ttl() {
     let _lock = test_lock();
     let base = unique_test_dir();
     let config_home = base.join("config");
@@ -2591,7 +2594,8 @@ fn metadata_status_subscription_filter_and_ttl_expiry_are_observable() {
             pane_id
         ),
     );
-    assert_eq!(report_agent["result"]["type"], "ok");
+    assert_eq!(report_agent["error"]["code"], "unsupported_runtime");
+    support::hc::report_agent(&socket_path, &pane_id, "pi", "working");
 
     let mut done_reader = open_subscription(
         &socket_path,
@@ -2611,7 +2615,7 @@ fn metadata_status_subscription_filter_and_ttl_expiry_are_observable() {
             pane_id
         ),
     );
-    assert_eq!(metadata["result"]["type"], "ok");
+    assert_eq!(metadata["error"]["code"], "unsupported_runtime");
     assert!(
         done_reader
             .try_read_json_line(Duration::from_millis(500))
@@ -2637,21 +2641,37 @@ fn metadata_status_subscription_filter_and_ttl_expiry_are_observable() {
             pane_id
         ),
     );
-    assert_eq!(metadata["result"]["type"], "ok");
+    assert_eq!(metadata["error"]["code"], "unsupported_runtime");
 
+    support::hc::report_agent(&socket_path, &pane_id, "pi", "blocked");
     let set_event = reader.read_json_line(Duration::from_secs(2));
     assert_eq!(set_event["event"], "pane.agent_status_changed");
     assert_eq!(set_event["data"]["pane_id"], pane_id);
-    assert_eq!(set_event["data"]["agent_status"], "working");
+    assert_eq!(set_event["data"]["agent_status"], "blocked");
     assert_eq!(set_event["data"]["agent"], "pi");
-    assert_eq!(set_event["data"]["title"], "short lived");
-
-    let expiry_event = reader.read_json_line(Duration::from_secs(3));
-    assert_eq!(expiry_event["event"], "pane.agent_status_changed");
-    assert_eq!(expiry_event["data"]["pane_id"], pane_id);
-    assert_eq!(expiry_event["data"]["agent_status"], "working");
-    assert_eq!(expiry_event["data"]["agent"], "pi");
-    assert!(expiry_event["data"]["title"].is_null());
+    assert!(set_event["data"]["title"].is_null());
+    support::hc::report_agent(&socket_path, &pane_id, "pi", "done");
+    for event in [
+        reader.read_json_line(Duration::from_secs(3)),
+        done_reader.read_json_line(Duration::from_secs(3)),
+    ] {
+        assert_eq!(event["event"], "pane.agent_status_changed");
+        assert_eq!(event["data"]["pane_id"], pane_id);
+        assert_eq!(event["data"]["agent_status"], "done");
+        assert_eq!(event["data"]["agent"], "pi");
+    }
+    assert!(
+        reader
+            .try_read_json_line(Duration::from_millis(500))
+            .is_none(),
+        "client-local TTL must not expire source status"
+    );
+    let pane = support::hc::request(
+        &socket_path,
+        "pane.get",
+        serde_json::json!({"pane_id":pane_id}),
+    );
+    assert_eq!(pane["result"]["pane"]["agent_status"], "done");
 
     cleanup_spawned_herdr(child, base);
 }

@@ -9,12 +9,30 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
-// No real SSH connection or server is started. Stop at startup after recording setup actions.
+// No network/runtime: saved setup ends at hc hello; explicit legacy attach fails at startup.
 const SSH: &str = r#"#!/bin/sh
 for arg do
     last=$arg
     if [ "$arg" = 'StrictHostKeyChecking=yes' ]; then strict_host_key_check=yes; fi
 done
+case "$last" in
+    *' connect')
+        echo hc-connect >>"$FAKE_ROOT/command-order"
+        printf '%s\n' "$@" >"$FAKE_ROOT/ssh-args"
+        echo hc-connect >>"$FAKE_ROOT/probes"
+        printf '%s\n' "$last" >"$FAKE_ROOT/start-command"
+        if [ "$FAKE_WINDOWS_TRANSPORT_FAILURE" = yes ]; then echo 'ssh: connect to host fake-host port 22: Connection refused' >&2; exit 255; fi
+        if [ "$FAKE_STRICT_HOST_KEY_FAILURE" = yes ] && [ "$strict_host_key_check" = yes ]; then
+            echo 'Host key verification failed.' >&2; exit 255
+        fi
+        if [ "$FAKE_INSTALLED" = missing ]; then echo 'hc: not found' >&2; exit 127; fi
+        IFS= read -r hello
+        printf '%s\n' "$hello" >>"$FAKE_ROOT/source-requests"
+        printf '%s\n' "$FAKE_HC_HELLO"
+        # The setup check must disconnect after hello, not launch a terminal.
+        while IFS= read -r request; do printf '%s\n' "$request" >>"$FAKE_ROOT/source-requests"; done
+        exit 0 ;;
+esac
 case "$*" in
     *powershell.exe*) echo windows >>"$FAKE_ROOT/command-order" ;;
     *'/bin/sh -s'*) echo posix-probe >>"$FAKE_ROOT/command-order" ;;
@@ -86,6 +104,9 @@ struct SetupResult {
     probes: String,
     command_order: String,
     start_command: String,
+    catalog: Option<serde_json::Value>,
+    source_requests: Vec<serde_json::Value>,
+    ssh_args: String,
 }
 
 #[derive(Default)]
@@ -93,9 +114,11 @@ struct SetupOptions<'a> {
     sessions: Option<&'a str>,
     selection: &'a [u8],
     explicit_session: Option<&'a str>,
+    hc_path: Option<&'a str>,
     noninteractive: bool,
     windows: bool,
     windows_transport_failure: bool,
+    hello: Option<&'a str>,
 }
 
 fn setup(installed: &str, answer: &str, handoff: bool) -> SetupResult {
@@ -165,6 +188,9 @@ fn setup_options(
         if let Some(session) = options.explicit_session {
             command.args(["--remote-session", session]);
         }
+        if let Some(path) = options.hc_path {
+            command.args(["--hc-path", path]);
+        }
     }
     command.env(
         "PATH",
@@ -176,6 +202,7 @@ fn setup_options(
     command.env("XDG_RUNTIME_DIR", &root);
     command.env("FAKE_ROOT", &root);
     command.env("FAKE_INSTALLED", installed);
+    command.env("FAKE_HC_HELLO",options.hello.unwrap_or(r#"{"jsonrpc":"2.0","id":1,"result":{"generation":1,"framed":true,"core":{"id":"setup-fixture","name":"fake-host"},"version":"0.1.18","methods":[]}}"#));
     command.env(
         "FAKE_SESSIONS",
         options
@@ -206,6 +233,10 @@ fn setup_options(
         "HERDR_CLIENT_SOCKET_PATH",
         "HERDR_REMOTE_BINARY",
         "HERDR_CONFIG_PATH",
+        "HERDR_HC_SOURCE_PROFILE",
+        "HC_SOCKET",
+        "HC_TERMINAL_ID",
+        "HC_SESSION",
     ] {
         command.env_remove(name);
     }
@@ -276,16 +307,20 @@ fn setup_options(
     let probes = fs::read_to_string(root.join("probes")).unwrap_or_default();
     let command_order = fs::read_to_string(root.join("command-order")).unwrap_or_default();
     let start_command = fs::read_to_string(root.join("start-command")).unwrap_or_default();
-    // Every scenario either cancels or reaches the intentionally failed startup.
-    let saved = root
-        .join("state")
-        .join(app)
-        .join("client/endpoints.json")
-        .exists();
+    let catalog = fs::read(root.join("state").join(app).join("client/endpoints.json"))
+        .ok()
+        .map(|bytes| serde_json::from_slice(&bytes).unwrap());
+    let ssh_args = fs::read_to_string(root.join("ssh-args")).unwrap_or_default();
+    let source_requests = fs::read_to_string(root.join("source-requests"))
+        .unwrap_or_default()
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("source must send JSON hello only"))
+        .collect();
     fs::remove_dir_all(root).unwrap();
-    assert!(
-        !saved,
-        "failed or cancelled setup saved the machine: {output}"
+    assert_eq!(
+        catalog.is_some(),
+        status.success() && !handoff,
+        "setup saved an unexpected catalog: {output}"
     );
     assert!(!timed_out, "setup timed out: {output}");
     SetupResult {
@@ -296,6 +331,9 @@ fn setup_options(
         probes,
         command_order,
         start_command,
+        catalog,
+        source_requests,
+        ssh_args,
     }
 }
 
@@ -352,23 +390,152 @@ fn machine_add_accepts_help_argument_order() {
     assert!(!saved, "failed preparation must not save a machine");
 }
 
-#[test]
-fn machine_add_fresh_host_offers_installation_and_cancellation_saves_nothing() {
-    let result = setup("missing", "n\n", false);
-    assert_eq!(result.probes, "platform\ncandidates\n", "{}", result.output);
-    assert_eq!(result.prompts, 1, "{}", result.output);
+fn assert_hc_only(result: &SetupResult, session: &str) {
+    assert_hc_only_at(result, session, None);
+}
+
+fn assert_hc_only_at(result: &SetupResult, session: &str, hc_path: Option<&str>) {
+    assert!(result.success, "{}", result.output);
+    assert_eq!(result.prompts, 0, "{}", result.output);
+    assert_eq!(result.probes, "hc-connect\n", "{}", result.output);
+    assert_eq!(result.command_order, "hc-connect\n", "{}", result.output);
+    assert!(result.actions.is_empty(), "{}", result.actions);
     assert!(
-        result.output.contains("installation cancelled"),
+        !result.output.contains("Running sessions"),
         "{}",
         result.output
     );
-    assert!(result.actions.is_empty(), "{}", result.output);
+    let profiles = result.catalog.as_ref().unwrap()["ssh"].as_array().unwrap();
+    assert_eq!(profiles.len(), 1);
+    assert_eq!(profiles[0]["target"], "fake-host");
+    assert_eq!(profiles[0]["session"], session);
+    assert_eq!(profiles[0]["label"], "VPS");
+    assert_eq!(profiles[0]["enabled"], true);
+    let executable = hc_path.map_or_else(
+        || "hc".to_owned(),
+        |path| {
+            if path
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || "/._-".contains(ch))
+            {
+                path.to_owned()
+            } else {
+                format!("'{}'", path.replace('\'', "'\\''"))
+            }
+        },
+    );
+    assert!(
+        result
+            .start_command
+            .trim_end()
+            .ends_with(&format!("exec {executable} connect")),
+        "{}",
+        result.start_command
+    );
+    assert_eq!(
+        profiles[0].get("hc_path").and_then(|value| value.as_str()),
+        hc_path
+    );
+    assert!(!result.start_command.contains("remote-client-bridge"));
+    assert_eq!(
+        result.source_requests.len(),
+        1,
+        "{:?}",
+        result.source_requests
+    );
+    assert_eq!(result.source_requests[0]["method"], "hello");
+    assert_eq!(result.source_requests[0]["params"]["generation"], 1);
+    assert_eq!(result.source_requests[0]["params"]["framed"], true);
+    for option in [
+        "StrictHostKeyChecking=yes",
+        "BatchMode=yes",
+        "NumberOfPasswordPrompts=0",
+    ] {
+        assert!(
+            result.ssh_args.lines().any(|arg| arg == option),
+            "{}",
+            result.ssh_args
+        );
+    }
 }
 
 #[test]
-fn machine_setup_accepts_a_native_windows_probe_without_a_posix_probe() {
-    // A successful Windows probe must short-circuit so a native Windows host
-    // never falls through to the POSIX `/bin/sh` probe.
+fn machine_add_custom_hc_path_only_sends_hello_and_persists_the_path() {
+    for path in ["/opt/hc-pinned", "/opt/hc with 'quotes';not-a-command"] {
+        let result = setup_options(
+            "new",
+            "",
+            false,
+            false,
+            SetupOptions {
+                hc_path: Some(path),
+                explicit_session: Some("agents"),
+                ..Default::default()
+            },
+        );
+        assert_hc_only_at(&result, "agents", Some(path));
+    }
+}
+
+#[test]
+fn machine_add_missing_custom_hc_never_falls_back_or_saves() {
+    let result = setup_options(
+        "missing",
+        "",
+        false,
+        false,
+        SetupOptions {
+            hc_path: Some("/missing/hc"),
+            noninteractive: true,
+            ..Default::default()
+        },
+    );
+    assert!(!result.success, "{}", result.output);
+    assert!(result.catalog.is_none());
+    assert_eq!(result.probes, "hc-connect\n");
+    assert!(result
+        .start_command
+        .trim_end()
+        .ends_with("exec /missing/hc connect"));
+    assert!(!result.start_command.contains("exec hc connect"));
+    assert!(result.source_requests.is_empty());
+    assert!(result.actions.is_empty());
+}
+
+#[test]
+fn machine_add_invalid_hc_path_does_not_contact_ssh() {
+    let result = setup_options(
+        "new",
+        "",
+        false,
+        false,
+        SetupOptions {
+            hc_path: Some("relative/hc"),
+            ..Default::default()
+        },
+    );
+    assert!(!result.success, "{}", result.output);
+    assert!(result.catalog.is_none());
+    assert!(result.probes.is_empty());
+    assert!(result.source_requests.is_empty());
+    assert!(result.actions.is_empty());
+}
+
+#[test]
+fn machine_add_missing_hc_fails_without_installing_or_saving() {
+    let result = setup("missing", "y\n", false);
+    assert!(!result.success, "{}", result.output);
+    assert!(result.catalog.is_none());
+    assert_eq!(result.prompts, 0);
+    assert_eq!(result.probes, "hc-connect\n");
+    assert!(result.actions.is_empty());
+    assert!(result.source_requests.is_empty());
+    assert!(result.output.contains("hc: not found"), "{}", result.output);
+    assert!(result.output.contains("machine was not saved"));
+}
+
+#[test]
+fn machine_add_checks_hc_without_platform_or_remote_herdr_probes() {
     let result = setup_options(
         "new",
         "n\n",
@@ -379,18 +546,11 @@ fn machine_setup_accepts_a_native_windows_probe_without_a_posix_probe() {
             ..Default::default()
         },
     );
-    let order: Vec<&str> = result.command_order.lines().collect();
-    assert_eq!(order.first().copied(), Some("windows"), "{}", result.output);
-    assert!(!order.contains(&"posix-probe"), "{}", result.output);
-    assert!(
-        result.output.contains("installation cancelled"),
-        "{}",
-        result.output
-    );
+    assert_hc_only(&result, "default");
 }
 
 #[test]
-fn machine_setup_windows_transport_failure_is_not_retried() {
+fn machine_add_hc_transport_failure_never_falls_back_to_an_installer() {
     let result = setup_options(
         "new",
         "",
@@ -402,149 +562,59 @@ fn machine_setup_windows_transport_failure_is_not_retried() {
         },
     );
     assert!(!result.success, "{}", result.output);
-    assert_eq!(result.prompts, 0, "{}", result.output);
-    assert!(result.actions.is_empty(), "{}", result.output);
-    assert_eq!(result.command_order, "windows\n", "{}", result.output);
-    assert!(
-        result.output.contains("Connection refused"),
-        "{}",
-        result.output
-    );
+    assert!(result.catalog.is_none());
+    assert_eq!(result.prompts, 0);
+    assert!(result.actions.is_empty());
+    assert_eq!(result.command_order, "hc-connect\n");
+    assert!(result.output.contains("Connection refused"));
 }
 
 #[test]
-fn machine_add_discovers_sessions_once_and_prepares_the_selected_session() {
-    for (sessions, selection, expected) in [
-        (r#"{"sessions":[]}"#, &b""[..], "default"),
-        (
-            r#"{"extra":1,"sessions":[{"name":"stopped","running":false},{"name":"bad/name","running":true},{"name":"agents","running":true,"future":true}]}"#,
-            &b""[..],
-            "agents",
-        ),
-        (
-            r#"{"sessions":[{"name":"default","running":true},{"name":"agents","running":true}]}"#,
-            &b"\x1b[B\r"[..],
-            "agents",
-        ),
+fn machine_add_does_not_discover_or_adopt_remote_herdr_sessions() {
+    for sessions in [
+        "failed",
+        "not json",
+        r#"{"sessions":[{"name":"agents","running":true}]}"#,
     ] {
         let result = setup_options(
             "new",
-            "y\n",
+            "",
             false,
             false,
             SetupOptions {
                 sessions: Some(sessions),
-                selection,
                 ..Default::default()
             },
         );
-        assert_eq!(
-            result.probes, "platform\ncandidates\nsessions\n",
-            "{}",
-            result.output
-        );
-        assert_eq!(result.actions, "stop\nstart\n", "{}", result.output);
-        if expected == "default" {
-            assert!(
-                !result.start_command.contains("--session"),
-                "{}",
-                result.start_command
-            );
-        } else {
-            assert!(
-                result.start_command.contains("--session agents"),
-                "{}",
-                result.start_command
-            );
-        }
-        if !selection.is_empty() {
-            let picker = result
-                .output
-                .split("Running sessions on fake-host:")
-                .nth(1)
-                .unwrap();
-            assert!(
-                picker.starts_with("\r\n"),
-                "picker did not return to column zero: {picker:?}"
-            );
-            assert!(picker.contains("default\u{1b}[0m\r\n"), "{picker:?}");
-            assert!(picker.contains("  agents\r\n"), "{picker:?}");
-        }
+        assert_hc_only(&result, "default");
     }
 }
 
 #[test]
-fn machine_add_failed_discovery_and_cancel_never_prepare_or_save() {
-    for (sessions, selection, expected) in [
-        ("failed", &b""[..], "session query denied"),
-        ("not json", &b""[..], "--remote-session"),
-        (
-            r#"{"sessions":[{"name":"agents"}]}"#,
-            &b""[..],
-            "--remote-session",
-        ),
-        (
-            r#"{"sessions":[{"name":"default","running":true},{"name":"agents","running":true}]}"#,
-            &b"\x1b"[..],
-            "selection cancelled",
-        ),
-    ] {
-        let result = setup_options(
-            "new",
-            "y\n",
-            false,
-            false,
-            SetupOptions {
-                sessions: Some(sessions),
-                selection,
-                ..Default::default()
-            },
-        );
-        assert!(!result.success, "{}", result.output);
-        assert!(result.actions.is_empty(), "{}", result.output);
-        assert!(result.output.contains(expected), "{}", result.output);
-        assert!(
-            result.output.contains("machine was not saved"),
-            "{}",
-            result.output
-        );
-    }
-}
-
-#[test]
-fn machine_add_skips_discovery_for_scripts_and_explicit_sessions() {
-    for (noninteractive, explicit_session) in [
+fn machine_add_checks_hc_for_scripts_and_keeps_explicit_source_sessions() {
+    for (noninteractive, session) in [
         (true, None),
         (true, Some("agents")),
         (false, Some("agents")),
     ] {
         let result = setup_options(
             "new",
-            "y\n",
+            "",
             false,
             false,
             SetupOptions {
                 noninteractive,
-                explicit_session,
-                sessions: Some("failed"),
+                explicit_session: session,
                 ..Default::default()
             },
         );
-        assert_eq!(result.probes, "platform\ncandidates\n", "{}", result.output);
+        assert_hc_only(&result, session.unwrap_or("default"));
+        let assignment = format!("HC_SESSION={}", session.unwrap_or("default"));
         assert!(
-            result.output.contains(if explicit_session.is_some() {
-                "session agents"
-            } else {
-                "session default"
-            }),
+            result.start_command.contains(&assignment),
             "{}",
-            result.output
+            result.start_command
         );
-        if noninteractive {
-            assert!(result.actions.is_empty(), "{}", result.output);
-        } else {
-            assert_eq!(result.actions, "stop\nstart\n", "{}", result.output);
-        }
     }
 }
 
@@ -552,8 +622,9 @@ fn machine_add_skips_discovery_for_scripts_and_explicit_sessions() {
 fn machine_add_reports_strict_host_key_failure() {
     let result = setup_with_strict_host_key_failure("new", "", false, true);
     assert!(!result.success, "{}", result.output);
-    assert_eq!(result.prompts, 0, "{}", result.output);
-    assert!(result.actions.is_empty(), "{}", result.output);
+    assert!(result.catalog.is_none());
+    assert_eq!(result.prompts, 0);
+    assert!(result.actions.is_empty());
     assert!(
         result.output.contains("Host key verification failed"),
         "{}",
@@ -561,65 +632,57 @@ fn machine_add_reports_strict_host_key_failure() {
     );
     assert!(
         result
+            .ssh_args
+            .lines()
+            .any(|arg| arg == "StrictHostKeyChecking=yes"),
+        "{}",
+        result.ssh_args
+    );
+    assert!(result.output.contains("machine was not saved"));
+    assert!(
+        result
             .output
             .contains("saved machines use strict host-key checking"),
         "{}",
         result.output
     );
-    assert!(
-        !result.output.contains("lost connection to server"),
-        "{}",
-        result.output
-    );
+    assert!(!result.output.contains("lost connection to server"));
 }
 
 #[test]
-fn machine_setup_old_install_requires_one_explicit_stop_approval() {
-    let result = setup("old", "y\n", false);
-    assert_eq!(result.prompts, 1, "{}", result.output);
-    assert!(
-        result
-            .output
-            .contains("This stops active remote pane processes"),
-        "{}",
-        result.output
-    );
-    assert_eq!(
-        result.actions, "install\nstop\nstart\n",
-        "{}",
-        result.output
-    );
+fn machine_add_existing_remote_herdr_is_neither_updated_stopped_nor_handed_off() {
+    for (installed, answer) in [("old", "y\n"), ("old", "\n"), ("new", "y\n"), ("new", "\n")] {
+        assert_hc_only(&setup(installed, answer, false), "default");
+    }
 }
 
 #[test]
-fn machine_setup_old_install_enter_cancels_without_remote_changes() {
-    let result = setup("old", "\n", false);
-    assert!(result.actions.is_empty(), "{}", result.output);
-    assert!(
-        result.output.contains("machine was not saved"),
-        "{}",
-        result.output
-    );
-}
-
-#[test]
-fn machine_setup_new_install_old_server_enter_does_not_stop_or_handoff() {
-    let result = setup("new", "\n", false);
-    assert!(result.actions.is_empty(), "{}", result.output);
-    assert!(
-        result
-            .output
-            .contains("This stops active remote pane processes"),
-        "{}",
-        result.output
-    );
-}
-
-#[test]
-fn machine_setup_new_install_old_server_approval_stops_then_starts_without_installing() {
-    let result = setup("new", "y\n", false);
-    assert_eq!(result.prompts, 1, "{}", result.output);
-    assert_eq!(result.actions, "stop\nstart\n", "{}", result.output);
+fn machine_add_rejects_incompatible_hc_hello_without_saving() {
+    for hello in [
+        r#"{"id":1,"result":{"generation":2,"framed":true,"core":{"id":"source","name":"host"},"version":"future","methods":[]}}"#,
+        r#"{"id":1,"result":{"generation":1,"framed":false,"core":{"id":"source","name":"host"},"version":"future","methods":[]}}"#,
+        r#"{"id":1,"result":{"generation":1,"framed":true,"core":{"id":"","name":"host"},"version":"future","methods":[]}}"#,
+        r#"{"id":2,"result":{}}"#,
+        "not json",
+    ] {
+        let result = setup_options(
+            "new",
+            "",
+            false,
+            false,
+            SetupOptions {
+                hello: Some(hello),
+                ..Default::default()
+            },
+        );
+        assert!(!result.success, "{}", result.output);
+        assert!(result.catalog.is_none());
+        assert_eq!(result.source_requests.len(), 1);
+        assert_eq!(result.source_requests[0]["method"], "hello");
+        assert!(result.actions.is_empty());
+        assert_eq!(result.prompts, 0);
+        assert!(result.output.contains("machine was not saved"));
+    }
 }
 
 #[test]

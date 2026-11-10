@@ -9,6 +9,8 @@ The [Config reference](/docs/config-reference/) lists every setting and keybindi
 
 ## Config file
 
+Runtime scope: colors, layout, input bindings, and attention markers are Herdr presentation. hc owns live programs, source terminal/cwd facts, and reported status. Saved SSH launches use source defaults rather than client paths or environment; local hc launches can use local launch configuration/context. Herdr detection/hooks/resume settings do not override hc facts. Saved-source Git/worktree filesystem operations are unavailable and never fall back to a local path; see [Connecting machines](/docs/connecting-machines/).
+
 Herdr reads config from:
 
 ```text
@@ -550,7 +552,7 @@ Changing this setting requires restarting the affected Herdr server or reattachi
 
 ## Agent session restore
 
-Herdr resumes supported Agent conversations after a server restart by default:
+These are **legacy agent-relaunch settings**, not hc recovery controls. hc-owned panes only reattach exact bindings; they never run resume commands, substitute a shell, or apply startup launch spacing. The compatibility settings remain:
 
 ```toml
 [session]
@@ -560,7 +562,7 @@ startup_per_agent_delay_ms = 100
 
 Automatic restores start one agent at a time, 100 milliseconds apart by default, to reduce startup contention. The first eligible agent starts immediately. Set `startup_per_agent_delay_ms = 0` to disable spacing. Manual launches and explicit terminal attaches are unaffected. Restart the Herdr server to apply changes.
 
-Only panes with a valid native session reference from an official integration can resume; other panes restore as normal shells. See [Session state and restore](/docs/session-state/) for supported Agents and persistence behavior.
+The spacing behavior above applies only to legacy relaunch. A saved session reference is not hc authority: missing or malformed hc bindings stay unavailable instead of becoming normal shells. See [Session state and restore](/docs/session-state/).
 
 ## IME cursor tracking
 

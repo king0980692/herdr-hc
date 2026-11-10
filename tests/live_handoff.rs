@@ -91,6 +91,7 @@ fn spawn_server_with_env(
     for (key, value) in extra_env {
         cmd.env(key, value);
     }
+    support::hc::configure_pty(&mut cmd, runtime_dir);
 
     let child = pair.slave.spawn_command(cmd).unwrap();
     register_spawned_herdr_pid(child.process_id());
@@ -127,6 +128,7 @@ fn spawn_named_session_server(
     cmd.env("XDG_CONFIG_HOME", config_home);
     cmd.env("XDG_RUNTIME_DIR", runtime_dir);
     cmd.env("HERDR_SESSION", session_name);
+    support::hc::configure_pty(&mut cmd, runtime_dir);
     cmd.env_remove("HERDR_SOCKET_PATH");
     cmd.env_remove("HERDR_CLIENT_SOCKET_PATH");
     cmd.env("SHELL", "/bin/sh");
@@ -162,6 +164,7 @@ fn spawn_default_session_server(config_home: &Path, runtime_dir: &Path) -> Spawn
     cmd.env("XDG_CONFIG_HOME", config_home);
     cmd.env("XDG_RUNTIME_DIR", runtime_dir);
     cmd.env("XDG_STATE_HOME", runtime_dir.join("state"));
+    support::hc::configure_pty(&mut cmd, runtime_dir);
     cmd.env_remove("HERDR_SESSION");
     cmd.env_remove("HERDR_SOCKET_PATH");
     cmd.env_remove("HERDR_CLIENT_SOCKET_PATH");
@@ -219,6 +222,7 @@ fn spawn_server_with_args_and_socket_env(
         cmd.env_remove("HERDR_CLIENT_SOCKET_PATH");
     }
     cmd.env("SHELL", "/bin/sh");
+    support::hc::configure_pty(&mut cmd, runtime_dir);
 
     let child = pair.slave.spawn_command(cmd).unwrap();
     register_spawned_herdr_pid(child.process_id());
@@ -308,6 +312,81 @@ fn wait_for_api(socket_path: &Path, timeout: Duration) {
         "api did not become ready at {}; last error: {last_error}",
         socket_path.display()
     );
+}
+
+fn stop_presentation(mut server: SpawnedHerdr, socket: &Path) {
+    support::drain_pty(server._master.as_ref());
+    assert_ok(request(
+        socket,
+        serde_json::json!({"id":"stop-presentation","method":"server.stop","params":{}}),
+    ));
+    assert!(
+        support::wait_until(Duration::from_secs(10), Duration::from_millis(25), || {
+            server.child.try_wait().unwrap().is_some()
+        }),
+        "presentation did not exit"
+    );
+}
+
+fn restart_presentation(
+    server: SpawnedHerdr,
+    socket: &Path,
+    runtime: &Path,
+    start: impl FnOnce() -> SpawnedHerdr,
+) -> SpawnedHerdr {
+    let core = request(
+        socket,
+        serde_json::json!({"id":"source-before","method":"runtime.source","params":{}}),
+    )["result"]["core_id"]
+        .clone();
+    assert!(core.as_str().is_some_and(|id| !id.is_empty()));
+    let mut records = Vec::new();
+    assert!(support::wait_until(
+        Duration::from_secs(10),
+        Duration::from_millis(25),
+        || {
+            records = support::hc::terminals(runtime);
+            records
+                .iter()
+                .all(|record| record["state"] != "live" || record["pid"].as_u64().is_some())
+        }
+    ));
+    let identities = |records: Vec<serde_json::Value>| {
+        let mut ids: Vec<_> = records
+            .into_iter()
+            .map(|record| {
+                (
+                    record["address"].as_str().unwrap().to_owned(),
+                    record["pid"].clone(),
+                )
+            })
+            .collect();
+        ids.sort_by(|a, b| a.0.cmp(&b.0));
+        ids
+    };
+    let before = identities(records);
+    stop_presentation(server, socket);
+    assert_eq!(
+        identities(support::hc::terminals(runtime)),
+        before,
+        "presentation exit changed source programs"
+    );
+    let server = start();
+    support::drain_pty(server._master.as_ref());
+    wait_for_api(socket, Duration::from_secs(10));
+    assert_eq!(
+        request(
+            socket,
+            serde_json::json!({"id":"source-after","method":"runtime.source","params":{}})
+        )["result"]["core_id"],
+        core
+    );
+    assert_eq!(
+        identities(support::hc::terminals(runtime)),
+        before,
+        "restart substituted source programs"
+    );
+    server
 }
 
 fn write_plugin_manifest(root: &Path, plugin_id: &str) {
@@ -499,56 +578,6 @@ fn wait_for_server_ptmx_fd_count(pid: u32, expected: usize, timeout: Duration) {
     panic!("server pid {pid} had {last_count} ptmx master fds; expected {expected}");
 }
 
-#[cfg(target_os = "linux")]
-fn wait_for_replacement_server_pid(runtime_dir: &Path, old_pid: u32, timeout: Duration) -> u32 {
-    let deadline = Instant::now() + timeout;
-    let mut last_pids = Vec::new();
-    while Instant::now() < deadline {
-        last_pids = support::herdr_server_pids_for_runtime_dir(runtime_dir).unwrap_or_default();
-        if let Some(pid) = last_pids.iter().copied().find(|pid| *pid != old_pid) {
-            return pid;
-        }
-        thread::sleep(Duration::from_millis(25));
-    }
-    panic!(
-        "replacement server for {} did not appear; last pids: {:?}",
-        runtime_dir.display(),
-        last_pids
-    );
-}
-
-#[cfg(target_os = "macos")]
-fn wait_for_replacement_server_pid(_runtime_dir: &Path, old_pid: u32, timeout: Duration) -> u32 {
-    let handoff_socket_pattern = format!("herdr-handoff-{old_pid}.sock");
-    let deadline = Instant::now() + timeout;
-    let mut last_stdout = String::new();
-    while Instant::now() < deadline {
-        if let Ok(output) = std::process::Command::new("pgrep")
-            .args(["-af", &handoff_socket_pattern])
-            .output()
-        {
-            last_stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-            for line in last_stdout.lines() {
-                let Some(pid_text) = line.split_whitespace().next() else {
-                    continue;
-                };
-                let Ok(pid) = pid_text.parse::<u32>() else {
-                    continue;
-                };
-                if pid != old_pid {
-                    return pid;
-                }
-            }
-        }
-        thread::sleep(Duration::from_millis(25));
-    }
-    panic!(
-        "replacement server for {} did not appear; last pgrep output: {}",
-        _runtime_dir.display(),
-        last_stdout
-    );
-}
-
 fn unused_local_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -580,7 +609,7 @@ fn wait_for_http_contains(port: u16, needle: &str, timeout: Duration) -> String 
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
-fn live_server_holds_one_pty_master_fd_per_pane() {
+fn hc_server_does_not_own_pane_ptys() {
     let _lock = test_lock();
     let base = unique_test_dir();
     let config_home = base.join("config");
@@ -608,7 +637,7 @@ fn live_server_holds_one_pty_master_fd_per_pane() {
         .as_str()
         .unwrap()
         .to_string();
-    wait_for_server_ptmx_fd_count(server_pid, 1, Duration::from_secs(5));
+    wait_for_server_ptmx_fd_count(server_pid, 0, Duration::from_secs(5));
 
     let second = request(
         &api_socket,
@@ -627,7 +656,7 @@ fn live_server_holds_one_pty_master_fd_per_pane() {
         .as_str()
         .unwrap()
         .to_string();
-    wait_for_server_ptmx_fd_count(server_pid, 2, Duration::from_secs(5));
+    wait_for_server_ptmx_fd_count(server_pid, 0, Duration::from_secs(5));
 
     assert_ok(request(
         &api_socket,
@@ -641,16 +670,43 @@ fn live_server_holds_one_pty_master_fd_per_pane() {
             }
         }),
     ));
-    wait_for_server_ptmx_fd_count(server_pid, 3, Duration::from_secs(5));
-
-    assert_ok(request(
-        &api_socket,
-        serde_json::json!({"id":"test:handoff","method":"server.live_handoff","params":{}}),
+    wait_for_server_ptmx_fd_count(server_pid, 0, Duration::from_secs(5));
+    support::drain_pty(spawned._master.as_ref());
+    assert!(support::wait_until(
+        Duration::from_secs(10),
+        Duration::from_millis(25),
+        || {
+            let terminals = support::hc::terminals(&runtime_dir);
+            terminals.len() == 3
+                && terminals
+                    .iter()
+                    .all(|terminal| terminal["pid"].as_u64().is_some())
+        }
     ));
-    let replacement_pid =
-        wait_for_replacement_server_pid(&runtime_dir, server_pid, Duration::from_secs(10));
-    wait_for_api(&api_socket, Duration::from_secs(10));
-    wait_for_server_ptmx_fd_count(replacement_pid, 3, Duration::from_secs(5));
+    let programs = || {
+        let mut programs: Vec<_> = support::hc::terminals(&runtime_dir)
+            .into_iter()
+            .map(|terminal| {
+                assert_eq!(terminal["state"], "live", "{terminal}");
+                (
+                    terminal["address"].as_str().unwrap().to_owned(),
+                    terminal["pid"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        programs.sort();
+        programs
+    };
+    let before = programs();
+    assert_eq!(before.len(), 3);
+    let rejected = support::hc::request(&api_socket, "server.live_handoff", serde_json::json!({}));
+    assert_eq!(rejected["error"]["code"], "handoff_failed");
+    assert_eq!(
+        programs(),
+        before,
+        "rejected local PTY import changed hc programs"
+    );
+    wait_for_server_ptmx_fd_count(server_pid, 0, Duration::from_secs(5));
 
     let _ = request(
         &api_socket,
@@ -660,9 +716,8 @@ fn live_server_holds_one_pty_master_fd_per_pane() {
     cleanup_test_base(&base);
 }
 
-#[cfg(target_os = "linux")]
 #[test]
-fn live_handoff_unknown_pane_exit_preserves_session_on_shutdown() {
+fn hc_finished_source_preserves_binding_on_shutdown() {
     let _lock = test_lock();
     let base = unique_test_dir();
     let config_home = base.join("config");
@@ -685,29 +740,14 @@ fn live_handoff_unknown_pane_exit_preserves_session_on_shutdown() {
         .as_str()
         .expect("root pane id")
         .to_string();
-    let old_pid = spawned.child.process_id().expect("old server pid");
+    let _restarted = restart_presentation(spawned, &api_socket, &runtime_dir, || {
+        spawn_server(&config_home, &runtime_dir, &api_socket)
+    });
 
     assert_ok(request(
         &api_socket,
-        serde_json::json!({"id":"test:handoff","method":"server.live_handoff","params":{}}),
+        serde_json::json!({"id":"finish-source","method":"pane.send_input","params":{"pane_id":pane_id,"text":"exit","keys":["Enter"]}}),
     ));
-    let replacement_pid =
-        wait_for_replacement_server_pid(&runtime_dir, old_pid, Duration::from_secs(10));
-    drop(spawned);
-    wait_for_api(&api_socket, Duration::from_secs(10));
-
-    let process_info = request(
-        &api_socket,
-        serde_json::json!({
-            "id": "test:process-info",
-            "method": "pane.process_info",
-            "params": {"pane_id": pane_id}
-        }),
-    );
-    let shell_pid = process_info["result"]["process_info"]["shell_pid"]
-        .as_u64()
-        .expect("shell pid") as libc::pid_t;
-    assert_eq!(unsafe { libc::kill(shell_pid, libc::SIGHUP) }, 0);
 
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
@@ -715,116 +755,153 @@ fn live_handoff_unknown_pane_exit_preserves_session_on_shutdown() {
             &api_socket,
             serde_json::json!({"id":"test:panes","method":"pane.list","params":{}}),
         );
-        if panes["result"]["panes"]
-            .as_array()
-            .is_some_and(Vec::is_empty)
-        {
+        let terminals = support::hc::terminals(&runtime_dir);
+        if terminals.len() == 1 && terminals[0]["state"] == "finished" {
+            assert_eq!(panes["result"]["panes"][0]["pane_id"], pane_id);
             break;
         }
-        assert!(Instant::now() < deadline, "handoff pane was not removed");
+        assert!(
+            Instant::now() < deadline,
+            "source did not report finished: {terminals:?}"
+        );
         thread::sleep(Duration::from_millis(20));
     }
 
-    assert_ok(request(
-        &api_socket,
-        serde_json::json!({"id":"test:stop","method":"server.stop","params":{}}),
-    ));
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Path::new(&format!("/proc/{replacement_pid}")).exists() {
-        assert!(Instant::now() < deadline, "replacement server did not stop");
-        thread::sleep(Duration::from_millis(20));
-    }
+    stop_presentation(_restarted, &api_socket);
 
     let session: serde_json::Value = serde_json::from_slice(
         &fs::read(config_home.join("herdr-dev/session.json")).expect("saved session"),
     )
     .expect("valid session json");
     assert_eq!(session["workspaces"].as_array().map(Vec::len), Some(1));
-    assert_eq!(
-        session["workspaces"][0]["tabs"][0]["panes"]
-            .as_object()
-            .map(serde_json::Map::len),
-        Some(1)
-    );
+    let panes = session["workspaces"][0]["tabs"][0]["panes"]
+        .as_object()
+        .unwrap();
+    assert_eq!(panes.len(), 1);
+    assert!(panes.values().next().unwrap()["hc_binding"].is_object());
 
     cleanup_test_base(&base);
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
-fn live_handoff_carries_more_panes_than_one_scm_rights_message() {
+fn hc_presentation_restart_preserves_many_panes_without_pty_transfer() {
     const PANES: usize = 70;
-
     let _lock = test_lock();
     let base = unique_test_dir();
     let config_home = base.join("config");
     let runtime_dir = base.join("runtime");
     let api_socket = runtime_dir.join("herdr.sock");
-
-    let spawned = spawn_server(&config_home, &runtime_dir, &api_socket);
+    let mut spawned = spawn_server(&config_home, &runtime_dir, &api_socket);
+    support::drain_pty(spawned._master.as_ref());
     wait_for_socket(&api_socket, Duration::from_secs(10));
-    register_runtime_dir(&runtime_dir);
-    let server_pid = spawned
-        .child
-        .process_id()
-        .expect("test server should expose pid");
-
     let created = request(
         &api_socket,
-        serde_json::json!({
-            "id": "test:workspace:create",
-            "method": "workspace.create",
-            "params": {"cwd": "/tmp", "focus": true}
-        }),
+        serde_json::json!({"id":"create","method":"workspace.create","params":{"cwd":"/tmp","focus":true}}),
     );
-    let workspace_id = created["result"]["workspace"]["workspace_id"]
+    let workspace = created["result"]["workspace"]["workspace_id"]
         .as_str()
-        .unwrap()
-        .to_string();
-
-    // One pane per tab keeps the layout shallow, so this exercises the fd
-    // transfer rather than the depth of a single split tree.
+        .unwrap();
     for index in 1..PANES {
         assert_ok(request(
             &api_socket,
-            serde_json::json!({
-                "id": format!("test:tab:create-{index}"),
-                "method": "tab.create",
-                "params": {"workspace_id": workspace_id, "focus": false}
-            }),
+            serde_json::json!({"id":format!("tab-{index}"),"method":"tab.create","params":{"workspace_id":workspace,"focus":false}}),
         ));
     }
-    wait_for_server_ptmx_fd_count(server_pid, PANES, Duration::from_secs(60));
-
+    wait_for_server_ptmx_fd_count(
+        spawned.child.process_id().unwrap(),
+        0,
+        Duration::from_secs(5),
+    );
+    let pane_ids = || {
+        let value = request(
+            &api_socket,
+            serde_json::json!({"id":"panes","method":"pane.list","params":{}}),
+        );
+        let panes = value["result"]["panes"].as_array().unwrap();
+        assert_eq!(panes.len(), PANES);
+        let mut ids: Vec<_> = panes
+            .iter()
+            .map(|pane| {
+                assert!(pane["restore_error"].is_null(), "{pane}");
+                pane["pane_id"].as_str().unwrap().to_owned()
+            })
+            .collect();
+        ids.sort();
+        ids
+    };
+    let ids_before = pane_ids();
+    let mut observed = Vec::new();
+    assert!(
+        support::wait_until(Duration::from_secs(10), Duration::from_millis(25), || {
+            observed = support::hc::terminals(&runtime_dir);
+            observed.len() == PANES
+                && observed
+                    .iter()
+                    .all(|terminal| terminal["pid"].as_u64().is_some())
+        }),
+        "source programs: {}",
+        serde_json::to_string(&observed).unwrap()
+    );
+    let identities = || {
+        let mut identities: Vec<_> = support::hc::terminals(&runtime_dir)
+            .into_iter()
+            .map(|terminal| {
+                (
+                    terminal["address"].as_str().unwrap().to_owned(),
+                    terminal["pid"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        identities.sort();
+        identities
+    };
+    let programs = identities();
+    assert!(
+        programs.iter().any(|(address, _)| address == "t1b"),
+        "fixture must cover hc's nondecimal IDs"
+    );
+    let rejected = support::hc::request(&api_socket, "server.live_handoff", serde_json::json!({}));
+    assert_eq!(rejected["error"]["code"], "handoff_failed");
+    assert_eq!(
+        identities(),
+        programs,
+        "rejected PTY import changed source programs"
+    );
     assert_ok(request(
         &api_socket,
-        serde_json::json!({"id":"test:handoff","method":"server.live_handoff","params":{}}),
+        serde_json::json!({"id":"stop","method":"server.stop","params":{}}),
     ));
-    let replacement_pid =
-        wait_for_replacement_server_pid(&runtime_dir, server_pid, Duration::from_secs(30));
-    wait_for_api(&api_socket, Duration::from_secs(30));
-    wait_for_server_ptmx_fd_count(replacement_pid, PANES, Duration::from_secs(30));
-
-    let panes = request(
-        &api_socket,
-        serde_json::json!({"id":"test:pane:list","method":"pane.list","params":{}}),
-    );
-    assert_eq!(
-        panes["result"]["panes"].as_array().map(Vec::len),
-        Some(PANES),
-        "replacement server should report every pane after handoff"
-    );
-
-    let _ = request(
-        &api_socket,
-        serde_json::json!({"id":"test:stop","method":"server.stop","params":{}}),
-    );
+    assert!(support::wait_until(
+        Duration::from_secs(10),
+        Duration::from_millis(25),
+        || spawned.child.try_wait().unwrap().is_some()
+    ));
     drop(spawned);
+    assert_eq!(
+        identities(),
+        programs,
+        "presentation exit killed source programs"
+    );
+    let restarted = spawn_server(&config_home, &runtime_dir, &api_socket);
+    support::drain_pty(restarted._master.as_ref());
+    wait_for_socket(&api_socket, Duration::from_secs(10));
+    assert_eq!(pane_ids(), ids_before);
+    assert_eq!(
+        identities(),
+        programs,
+        "restore ran substitute programs instead of attaching"
+    );
+    assert_ok(request(
+        &api_socket,
+        serde_json::json!({"id":"stop-restarted","method":"server.stop","params":{}}),
+    ));
+    drop(restarted);
     cleanup_test_base(&base);
 }
 
 #[test]
-fn live_handoff_preserves_named_session_socket_paths() {
+fn hc_restart_preserves_named_session_socket_paths() {
     let _lock = test_lock();
     let base = unique_test_dir();
     let config_home = base.join("config");
@@ -837,12 +914,9 @@ fn live_handoff_preserves_named_session_socket_paths() {
     wait_for_socket(&api_socket, Duration::from_secs(10));
     register_runtime_dir(&runtime_dir);
 
-    assert_ok(request(
-        &api_socket,
-        serde_json::json!({"id":"test:handoff","method":"server.live_handoff","params":{}}),
-    ));
-    drop(spawned);
-    wait_for_api(&api_socket, Duration::from_secs(10));
+    let _restarted = restart_presentation(spawned, &api_socket, &runtime_dir, || {
+        spawn_named_session_server(&config_home, &runtime_dir, "work")
+    });
     wait_for_socket(&client_socket, Duration::from_secs(5));
     assert!(
         !config_home.join("herdr-dev/herdr.sock").exists(),
@@ -853,11 +927,12 @@ fn live_handoff_preserves_named_session_socket_paths() {
         &api_socket,
         serde_json::json!({"id":"test:stop","method":"server.stop","params":{}}),
     );
+    drop(_restarted);
     cleanup_test_base(&base);
 }
 
 #[test]
-fn live_handoff_ignores_leaked_default_socket_env_for_named_session() {
+fn hc_restart_ignores_leaked_default_socket_env_for_named_session() {
     let _lock = test_lock();
     let base = unique_test_dir();
     let config_home = base.join("config");
@@ -882,11 +957,15 @@ fn live_handoff_ignores_leaked_default_socket_env_for_named_session() {
     );
     wait_for_socket(&work_api_socket, Duration::from_secs(10));
 
-    assert_ok(request(
-        &work_api_socket,
-        serde_json::json!({"id":"test:handoff","method":"server.live_handoff","params":{}}),
-    ));
-    drop(work_spawned);
+    let _restarted = restart_presentation(work_spawned, &work_api_socket, &runtime_dir, || {
+        spawn_server_with_args_and_socket_env(
+            &config_home,
+            &runtime_dir,
+            Some("work"),
+            Some(&default_api_socket),
+            Some(&default_client_socket),
+        )
+    });
     wait_for_api(&default_api_socket, Duration::from_secs(10));
     wait_for_api(&work_api_socket, Duration::from_secs(10));
     wait_for_socket(&work_client_socket, Duration::from_secs(5));
@@ -900,11 +979,12 @@ fn live_handoff_ignores_leaked_default_socket_env_for_named_session() {
         serde_json::json!({"id":"test:stop-default","method":"server.stop","params":{}}),
     );
     drop(default_spawned);
+    drop(_restarted);
     cleanup_test_base(&base);
 }
 
 #[test]
-fn live_handoff_preserves_client_socket_env_without_api_socket_env() {
+fn hc_restart_preserves_client_socket_env_without_api_socket_env() {
     let _lock = test_lock();
     let base = unique_test_dir();
     let config_home = base.join("config");
@@ -923,23 +1003,27 @@ fn live_handoff_preserves_client_socket_env_without_api_socket_env() {
     wait_for_socket(&client_socket, Duration::from_secs(10));
     register_runtime_dir(&runtime_dir);
 
-    assert_ok(request(
-        &api_socket,
-        serde_json::json!({"id":"test:handoff","method":"server.live_handoff","params":{}}),
-    ));
-    drop(spawned);
-    wait_for_api(&api_socket, Duration::from_secs(10));
+    let _restarted = restart_presentation(spawned, &api_socket, &runtime_dir, || {
+        spawn_server_with_args_and_socket_env(
+            &config_home,
+            &runtime_dir,
+            None,
+            None,
+            Some(&client_socket),
+        )
+    });
     wait_for_socket(&client_socket, Duration::from_secs(5));
 
     let _ = request(
         &api_socket,
         serde_json::json!({"id":"test:stop","method":"server.stop","params":{}}),
     );
+    drop(_restarted);
     cleanup_test_base(&base);
 }
 
 #[test]
-fn live_handoff_preserves_installed_plugins() {
+fn hc_restart_preserves_installed_plugins() {
     let _lock = test_lock();
     let base = unique_test_dir();
     let config_home = base.join("config");
@@ -961,12 +1045,9 @@ fn live_handoff_preserves_installed_plugins() {
         ["test.live-handoff-existing"]
     );
 
-    assert_ok(request(
-        &api_socket,
-        serde_json::json!({"id":"test:handoff","method":"server.live_handoff","params":{}}),
-    ));
-    drop(spawned);
-    wait_for_api(&api_socket, Duration::from_secs(10));
+    let _restarted = restart_presentation(spawned, &api_socket, &runtime_dir, || {
+        spawn_default_session_server(&config_home, &runtime_dir)
+    });
 
     assert_eq!(
         listed_plugin_ids(&api_socket),
@@ -982,11 +1063,12 @@ fn live_handoff_preserves_installed_plugins() {
         &api_socket,
         serde_json::json!({"id":"test:stop","method":"server.stop","params":{}}),
     );
+    drop(_restarted);
     cleanup_test_base(&base);
 }
 
 #[test]
-fn live_handoff_preserves_pane_process_io() {
+fn hc_restart_preserves_pane_process_io() {
     let _lock = test_lock();
     let base = unique_test_dir();
     let config_home = base.join("config");
@@ -1093,21 +1175,20 @@ fn live_handoff_preserves_pane_process_io() {
     ));
     wait_for_output(&api_socket, &pane_id, "got:before_replay");
 
-    assert_ok(request(
-        &api_socket,
-        serde_json::json!({"id":"test:handoff","method":"server.live_handoff","params":{}}),
-    ));
-    assert!(
+    let shutdown_reader = thread::spawn(move || {
         wait_for_message_variant(
             &mut client_stream,
             Duration::from_secs(5),
             SERVER_MESSAGE_SERVER_SHUTDOWN,
         )
-        .unwrap(),
-        "connected client shell should receive live-handoff shutdown"
+    });
+    let _restarted = restart_presentation(spawned, &api_socket, &runtime_dir, || {
+        spawn_server(&config_home, &runtime_dir, &api_socket)
+    });
+    assert!(
+        shutdown_reader.join().unwrap().unwrap(),
+        "connected client shell should receive presentation shutdown"
     );
-    drop(spawned);
-    thread::sleep(Duration::from_millis(300));
     wait_for_api(&api_socket, Duration::from_secs(10));
     wait_for_socket(&client_socket, Duration::from_secs(5));
     assert_eq!(unsafe { libc::kill(child_pid as libc::pid_t, 0) }, 0);
@@ -1172,11 +1253,11 @@ fn live_handoff_preserves_pane_process_io() {
         serde_json::json!({"id":"test:stop","method":"server.stop","params":{}}),
     );
     let _ = client_socket;
+    drop(_restarted);
     cleanup_test_base(&base);
 }
 
-#[test]
-fn live_handoff_preserves_keyboard_protocol_for_client_input() {
+fn exercise_keyboard_restart(mode: &[u8], expected: &str) {
     let _lock = test_lock();
     let base = unique_test_dir();
     let config_home = base.join("config");
@@ -1197,11 +1278,11 @@ import select
 import sys
 import tty
 
-sys.stdout.buffer.write(b"\x1b[>5u")
+tty.setraw(sys.stdin.fileno())
+sys.stdout.buffer.write(bytes({mode:?}))
 sys.stdout.flush()
 pathlib.Path({ready:?}).write_text("ready")
-tty.setraw(sys.stdin.fileno())
-ready_fds, _, _ = select.select([sys.stdin.fileno()], [], [], 5)
+ready_fds, _, _ = select.select([sys.stdin.fileno()], [], [], 30)
 data = os.read(sys.stdin.fileno(), 32) if ready_fds else b""
 pathlib.Path({received:?}).write_text(data.hex())
 "#,
@@ -1237,12 +1318,9 @@ pathlib.Path({received:?}).write_text(data.hex())
     ));
     support::wait_for_file(&ready_marker, Duration::from_secs(5));
 
-    assert_ok(request(
-        &api_socket,
-        serde_json::json!({"id":"test:handoff","method":"server.live_handoff","params":{}}),
-    ));
-    drop(spawned);
-    wait_for_api(&api_socket, Duration::from_secs(10));
+    let _restarted = restart_presentation(spawned, &api_socket, &runtime_dir, || {
+        spawn_server(&config_home, &runtime_dir, &api_socket)
+    });
     wait_for_socket(&client_socket, Duration::from_secs(5));
 
     let mut client_stream = UnixStream::connect(&client_socket).unwrap();
@@ -1262,117 +1340,28 @@ pathlib.Path({received:?}).write_text(data.hex())
         .expect("client shell should receive restored state before sending input");
     send_client_shell_shift_enter(&mut client_stream, &pane_id).unwrap();
 
-    wait_for_file_contains(&received_marker, "1b5b31333b3275", Duration::from_secs(5));
+    wait_for_file_contains(&received_marker, expected, Duration::from_secs(5));
 
     let _ = request(
         &api_socket,
         serde_json::json!({"id":"test:stop","method":"server.stop","params":{}}),
     );
+    drop(_restarted);
     cleanup_test_base(&base);
 }
 
 #[test]
-fn live_handoff_preserves_modify_other_keys_for_client_input() {
-    let _lock = test_lock();
-    let base = unique_test_dir();
-    let config_home = base.join("config");
-    let runtime_dir = base.join("runtime");
-    let api_socket = runtime_dir.join("herdr.sock");
-    let client_socket = runtime_dir.join("herdr-client.sock");
-    let script = base.join("read-raw.py");
-    let ready_marker = base.join("modify-ready");
-    let received_marker = base.join("modify-received");
-
-    fs::create_dir_all(&base).unwrap();
-    fs::write(
-        &script,
-        format!(
-            r#"import os
-import pathlib
-import select
-import sys
-import tty
-
-sys.stdout.buffer.write(b"\x1b[>4;2m")
-sys.stdout.flush()
-pathlib.Path({ready:?}).write_text("ready")
-tty.setraw(sys.stdin.fileno())
-ready_fds, _, _ = select.select([sys.stdin.fileno()], [], [], 5)
-data = os.read(sys.stdin.fileno(), 32) if ready_fds else b""
-pathlib.Path({received:?}).write_text(data.hex())
-"#,
-            ready = ready_marker.display().to_string(),
-            received = received_marker.display().to_string()
-        ),
-    )
-    .unwrap();
-
-    let spawned = spawn_server(&config_home, &runtime_dir, &api_socket);
-    wait_for_socket(&api_socket, Duration::from_secs(10));
-    register_runtime_dir(&runtime_dir);
-
-    let created = request(
-        &api_socket,
-        serde_json::json!({
-            "id": "test:workspace:create",
-            "method": "workspace.create",
-            "params": {"cwd": "/tmp", "focus": true}
-        }),
-    );
-    let pane_id = created["result"]["root_pane"]["pane_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    assert_ok(request(
-        &api_socket,
-        serde_json::json!({
-            "id": "test:pane:run",
-            "method": "pane.send_input",
-            "params": {"pane_id": pane_id, "text": format!("python3 {}", script.display()), "keys": ["Enter"]}
-        }),
-    ));
-    support::wait_for_file(&ready_marker, Duration::from_secs(5));
-
-    assert_ok(request(
-        &api_socket,
-        serde_json::json!({"id":"test:handoff","method":"server.live_handoff","params":{}}),
-    ));
-    drop(spawned);
-    wait_for_api(&api_socket, Duration::from_secs(10));
-    wait_for_socket(&client_socket, Duration::from_secs(5));
-
-    let mut client_stream = UnixStream::connect(&client_socket).unwrap();
-    let (server_generation, error) = client_shell_handshake(
-        &mut client_stream,
-        support::CURRENT_ENDPOINT_PROTOCOL_GENERATION,
-        54,
-        23,
-    )
-    .unwrap();
-    assert_eq!(
-        server_generation,
-        support::CURRENT_ENDPOINT_PROTOCOL_GENERATION
-    );
-    assert!(error.is_none(), "client shell handshake failed: {error:?}");
-    wait_for_client_shell_bootstrap(&mut client_stream, Duration::from_secs(5))
-        .expect("client shell should receive restored state before sending input");
-    send_client_shell_shift_enter(&mut client_stream, &pane_id).unwrap();
-
-    wait_for_file_contains(
-        &received_marker,
-        "1b5b32373b323b31337e",
-        Duration::from_secs(5),
-    );
-
-    let _ = request(
-        &api_socket,
-        serde_json::json!({"id":"test:stop","method":"server.stop","params":{}}),
-    );
-    cleanup_test_base(&base);
+fn hc_restart_preserves_keyboard_protocol_for_client_input() {
+    exercise_keyboard_restart(b"\x1b[>5u", "1b5b31333b3275");
 }
 
 #[test]
-fn live_handoff_accepts_canonical_pane_id_from_child_env() {
+fn hc_restart_preserves_modify_other_keys_for_client_input() {
+    exercise_keyboard_restart(b"\x1b[>4;2m", "1b5b32373b323b31337e");
+}
+
+#[test]
+fn hc_restart_accepts_canonical_pane_id_from_child_env() {
     let _lock = test_lock();
     let base = unique_test_dir();
     let config_home = base.join("config");
@@ -1410,14 +1399,11 @@ fn live_handoff_accepts_canonical_pane_id_from_child_env() {
         "unexpected pane id from env: {old_pane_id:?}"
     );
 
-    assert_ok(request(
-        &api_socket,
-        serde_json::json!({"id":"test:handoff","method":"server.live_handoff","params":{}}),
-    ));
-    drop(spawned);
-    wait_for_api(&api_socket, Duration::from_secs(10));
+    let _restarted = restart_presentation(spawned, &api_socket, &runtime_dir, || {
+        spawn_server(&config_home, &runtime_dir, &api_socket)
+    });
 
-    assert_ok(request(
+    let rejected = request(
         &api_socket,
         serde_json::json!({
             "id": "test:old-pane-report",
@@ -1429,7 +1415,9 @@ fn live_handoff_accepts_canonical_pane_id_from_child_env() {
                 "state": "working"
             }
         }),
-    ));
+    );
+    assert_eq!(rejected["error"]["code"], "unsupported_runtime");
+    support::hc::report_agent(&api_socket, &old_pane_id, "pi", "working");
     let agents = request(
         &api_socket,
         serde_json::json!({"id":"test:agent-list","method":"agent.list","params":{}}),
@@ -1451,11 +1439,12 @@ fn live_handoff_accepts_canonical_pane_id_from_child_env() {
         &api_socket,
         serde_json::json!({"id":"test:stop","method":"server.stop","params":{}}),
     );
+    drop(_restarted);
     cleanup_test_base(&base);
 }
 
 #[test]
-fn live_handoff_keeps_unmanaged_agent_name_bound_to_saved_session() {
+fn hc_restart_keeps_source_agent_name_despite_rejected_session_reports() {
     use std::os::unix::fs::PermissionsExt;
 
     let _lock = test_lock();
@@ -1471,7 +1460,7 @@ fn live_handoff_keeps_unmanaged_agent_name_bound_to_saved_session() {
     fs::write(
         &fake_pi,
         format!(
-            "#!/bin/sh\nexport HERDR_AGENT=pi\necho started > {}\n/bin/sleep 30\n:\n",
+            "#!/bin/sh\nprintf '\\033]7501;state=idle:app=pi\\007'\necho started > {}\n/bin/sleep 30\n:\n",
             started_marker.display()
         ),
     )
@@ -1502,7 +1491,7 @@ fn live_handoff_keeps_unmanaged_agent_name_bound_to_saved_session() {
         }),
     ));
     support::wait_for_file(&started_marker, Duration::from_secs(5));
-    assert_ok(request(
+    let rejected = request(
         &api_socket,
         serde_json::json!({
             "id": "test:agent:session",
@@ -1516,8 +1505,9 @@ fn live_handoff_keeps_unmanaged_agent_name_bound_to_saved_session() {
                 "session_start_source": "startup"
             }
         }),
-    ));
-    assert_ok(request(
+    );
+    assert_eq!(rejected["error"]["code"], "unsupported_runtime");
+    let rejected = request(
         &api_socket,
         serde_json::json!({
             "id": "test:agent:report",
@@ -1531,7 +1521,8 @@ fn live_handoff_keeps_unmanaged_agent_name_bound_to_saved_session() {
                 "agent_session_path": old_session
             }
         }),
-    ));
+    );
+    assert_eq!(rejected["error"]["code"], "unsupported_runtime");
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let response = request(
@@ -1560,14 +1551,11 @@ fn live_handoff_keeps_unmanaged_agent_name_bound_to_saved_session() {
         }),
     ));
 
-    assert_ok(request(
-        &api_socket,
-        serde_json::json!({"id":"test:handoff","method":"server.live_handoff","params":{}}),
-    ));
-    drop(spawned);
-    wait_for_api(&api_socket, Duration::from_secs(10));
+    let _restarted = restart_presentation(spawned, &api_socket, &runtime_dir, || {
+        spawn_server(&config_home, &runtime_dir, &api_socket)
+    });
 
-    assert_ok(request(
+    let rejected = request(
         &api_socket,
         serde_json::json!({
             "id": "test:agent:new-session",
@@ -1581,36 +1569,26 @@ fn live_handoff_keeps_unmanaged_agent_name_bound_to_saved_session() {
                 "session_start_source": "new"
             }
         }),
-    ));
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        let old_name = request(
-            &api_socket,
-            serde_json::json!({
-                "id": "test:agent:get-old-name",
-                "method": "agent.get",
-                "params": {"target": "reviewer"}
-            }),
-        );
-        if old_name["error"]["code"] == "agent_not_found" {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "old session alias was not cleared: {old_name}"
-        );
-        thread::sleep(Duration::from_millis(25));
-    }
+    );
+    assert_eq!(rejected["error"]["code"], "unsupported_runtime");
+    let named = request(
+        &api_socket,
+        serde_json::json!({"id":"name-after-restart","method":"agent.get","params":{"target":"reviewer"}}),
+    );
+    assert_ok(named.clone());
+    assert_eq!(named["result"]["agent"]["pane_id"], pane_id, "{named}");
+    assert_eq!(named["result"]["agent"]["agent"], "pi", "{named}");
 
     let _ = request(
         &api_socket,
         serde_json::json!({"id":"test:stop","method":"server.stop","params":{}}),
     );
+    drop(_restarted);
     cleanup_test_base(&base);
 }
 
 #[test]
-fn live_handoff_keeps_agent_started_pane_after_agent_exits() {
+fn hc_restart_keeps_agent_started_pane_after_agent_exits() {
     use std::os::unix::fs::PermissionsExt;
 
     let _lock = test_lock();
@@ -1624,14 +1602,11 @@ fn live_handoff_keeps_agent_started_pane_after_agent_exits() {
     let shell_marker = base.join("shell-after-agent");
     let bin = base.join("bin");
     fs::create_dir_all(&bin).unwrap();
-    let delayed_shell = bin.join("delayed-shell");
-    fs::write(&delayed_shell, "#!/bin/sh\n/bin/sleep 0.4\nexec /bin/sh\n").unwrap();
-    fs::set_permissions(&delayed_shell, fs::Permissions::from_mode(0o755)).unwrap();
     let fake_pi = bin.join("pi");
     fs::write(
         &fake_pi,
         format!(
-            "#!/bin/sh\nexport HERDR_AGENT=pi\necho started > {}\n/bin/sleep 1\necho exited > {}\n",
+            "#!/bin/sh\nprintf '\\033]7501;state=working:app=pi\\007'\necho started > {}\nread -r finish\necho exited > {}\n",
             started_marker.display(),
             exited_marker.display()
         ),
@@ -1644,10 +1619,7 @@ fn live_handoff_keeps_agent_started_pane_after_agent_exits() {
         &config_home,
         &runtime_dir,
         &api_socket,
-        &[
-            ("PATH", path.as_str()),
-            ("SHELL", delayed_shell.to_str().unwrap()),
-        ],
+        &[("PATH", path.as_str())],
     );
     wait_for_socket(&api_socket, Duration::from_secs(10));
     register_runtime_dir(&runtime_dir);
@@ -1677,34 +1649,37 @@ fn live_handoff_keeps_agent_started_pane_after_agent_exits() {
             }
         }),
     ));
-    // Creation acknowledges the PTY, not an idle interactive shell. A real
-    // shell command must execute before this raw agent.start request.
     support::wait_for_file(&ready_marker, Duration::from_secs(5));
-
-    let started = request(
-        &api_socket,
-        serde_json::json!({
-            "id": "test:agent-start",
-            "method": "agent.start",
-            "params": {
-                "name": "handoff-agent",
-                "kind": "pi",
-                "pane_id": pane_id,
-                "timeout_ms": 5000
-            }
-        }),
+    // Retry only a pre-submission busy rejection while source foreground facts arrive.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let started = loop {
+        let response = request(
+            &api_socket,
+            serde_json::json!({
+                "id":"test:agent-start","method":"agent.start",
+                "params":{"name":"handoff-agent","kind":"pi","pane_id":pane_id,"timeout_ms":5000}
+            }),
+        );
+        if response["error"]["code"] != "agent_pane_busy" || Instant::now() >= deadline {
+            break response;
+        }
+        thread::sleep(Duration::from_millis(25));
+    };
+    assert!(
+        started.get("error").is_none(),
+        "agent.start failed: {started}; source facts: {:?}",
+        support::hc::terminals(&runtime_dir)
     );
-    assert_ok(started);
     support::wait_for_file(&started_marker, Duration::from_secs(5));
 
+    let _restarted = restart_presentation(spawned, &api_socket, &runtime_dir, || {
+        spawn_server(&config_home, &runtime_dir, &api_socket)
+    });
     assert_ok(request(
         &api_socket,
-        serde_json::json!({"id":"test:handoff","method":"server.live_handoff","params":{}}),
+        serde_json::json!({"id":"finish-agent","method":"pane.send_input","params":{"pane_id":pane_id,"text":"finish","keys":["Enter"]}}),
     ));
-    drop(spawned);
-    wait_for_api(&api_socket, Duration::from_secs(10));
     support::wait_for_file(&exited_marker, Duration::from_secs(5));
-    thread::sleep(Duration::from_millis(300));
 
     assert_ok(request(
         &api_socket,
@@ -1720,11 +1695,12 @@ fn live_handoff_keeps_agent_started_pane_after_agent_exits() {
         &api_socket,
         serde_json::json!({"id":"test:stop","method":"server.stop","params":{}}),
     );
+    drop(_restarted);
     cleanup_test_base(&base);
 }
 
 #[test]
-fn live_handoff_keeps_shell_pane_after_foreground_process_exits() {
+fn hc_restart_keeps_shell_pane_after_foreground_process_exits() {
     let _lock = test_lock();
     let base = unique_test_dir();
     let config_home = base.join("config");
@@ -1765,12 +1741,9 @@ fn live_handoff_keeps_shell_pane_after_foreground_process_exits() {
     ));
     support::wait_for_file(&started_marker, Duration::from_secs(5));
 
-    assert_ok(request(
-        &api_socket,
-        serde_json::json!({"id":"test:handoff","method":"server.live_handoff","params":{}}),
-    ));
-    drop(spawned);
-    wait_for_api(&api_socket, Duration::from_secs(10));
+    let _restarted = restart_presentation(spawned, &api_socket, &runtime_dir, || {
+        spawn_server(&config_home, &runtime_dir, &api_socket)
+    });
     support::wait_for_file(&exited_marker, Duration::from_secs(5));
 
     assert_ok(request(
@@ -1787,11 +1760,12 @@ fn live_handoff_keeps_shell_pane_after_foreground_process_exits() {
         &api_socket,
         serde_json::json!({"id":"test:stop","method":"server.stop","params":{}}),
     );
+    drop(_restarted);
     cleanup_test_base(&base);
 }
 
 #[test]
-fn live_handoff_preserves_python_http_server() {
+fn hc_restart_preserves_python_http_server() {
     let _lock = test_lock();
     let base = unique_test_dir();
     let config_home = base.join("config");
@@ -1842,12 +1816,9 @@ fn live_handoff_preserves_python_http_server() {
         Duration::from_secs(10),
     );
 
-    assert_ok(request(
-        &api_socket,
-        serde_json::json!({"id":"test:handoff","method":"server.live_handoff","params":{}}),
-    ));
-    drop(spawned);
-    wait_for_api(&api_socket, Duration::from_secs(10));
+    let _restarted = restart_presentation(spawned, &api_socket, &runtime_dir, || {
+        spawn_server(&config_home, &runtime_dir, &api_socket)
+    });
     wait_for_http_contains(
         port,
         "hello-from-python-before-and-after",
@@ -1859,11 +1830,12 @@ fn live_handoff_preserves_python_http_server() {
         serde_json::json!({"id":"test:stop","method":"server.stop","params":{}}),
     );
     let _ = client_socket;
+    drop(_restarted);
     cleanup_test_base(&base);
 }
 
 #[test]
-fn live_handoff_preserves_http_servers_across_multiple_sessions() {
+fn hc_restart_preserves_http_servers_across_multiple_sessions() {
     let _lock = test_lock();
     let base = unique_test_dir();
     let config_home = base.join("config");
@@ -1927,13 +1899,21 @@ fn live_handoff_preserves_http_servers_across_multiple_sessions() {
     }
     register_runtime_dir(&runtime_dir);
 
-    for (_session_name, api_socket) in &sessions {
-        assert_ok(request(
+    let mut restarted = Vec::new();
+    for ((session_name, api_socket), server) in sessions.iter().zip(spawned) {
+        restarted.push(restart_presentation(
+            server,
             api_socket,
-            serde_json::json!({"id":"test:handoff","method":"server.live_handoff","params":{}}),
+            &runtime_dir,
+            || {
+                if let Some(session) = session_name {
+                    spawn_named_session_server(&config_home, &runtime_dir, session)
+                } else {
+                    spawn_default_session_server(&config_home, &runtime_dir)
+                }
+            },
         ));
     }
-    drop(spawned);
 
     for (_session_name, api_socket) in &sessions {
         wait_for_api(api_socket, Duration::from_secs(10));
@@ -1952,11 +1932,12 @@ fn live_handoff_preserves_http_servers_across_multiple_sessions() {
             serde_json::json!({"id":"test:stop","method":"server.stop","params":{}}),
         );
     }
+    drop(restarted);
     cleanup_test_base(&base);
 }
 
 #[test]
-fn live_handoff_bad_expected_protocol_rolls_back_old_server() {
+fn hc_pty_transfer_rejection_preserves_io_with_legacy_protocol_argument() {
     let _lock = test_lock();
     let base = unique_test_dir();
     let config_home = base.join("config");
@@ -2004,9 +1985,10 @@ fn live_handoff_bad_expected_protocol_rolls_back_old_server() {
             "params": {"expected_protocol": 999999}
         }),
     );
-    assert!(
-        failed.get("error").is_some(),
-        "bad protocol handoff should fail: {failed}"
+    assert_eq!(failed["error"]["code"], "handoff_failed");
+    assert_eq!(
+        failed["error"]["message"],
+        "hc attachments must reconnect, not transfer PTY ownership"
     );
     wait_for_api(&api_socket, Duration::from_secs(5));
     assert_eq!(unsafe { libc::kill(child_pid as libc::pid_t, 0) }, 0);
@@ -2034,7 +2016,9 @@ fn live_handoff_bad_expected_protocol_rolls_back_old_server() {
     cleanup_test_base(&base);
 }
 
-fn live_handoff_import_failure_rolls_back_old_server_at(failure_point: &str) {
+#[test]
+fn hc_pty_transfer_rejection_preserves_io_with_import_fault_injection() {
+    let failure_point = "after_restored";
     let _lock = test_lock();
     let base = unique_test_dir();
     let config_home = base.join("config");
@@ -2084,9 +2068,10 @@ fn live_handoff_import_failure_rolls_back_old_server_at(failure_point: &str) {
         &api_socket,
         serde_json::json!({"id":"test:handoff-fail","method":"server.live_handoff","params":{}}),
     );
-    assert!(
-        failed.get("error").is_some(),
-        "{failure_point} handoff should fail: {failed}"
+    assert_eq!(failed["error"]["code"], "handoff_failed");
+    assert_eq!(
+        failed["error"]["message"],
+        "hc attachments must reconnect, not transfer PTY ownership"
     );
     wait_for_api(&api_socket, Duration::from_secs(10));
     wait_for_socket(&client_socket, Duration::from_secs(5));
@@ -2112,9 +2097,4 @@ fn live_handoff_import_failure_rolls_back_old_server_at(failure_point: &str) {
     );
     drop(spawned);
     cleanup_test_base(&base);
-}
-
-#[test]
-fn live_handoff_after_restored_failure_rolls_back_old_server() {
-    live_handoff_import_failure_rolls_back_old_server_at("after_restored");
 }

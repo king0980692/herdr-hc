@@ -11,17 +11,17 @@ const HELP: &str = "Usage:
   herdr machine list [--json]
   herdr machine status [<label-or-id>] [--json]
   herdr machine reconnect <label-or-id>
-  herdr machine add <ssh-target> [--label <label>] [--remote-session <name>]
+  herdr machine add <ssh-target> [--label <label>] [--remote-session <name>] [--hc-path <path>]
   herdr machine rename <profile-id> --label <label>
   herdr machine remove <profile-id>
   herdr machine enable <profile-id>
   herdr machine disable <profile-id>
 
-Add prepares the remote Herdr installation and starts its server before saving.
-Missing or incompatible installations require approval in an interactive terminal.
+Add verifies hc over SSH; hc must already be installed on the source.
+The TUI uses a local presentation server, never a remote Herdr installation.
 Changes apply automatically to open local Herdr clients.
 Removing or disabling a machine leaves its remote sessions running.
-Saved machines contain only a label, SSH target, explicit Herdr session, and enabled state.
+Saved machines contain a label, SSH target, hc source session, optional source-local hc executable path, and enabled state.
 SSH credentials and key material remain owned by OpenSSH.";
 
 #[derive(Serialize)]
@@ -30,6 +30,8 @@ struct MachineListRow<'a> {
     label: &'a str,
     target: &'a str,
     session: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hc_path: Option<&'a str>,
     enabled: bool,
     selected: bool,
 }
@@ -73,6 +75,7 @@ fn list(args: &[String]) -> std::io::Result<i32> {
             label: &profile.label,
             target: &profile.target,
             session: &profile.session,
+            hc_path: profile.hc_path.as_deref(),
             enabled: profile.enabled,
             selected: catalog.selected_profile.as_ref() == Some(&profile.id),
         })
@@ -136,7 +139,11 @@ fn status(args: &[String]) -> std::io::Result<i32> {
             let (status, error) = if !profile.enabled {
                 ("disabled", None)
             } else {
-                match crate::remote::check_saved_ssh(&profile.target, &profile.session) {
+                match crate::remote::check_saved_ssh(
+                    &profile.target,
+                    &profile.session,
+                    profile.hc_path.as_deref(),
+                ) {
                     Ok(()) => ("reachable", None),
                     Err(error) => {
                         let message = error.to_string();
@@ -191,7 +198,9 @@ fn reconnect(args: &[String]) -> std::io::Result<i32> {
         }
     };
     if !std::io::stdin().is_terminal() {
-        eprintln!("reconnect requires an interactive terminal; use herdr machine status for noninteractive checks");
+        eprintln!(
+            "reconnect requires an interactive terminal; use herdr machine status for noninteractive checks"
+        );
         return Ok(2);
     }
     let mut authentication = crate::remote::ssh_authentication_command(&profile.target)?;
@@ -199,9 +208,13 @@ fn reconnect(args: &[String]) -> std::io::Result<i32> {
         eprintln!("SSH authentication failed; the saved machine was not changed.");
         return Ok(1);
     }
-    crate::remote::check_saved_ssh(&profile.target, &profile.session)?;
+    crate::remote::check_saved_ssh(
+        &profile.target,
+        &profile.session,
+        profile.hc_path.as_deref(),
+    )?;
     println!(
-        "Machine {} is reachable. Open Herdr clients retry within 30 seconds.",
+        "Machine {} is reachable. Open Herdr clients reconnect automatically.",
         profile.id
     );
     Ok(0)
@@ -212,17 +225,19 @@ struct AddArgs {
     target: String,
     label: Option<String>,
     session: Option<String>,
+    hc_path: Option<String>,
 }
 
 fn parse_add_args(args: &[String]) -> Result<AddArgs, String> {
-    let args = super::expand_equals_args(args, &["--label", "--remote-session"]);
+    let args = super::expand_equals_args(args, &["--label", "--remote-session", "--hc-path"]);
     let mut target = None;
     let mut label = None;
     let mut session = None;
+    let mut hc_path = None;
     let mut index = 0;
     while index < args.len() {
         let (name, value) = match args[index].as_str() {
-            "--label" | "--remote-session" => {
+            "--label" | "--remote-session" | "--hc-path" => {
                 let Some(value) = args.get(index + 1) else {
                     return Err(format!("missing value for {}", args[index]));
                 };
@@ -241,6 +256,11 @@ fn parse_add_args(args: &[String]) -> Result<AddArgs, String> {
         match name {
             "--label" if label.is_none() => label = Some(value),
             "--remote-session" if session.is_none() => session = Some(value),
+            "--hc-path" if hc_path.is_none() => {
+                crate::hc::source::validate_hc_path(&value)?;
+                hc_path = Some(value);
+            }
+            "--hc-path" => return Err("--hc-path can only be specified once".into()),
             "--remote-session" => {
                 return Err("--remote-session can only be specified once".into());
             }
@@ -251,13 +271,14 @@ fn parse_add_args(args: &[String]) -> Result<AddArgs, String> {
         }
     }
     let target = target.ok_or_else(|| {
-        "usage: herdr machine add <ssh-target> [--label <label>] [--remote-session <name>]"
+        "usage: herdr machine add <ssh-target> [--label <label>] [--remote-session <name>] [--hc-path <path>]"
             .to_owned()
     })?;
     Ok(AddArgs {
         target,
         label,
         session,
+        hc_path,
     })
 }
 
@@ -301,6 +322,7 @@ fn add(args: &[String]) -> std::io::Result<i32> {
         target,
         label,
         session,
+        hc_path,
     } = match parse_add_args(args) {
         Ok(args) => args,
         Err(error) => {
@@ -312,7 +334,8 @@ fn add(args: &[String]) -> std::io::Result<i32> {
     let session =
         if session.is_none() && std::io::stdin().is_terminal() && std::io::stderr().is_terminal() {
             let discovered = (|| {
-                let connection = crate::remote::SavedSshSetup::connect(&target)?;
+                let connection =
+                    crate::remote::SavedSshSetup::connect(&target, hc_path.as_deref())?;
                 let sessions = connection.running_sessions()?;
                 let session = select_remote_session(&sessions, &target)?;
                 setup = Some(connection);
@@ -338,7 +361,7 @@ fn add(args: &[String]) -> std::io::Result<i32> {
             return Ok(2);
         }
     }
-    match catalog.add_ssh(label.clone(), &target, session.clone()) {
+    match catalog.add_ssh(label.clone(), &target, session.clone(), hc_path.clone()) {
         Ok(_) => {}
         Err(error) => {
             eprintln!("error: {error}");
@@ -347,7 +370,7 @@ fn add(args: &[String]) -> std::io::Result<i32> {
     }
     let metadata = match setup
         .map(Ok)
-        .unwrap_or_else(|| crate::remote::SavedSshSetup::connect(&target))
+        .unwrap_or_else(|| crate::remote::SavedSshSetup::connect(&target, hc_path.as_deref()))
         .and_then(|setup| setup.prepare(&session))
     {
         Ok(metadata) => metadata,
@@ -369,7 +392,7 @@ fn add(args: &[String]) -> std::io::Result<i32> {
             return Ok(2);
         }
     }
-    let id = match catalog.add_ssh(label, &target, &session) {
+    let id = match catalog.add_ssh(label, &target, &session, hc_path) {
         Ok(id) => id,
         Err(error) => {
             eprintln!("error: {error}");
@@ -385,7 +408,7 @@ fn add(args: &[String]) -> std::io::Result<i32> {
         crate::client::endpoint::SshMetadataCache::new(id.as_str(), &target, &session)?
             .store(&metadata);
     }
-    println!("Saved SSH machine {id}. Remote server is ready.");
+    println!("Saved SSH machine {id}. hc source verified.");
     println!("Open Herdr clients connect automatically.");
     Ok(0)
 }
@@ -614,8 +637,32 @@ mod tests {
                     target: "workstation.coder".into(),
                     label: Some("coder".into()),
                     session: session.map(str::to_owned),
+                    hc_path: None,
                 },
                 "{args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn add_parser_accepts_custom_hc_path_without_changing_default() {
+        for args in [
+            vec!["source", "--hc-path", "/opt/hc with 'quotes'"],
+            vec!["--hc-path=/opt/hc with 'quotes'", "source"],
+        ] {
+            let parsed =
+                parse_add_args(&args.into_iter().map(str::to_owned).collect::<Vec<_>>()).unwrap();
+            assert_eq!(parsed.hc_path.as_deref(), Some("/opt/hc with 'quotes'"));
+            assert_eq!(parsed.target, "source");
+        }
+        for args in [
+            vec!["source", "--hc-path"],
+            vec!["source", "--hc-path=hc"],
+            vec!["source", "--hc-path=/hc\ncommand"],
+            vec!["source", "--hc-path=/first", "--hc-path=/second"],
+        ] {
+            assert!(
+                parse_add_args(&args.into_iter().map(str::to_owned).collect::<Vec<_>>()).is_err()
             );
         }
     }
@@ -625,6 +672,7 @@ mod tests {
         let parsed = parse_add_args(&["workstation.coder".to_owned()]).unwrap();
         assert_eq!(parsed.label, None);
         assert_eq!(parsed.session, None);
+        assert_eq!(parsed.hc_path, None);
     }
 
     #[test]
@@ -646,7 +694,9 @@ mod tests {
     #[test]
     fn default_label_must_be_unique_and_fit() {
         let mut catalog = EndpointCatalog::default();
-        catalog.add_ssh("workbox", "workbox", "default").unwrap();
+        catalog
+            .add_ssh("workbox", "workbox", "default", None)
+            .unwrap();
 
         assert!(check_default_label(&catalog, "workbox/agents").is_ok());
         let duplicate = check_default_label(&catalog, "workbox").unwrap_err();
@@ -695,6 +745,7 @@ mod tests {
             label: "Build",
             target: "dev@build",
             session: "agents",
+            hc_path: None,
             enabled: true,
             selected: false,
         })

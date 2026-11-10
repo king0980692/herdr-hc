@@ -264,6 +264,24 @@ impl ClientShellState {
         true
     }
 
+    /// Entry point for an externally requested jump; behaves like selecting the target in the
+    /// client, including the notice when the endpoint is unknown or not ready.
+    pub(crate) fn jump_to_endpoint_target(
+        &mut self,
+        endpoint_id: ClientEndpointId,
+        target: ClientEndpointFocusTarget,
+    ) -> ClientShellInput {
+        let mut outcome = ClientShellInput::default();
+        if self
+            .endpoints
+            .iter()
+            .any(|endpoint| endpoint.endpoint_id == endpoint_id)
+        {
+            self.focus_or_activate(endpoint_id, target, &mut outcome);
+        }
+        outcome
+    }
+
     pub(super) fn focus_or_activate(
         &mut self,
         endpoint_id: ClientEndpointId,

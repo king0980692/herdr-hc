@@ -3,15 +3,15 @@ title: Persistence and remote access
 description: Detach from Herdr, reattach later, use named sessions, and connect over SSH.
 ---
 
-Herdr keeps panes running in a background server. Your terminal client can detach and reconnect later.
+Herdr keeps presentation and layout in a background host; hc owns the programs and terminal state. Your terminal client can detach and reconnect later without stopping hc programs.
 
 For the local, SSH, and `herdr --remote` workflows, see [How to work with Herdr](/docs/how-to-work/).
 
 ## Detach and reattach
 
-Detach the client with `ctrl+b q`; panes and agents keep running. Reattach by running `herdr` again. Stop the session and its panes with `herdr server stop`.
+Detach the client with `ctrl+b q`; panes and agents keep running. Reattach by running `herdr` again. `herdr server stop` stops the presentation host, not its hc programs. To terminate a bound program, explicitly close its pane and wait for confirmed termination.
 
-When Herdr starts again after a full server stop, it restores the saved session shape. For what survives detach, server restart, screen history replay, native agent session restore, and live handoff, see [Session state and restore](/docs/session-state/).
+When the presentation host starts again, it restores the saved layout and attaches exact hc bindings; it never relaunches a program or resumes an agent. Missing or mismatched bindings stay unavailable. Legacy programs are not imported or restarted. See [Connecting machines](/docs/connecting-machines/) for hc identity and recovery, and [Session state and restore](/docs/session-state/) for the persisted-state and legacy workflows.
 
 On Linux and macOS, the server ignores `SIGHUP`, so a hangup from its launching shell does not stop the panes. To stop it deliberately, use `herdr server stop` or `SIGTERM`; scripts that previously used `SIGHUP` must change. Shutdown logs record the reason.
 
@@ -27,7 +27,7 @@ herdr session stop work
 herdr session delete side-project
 ```
 
-A named session has its own panes, tabs, workspaces, sockets, and runtime state. It still shares the same global config file.
+A named presentation session has its own panes, tabs, workspaces, sockets, and saved bindings. hc still owns its bound programs. Presentation sessions share the same global config file.
 
 When deleting a session, use the exact name shown by `herdr session list`, including letter case. On case-insensitive filesystems, `herdr session delete foo` refuses to delete a session named `Foo`.
 
@@ -41,11 +41,11 @@ herdr session delete side-project --json
 
 ## Saved SSH machines
 
-To keep Local and several SSH machines in one Herdr window, see [Connecting machines](/docs/connecting-machines/). That guide covers setup, switching, reconnects, settings, and remote automation. Removing a saved machine only disconnects the client; it does not stop that machine's sessions.
+To keep Local and several SSH machines in one Herdr window, see [Connecting machines](/docs/connecting-machines/). Saved machines use local presentation plus source hc over SSH, not remote Herdr installation or rendering. Removing a saved machine only detaches its viewers; it does not stop hc programs.
 
 ## Remote attach over SSH
 
-[How to work with Herdr](/docs/how-to-work/) compares the connection paths. SSH to the server and run `herdr` there for the tmux-style path, use [saved SSH machines](/docs/connecting-machines/) for multi-machine work, or attach through SSH from your local machine:
+This section describes the explicit **legacy `--remote`** connection to a remote Herdr server, not the saved hc-machine path. Its remote Herdr installation, compatibility and handoff behavior does not apply to saved profiles. [How to work with Herdr](/docs/how-to-work/) compares the connection paths. SSH to the server and run `herdr` there for the tmux-style path, use [saved SSH machines](/docs/connecting-machines/) for multi-machine work, or explicitly attach to legacy remote Herdr:
 
 ```bash
 herdr --remote workbox
@@ -73,7 +73,7 @@ Then attach with:
 herdr --remote workbox
 ```
 
-Remote attach and saved SSH machines support Linux, macOS, and Windows local clients connecting to Linux or macOS hosts on x86_64 and aarch64, or Windows hosts on x86_64. Windows ARM64 hosts are supported on a best-effort basis using the x64 build under Windows emulation; bugs and issues are expected. Explicit remote attach and saved-machine setup display an emulation note when the host reports ARM64. Local and remote versions do not need to match once both support the stable endpoint generation. On Linux and macOS hosts, Herdr prefers a compatible `herdr` already on the remote `PATH`, then checks common direct, Homebrew, mise, and Nix profile install paths. On Windows hosts, Herdr checks `PATH` and the active managed release. If no compatible binary exists, interactive runs prompt to install or update one; non-interactive runs fail instead of modifying the host. Linux and macOS installs use `~/.local/bin/herdr`; Windows installs use the complete Windows package and its app-local ConPTY runtime. If `~/.local/bin` is not on the remote `PATH`, Herdr warns after install.
+Legacy remote attach supports Linux, macOS, and Windows local clients connecting to Linux or macOS hosts on x86_64 and aarch64, or Windows hosts on x86_64. Windows ARM64 hosts are supported on a best-effort basis using the x64 build under Windows emulation; bugs and issues are expected. Explicit remote attach displays an emulation note when the host reports ARM64. Local and remote versions do not need to match once both support the stable endpoint generation. On Linux and macOS hosts, Herdr prefers a compatible `herdr` already on the remote `PATH`, then checks common direct, Homebrew, mise, and Nix profile install paths. On Windows hosts, Herdr checks `PATH` and the active managed release. If no compatible binary exists, interactive runs prompt to install or update one; non-interactive runs fail instead of modifying the host. Linux and macOS installs use `~/.local/bin/herdr`; Windows installs use the complete Windows package and its app-local ConPTY runtime. If `~/.local/bin` is not on the remote `PATH`, Herdr warns after install.
 
 By default, `herdr --remote` runs remote setup and the bridge through a temporary SSH config that includes your SSH config first, then adds fallback keepalive settings. Existing user keepalive settings win. Linux and macOS clients also use a private per-attach control socket for connection reuse; Windows OpenSSH does not. Set `[remote].manage_ssh_config = false` to use plain `ssh` without Herdr's generated config or control socket.
 
@@ -86,7 +86,7 @@ herdr --remote workbox
 
 For any remote authentication failure, verify plain SSH access first with `ssh workbox`, then run `herdr --remote workbox` again.
 
-A version difference alone does not replace or restart a running remote server. Remote attach asks before stopping a server that lacks required compatibility or detached-daemon support. For saved machines, this also includes the surface and health-check capabilities described in [Connecting machines](/docs/connecting-machines/#updates-and-saved-data). The default answer is No; stopping the server ends its pane processes. To opt into experimental live handoff when that one-time upgrade is needed, pass `--handoff`:
+A version difference alone does not replace or restart a running remote server. Remote attach asks before stopping a server that lacks required compatibility or detached-daemon support. The default answer is No; stopping the server ends its pane processes. To opt into experimental live handoff when that one-time upgrade is needed, pass `--handoff`:
 
 ```bash
 herdr --remote workbox --handoff

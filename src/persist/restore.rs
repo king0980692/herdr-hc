@@ -42,6 +42,7 @@ struct RestoreRuntimeContext<'a> {
     events: mpsc::Sender<AppEvent>,
     render_notify: Arc<Notify>,
     render_dirty: Arc<RenderSignal>,
+    factory: Option<&'a crate::terminal::TerminalFactory>,
 }
 
 type RestoredSession = (
@@ -62,7 +63,8 @@ type RestoredTab = (
 );
 type RestoreFailures<T> = (T, usize);
 
-/// Restore workspaces from a snapshot. Each pane gets a fresh shell in its saved cwd.
+/// Legacy characterization fixture; production restore always supplies its source factory.
+#[cfg(test)]
 pub fn restore(
     snapshot: &SessionSnapshot,
     history: Option<&SessionHistorySnapshot>,
@@ -90,6 +92,41 @@ pub fn restore(
         render_notify,
         render_dirty,
     )
+}
+
+// The same layout reconstruction, but hc ownership forbids legacy launch fallback.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn restore_with_factory(
+    snapshot: &SessionSnapshot,
+    history: Option<&SessionHistorySnapshot>,
+    rows: u16,
+    cols: u16,
+    scrollback_limit_bytes: usize,
+    default_shell: &str,
+    shell_mode: crate::config::ShellModeConfig,
+    resume_agents_on_restore: bool,
+    events: mpsc::Sender<AppEvent>,
+    render_notify: Arc<Notify>,
+    render_dirty: Arc<RenderSignal>,
+    factory: &crate::terminal::TerminalFactory,
+) -> RestoredSession {
+    restore_with_imports_and_failures(
+        snapshot,
+        history,
+        rows,
+        cols,
+        &mut HashMap::new(),
+        RestoreRuntimeContext {
+            scrollback_limit_bytes,
+            shell_config: crate::pane::PaneShellConfig::new(default_shell, shell_mode),
+            resume_agents_on_restore,
+            events,
+            render_notify,
+            render_dirty,
+            factory: Some(factory),
+        },
+    )
+    .0
 }
 
 #[cfg(unix)]
@@ -204,13 +241,16 @@ fn restore_with_imports_strict(
         history,
         rows,
         cols,
-        scrollback_limit_bytes,
-        shell_config,
-        resume_agents_on_restore,
         imported_panes,
-        events,
-        render_notify,
-        render_dirty,
+        RestoreRuntimeContext {
+            scrollback_limit_bytes,
+            shell_config,
+            resume_agents_on_restore,
+            events,
+            render_notify,
+            render_dirty,
+            factory: None,
+        },
     );
     if failed_imports > 0 {
         return Err(std::io::Error::other(format!(
@@ -226,6 +266,7 @@ fn restore_with_imports_strict(
     Ok(restored)
 }
 
+#[cfg(test)]
 fn restore_with_imports(
     snapshot: &SessionSnapshot,
     history: Option<&SessionHistorySnapshot>,
@@ -244,13 +285,16 @@ fn restore_with_imports(
         history,
         rows,
         cols,
-        scrollback_limit_bytes,
-        shell_config,
-        resume_agents_on_restore,
         imported_panes,
-        events,
-        render_notify,
-        render_dirty,
+        RestoreRuntimeContext {
+            scrollback_limit_bytes,
+            shell_config,
+            resume_agents_on_restore,
+            events,
+            render_notify,
+            render_dirty,
+            factory: None,
+        },
     )
     .0
 }
@@ -260,13 +304,8 @@ fn restore_with_imports_and_failures(
     history: Option<&SessionHistorySnapshot>,
     rows: u16,
     cols: u16,
-    scrollback_limit_bytes: usize,
-    shell_config: crate::pane::PaneShellConfig<'_>,
-    resume_agents_on_restore: bool,
     imported_panes: &mut HashMap<u32, crate::handoff_runtime::ImportedHandoffRuntime>,
-    events: mpsc::Sender<AppEvent>,
-    render_notify: Arc<Notify>,
-    render_dirty: Arc<RenderSignal>,
+    runtime_context: RestoreRuntimeContext<'_>,
 ) -> RestoreFailures<RestoredSession> {
     let history = history.filter(|history| {
         let matches = history.layout_fingerprint.is_some()
@@ -282,14 +321,6 @@ fn restore_with_imports_and_failures(
     let mut resumed_agent_sessions = HashSet::new();
     let mut failed_imports = 0;
     for (idx, ws_snap) in snapshot.workspaces.iter().enumerate() {
-        let runtime_context = RestoreRuntimeContext {
-            scrollback_limit_bytes,
-            shell_config,
-            resume_agents_on_restore,
-            events: events.clone(),
-            render_notify: render_notify.clone(),
-            render_dirty: render_dirty.clone(),
-        };
         let (restored, workspace_failed_imports) = restore_workspace(
             ws_snap,
             history.and_then(|history| history.workspaces.get(idx)),
@@ -451,6 +482,12 @@ fn unavailable_restored_terminal(
     if let Some(pane) = pane {
         terminal.manual_label = pane.label.clone();
         terminal.launch_argv = pane.launch_argv.clone();
+        if pane.hc_binding.is_some() {
+            if let Some(name) = &pane.agent_name {
+                terminal.set_agent_name(name.clone());
+            }
+            return terminal.with_hc_binding(pane.hc_binding.clone());
+        }
         if let Some(session) = restored_terminal_agent_session(pane.agent_session.as_ref(), false) {
             terminal.set_persisted_agent_session(session);
         }
@@ -520,6 +557,69 @@ fn restore_tab(
 
         let cwd = saved_cwd;
         let has_import = old_id.is_some_and(|old_id| imported_panes.contains_key(old_id));
+        let binding = saved_pane.and_then(|pane| pane.hc_binding.as_ref());
+        if binding.is_some()
+            || runtime_context
+                .factory
+                .is_some_and(crate::terminal::TerminalFactory::is_hc)
+        {
+            // Dispatch before local cwd checks, history replay, agent resume, or PTY imports.
+            let result = (|| {
+                let raw =
+                    binding.ok_or_else(|| {
+                        std::io::Error::new(std::io::ErrorKind::NotConnected,
+                    "Legacy pane has no hc binding; its program was not restarted or imported")
+                    })?;
+                let binding: crate::hc::state::TerminalBinding =
+                    serde_json::from_value(raw.clone()).map_err(|error| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("invalid hc binding: {error}"),
+                        )
+                    })?;
+                binding.validate()?;
+                let factory = runtime_context.factory.ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::NotConnected,
+                        "hc binding cannot use a legacy PTY host",
+                    )
+                })?;
+                factory.restore(
+                    &binding,
+                    *id,
+                    rows,
+                    cols,
+                    runtime_context.scrollback_limit_bytes,
+                    crate::terminal_theme::TerminalTheme::default(),
+                    None,
+                    runtime_context.events.clone(),
+                    runtime_context.render_notify.clone(),
+                    runtime_context.render_dirty.clone(),
+                )
+            })();
+            let mut terminal =
+                unavailable_restored_terminal(saved_pane, cwd, "hc attachment pending".into())
+                    .with_hc_binding(binding.cloned());
+            match result {
+                Ok(runtime) if !has_import => {
+                    terminal = terminal.with_runtime(&runtime);
+                    terminal_runtimes.insert(terminal.id.clone(), runtime);
+                }
+                Ok(_) => {
+                    failed_imports += 1;
+                    terminal.restore_error = Some("hc binding cannot consume a PTY import".into());
+                }
+                Err(error) => {
+                    if has_import {
+                        failed_imports += 1;
+                    }
+                    terminal.restore_error = Some(error.to_string());
+                }
+            }
+            panes.insert(*id, PaneState::new(terminal.id.clone()));
+            terminals.push(terminal);
+            continue;
+        }
         if !has_import && !cwd.is_dir() {
             let terminal = unavailable_restored_terminal(
                 saved_pane,
@@ -759,6 +859,13 @@ fn restore_tab(
                 }
             }
         }
+    }
+
+    for (id, pane) in &mut panes {
+        pane.full_zoom = reverse_id_map
+            .get(id)
+            .and_then(|old_id| snap.panes.get(old_id))
+            .is_some_and(|saved| saved.full_zoom);
     }
 
     if panes.is_empty() {
@@ -1543,6 +1650,8 @@ mod tests {
                         0,
                         super::super::snapshot::PaneSnapshot {
                             cwd,
+                            hc_binding: None,
+                            full_zoom: false,
                             label: Some("reviewer".into()),
                             agent_name: Some("reviewer".into()),
                             managed_agent_kind: Some("opencode".into()),
@@ -1629,6 +1738,8 @@ mod tests {
                         (
                             10,
                             super::super::snapshot::PaneSnapshot {
+                                hc_binding: None,
+                                full_zoom: false,
                                 cwd: cwd.clone(),
                                 label: None,
                                 agent_name: None,
@@ -1641,6 +1752,8 @@ mod tests {
                         (
                             20,
                             super::super::snapshot::PaneSnapshot {
+                                hc_binding: None,
+                                full_zoom: false,
                                 cwd: cwd.clone(),
                                 label: None,
                                 agent_name: None,
@@ -1695,6 +1808,8 @@ mod tests {
             (
                 id.parse::<u32>().unwrap(),
                 super::super::snapshot::PaneSnapshot {
+                    hc_binding: None,
+                    full_zoom: false,
                     cwd: cwd.clone(),
                     label: None,
                     agent_name: None,
@@ -1706,7 +1821,9 @@ mod tests {
             )
         };
         let final_pane = super::super::snapshot::PaneSnapshot {
+            hc_binding: None,
             cwd: cwd.clone(),
+            full_zoom: false,
             label: Some("planner".into()),
             agent_name: Some("planner".into()),
             managed_agent_kind: None,
@@ -1859,6 +1976,8 @@ mod tests {
                         0,
                         super::super::snapshot::PaneSnapshot {
                             cwd,
+                            hc_binding: None,
+                            full_zoom: false,
                             label: None,
                             agent_name: None,
                             managed_agent_kind: None,
@@ -1940,6 +2059,77 @@ mod tests {
             handoff_runtimes.is_empty(),
             "handoff restore should not replace pending native agent resume with a shell runtime"
         );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn full_zoom_survives_snapshot_restore_and_live_handoff() {
+        let mut workspace = crate::workspace::Workspace::test_new("full-zoom");
+        let overlay = workspace.test_split(Direction::Horizontal);
+        workspace.tabs[0].panes.get_mut(&overlay).unwrap().full_zoom = true;
+        workspace.tabs[0].zoomed = true;
+        let empty_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let snapshot =
+            crate::persist::capture(&[workspace], &HashMap::new(), &empty_runtimes, Some(0), 0);
+        let snapshot = serde_json::from_value(serde_json::to_value(snapshot).unwrap()).unwrap();
+        let (events, _events_rx) = mpsc::channel(32);
+        let (workspaces, terminals, runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            4096,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events.clone(),
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+        let area = ratatui::layout::Rect::new(3, 7, 80, 24);
+        let check = |tab: &crate::workspace::Tab| {
+            assert!(tab.full_zoom());
+            assert_eq!(tab.visible_pane_ids(), [tab.layout.focused()]);
+            let panes = tab.visible_panes(area);
+            assert_eq!(panes.len(), 1);
+            assert_eq!(panes[0].rect, area);
+            assert!(tab.visible_splits(area).is_empty());
+            for pane in tab.layout.pane_ids() {
+                assert_eq!(tab.pane_visible(pane), pane == tab.layout.focused());
+            }
+        };
+        check(&workspaces[0].tabs[0]);
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::from(runtimes);
+        let snapshot = crate::persist::capture(&workspaces, &terminals, &runtimes, Some(0), 0);
+        let mut imports = HashMap::new();
+        for (&pane_id, pane) in &workspaces[0].tabs[0].panes {
+            let runtime = runtimes.get(&pane.attached_terminal_id).unwrap();
+            runtime
+                .pause_handoff_reader(std::time::Duration::from_secs(2))
+                .unwrap();
+            imports.insert(
+                pane_id.raw(),
+                crate::handoff_runtime::ImportedHandoffRuntime {
+                    master_fd: runtime.duplicate_handoff_fd().unwrap(),
+                    state: runtime.handoff_runtime_state(pane_id.raw()),
+                },
+            );
+        }
+        let (restored, _, restored_runtimes) = restore_handoff(
+            &snapshot,
+            4096,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            &mut imports,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        )
+        .unwrap();
+        assert!(imports.is_empty());
+        check(&restored[0].tabs[0]);
+        drop(restored_runtimes);
+        drop(runtimes);
     }
 
     #[tokio::test]
@@ -2169,6 +2359,8 @@ mod tests {
         panes.insert(
             0,
             super::super::snapshot::PaneSnapshot {
+                hc_binding: None,
+                full_zoom: false,
                 cwd: cwd.clone(),
                 label: None,
                 agent_name: None,

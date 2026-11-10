@@ -106,185 +106,6 @@ pub(crate) fn run_remote(remote: RemoteLaunch) -> io::Result<()> {
     )
 }
 
-pub(crate) fn check_saved_ssh(target: &str, session: &str) -> io::Result<()> {
-    super::validate_remote_target(target)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-    crate::session::validate_name(session)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-    let mut ssh = RemoteSsh::new_noninteractive(target.to_owned());
-    ssh.session_name = session.to_owned();
-    let check = || {
-        let remote = find_installed_remote_herdr(&ssh)?;
-        match remote_server_status(&ssh, &remote, false)? {
-            RemoteServerStatus::Running {
-                endpoint_protocol_generation,
-                surface_interest,
-                health_check,
-                detached_server_daemon,
-                ..
-            } if remote_server_restart_reason(
-                endpoint_protocol_generation,
-                detached_server_daemon,
-                true,
-                surface_interest,
-                health_check,
-            )
-            .is_none() =>
-            {
-                Ok(())
-            }
-            _ => Err(io::Error::other(format!(
-                "remote Herdr server is stopped or incompatible; run `{}`",
-                super::saved_ssh_bootstrap_command(target, session),
-            ))),
-        }
-    };
-    match check() {
-        Err(_) if ssh.prepare_shared_transport().unwrap_or(false) => check(),
-        result => result,
-    }
-}
-
-pub(crate) struct SavedSshSetup {
-    ssh: RemoteSsh,
-    remote_herdr: RemoteHerdr,
-    candidates: Vec<RemoteHerdr>,
-}
-
-impl SavedSshSetup {
-    pub(crate) fn connect(target: &str) -> io::Result<Self> {
-        super::validate_remote_target(target)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-        let manage = crate::config::Config::load()
-            .config
-            .remote
-            .manage_ssh_config;
-        let ssh = RemoteSsh::new(
-            target.to_owned(),
-            manage,
-            crate::session::DEFAULT_SESSION_NAME.to_owned(),
-        );
-        let remote_herdr =
-            RemoteHerdr::for_platform(detect_remote_platform(&ssh)?.into_setup_platform());
-        let candidates = remote_binary_candidates(&ssh, &remote_herdr)?;
-        Ok(Self {
-            ssh,
-            remote_herdr,
-            candidates,
-        })
-    }
-
-    pub(crate) fn running_sessions(&self) -> io::Result<Vec<String>> {
-        // A fresh host must still reach the normal installation approval.
-        if self.candidates.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut failure = String::new();
-        for candidate in &self.candidates {
-            let output = self.ssh.shell_output(
-                &candidate.platform,
-                &candidate.executable.command(&["session", "list", "--json"]),
-            )?;
-            if output.status.code() == Some(255) {
-                return Err(command_failed("remote SSH connection failed", &output));
-            }
-            if !output.status.success() {
-                failure = command_failed("remote session query failed", &output).to_string();
-                continue;
-            }
-            match serde_json::from_slice::<RemoteSessionListJson>(&output.stdout) {
-                Ok(list) => {
-                    return Ok(list
-                        .sessions
-                        .into_iter()
-                        .filter(|session| {
-                            session.running && crate::session::validate_name(&session.name).is_ok()
-                        })
-                        .map(|session| session.name)
-                        .collect())
-                }
-                Err(error) => failure = format!("invalid remote session list: {error}"),
-            }
-        }
-        Err(io::Error::other(format!(
-            "could not discover remote Herdr sessions: {failure}; specify --remote-session to continue"
-        )))
-    }
-
-    pub(crate) fn prepare(
-        mut self,
-        session_name: &str,
-    ) -> io::Result<Option<crate::client::endpoint::SshMachineMetadata>> {
-        crate::session::validate_name(session_name)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-        self.ssh.session_name = session_name.to_owned();
-        let Self {
-            ssh,
-            remote_herdr,
-            candidates,
-        } = self;
-        let prepared =
-            prepare_discovered_remote_herdr(&ssh, remote_herdr, &candidates, false, true)?;
-        ensure_remote_server_ready(
-            &ssh,
-            &prepared.remote_herdr,
-            prepared.stop_after_install_approved,
-            false,
-            true,
-        )?;
-
-        // The bridge already owns daemon startup. EOF closes only this temporary attachment,
-        // leaving the named server running even when no local TUI is open yet.
-        let command = prepared
-            .remote_herdr
-            .executable
-            .saved_bridge_command(session_name);
-        let output = ssh.shell_output(&prepared.remote_herdr.platform, &command)?;
-        if !output.status.success() {
-            return Err(command_failed("remote server startup failed", &output));
-        }
-        match remote_server_status(&ssh, &prepared.remote_herdr, true)? {
-            RemoteServerStatus::Running {
-                endpoint_protocol_generation,
-                surface_interest,
-                health_check,
-                detached_server_daemon,
-                ..
-            } if remote_server_restart_reason(
-                endpoint_protocol_generation,
-                detached_server_daemon,
-                true,
-                surface_interest,
-                health_check,
-            )
-            .is_none() =>
-            {
-                Ok(prepared.remote_herdr.machine_metadata().or_else(|| {
-                    discover_remote_api_metadata(&ssh, session_name)
-                        .inspect_err(
-                            |error| tracing::debug!(%error, "could not capture SSH setup metadata"),
-                        )
-                        .ok()
-                }))
-            }
-            _ => Err(io::Error::other(
-                "remote server is not ready for saved machines",
-            )),
-        }
-    }
-}
-
-#[derive(Deserialize)]
-struct RemoteSessionListJson {
-    sessions: Vec<RemoteSessionJson>,
-}
-
-#[derive(Deserialize)]
-struct RemoteSessionJson {
-    name: String,
-    running: bool,
-}
-
 #[derive(Debug, PartialEq, Eq)]
 struct DetectedRemotePlatform {
     platform: RemotePlatform,
@@ -435,6 +256,7 @@ impl RemoteExecutable {
         }
     }
 
+    #[cfg(test)]
     fn saved_bridge_command(&self, session_name: &str) -> String {
         let args = Self::session_args(session_name, &["remote-client-bridge"]);
         match self {
@@ -481,6 +303,7 @@ pub(super) struct RemoteHerdr {
 }
 
 impl RemoteHerdr {
+    #[cfg(test)]
     pub(super) fn machine_metadata(&self) -> Option<crate::client::endpoint::SshMachineMetadata> {
         let executable = self.resolved_executable.clone()?;
         let metadata = crate::client::endpoint::SshMachineMetadata {
@@ -556,6 +379,7 @@ fn posix_remote_output_command(command: &str) -> String {
     format!("printf '\\n%s\\n' '{REMOTE_OUTPUT_READY_MARKER}'\n{command}")
 }
 
+#[cfg(test)]
 fn posix_base64_command(script: &str) -> String {
     // OpenSSH for Windows hands the SSH command argument to the login shell
     // wrapped in double quotes, which expands `$`, backticks, and `"` inside the
@@ -814,12 +638,12 @@ fn authentication_command_with_config(
     }
 }
 
-pub(super) struct RemoteSsh {
+pub(crate) struct RemoteSsh {
     target: String,
     session_name: String,
     managed_config: Option<ManagedSshConfig>,
     noninteractive: bool,
-    pub(super) cancelled: Arc<AtomicBool>,
+    pub(crate) cancelled: Arc<AtomicBool>,
 }
 
 impl RemoteSsh {
@@ -843,7 +667,7 @@ impl RemoteSsh {
         }
     }
 
-    pub(super) fn new_noninteractive(target: String) -> Self {
+    pub(crate) fn new_noninteractive(target: String) -> Self {
         let manage = crate::platform::remote_ssh_config_paths().multiplexing
             && crate::config::Config::load()
                 .config
@@ -867,14 +691,14 @@ impl RemoteSsh {
     }
 
     #[cfg(not(unix))]
-    pub(super) fn prepare_shared_transport(&self) -> io::Result<bool> {
+    pub(crate) fn prepare_shared_transport(&self) -> io::Result<bool> {
         Ok(false)
     }
 
     #[cfg(unix)]
     // True permits one new connection after retirement, disappearance, or
     // another helper's replacement. It does not prove the old TCP link died.
-    pub(super) fn prepare_shared_transport(&self) -> io::Result<bool> {
+    pub(crate) fn prepare_shared_transport(&self) -> io::Result<bool> {
         let Some(options) = self.options() else {
             return Ok(false);
         };
@@ -1008,7 +832,7 @@ impl RemoteSsh {
         )
     }
 
-    fn command(&self) -> Command {
+    pub(crate) fn command(&self) -> Command {
         let mut command = self.base_command();
         if self.noninteractive {
             apply_noninteractive_ssh_options(&mut command);
@@ -1580,28 +1404,6 @@ fn prepare_discovered_remote_herdr(
     })
 }
 
-pub(super) fn find_installed_remote_herdr(ssh: &RemoteSsh) -> io::Result<RemoteHerdr> {
-    let platform = detect_remote_platform(ssh)?.platform;
-    let remote_herdr = RemoteHerdr::for_platform(platform);
-    let candidates = remote_binary_candidates(ssh, &remote_herdr)?;
-    for mut candidate in candidates {
-        if let Some(status) = remote_client_status(ssh, &candidate)? {
-            if status.supports_endpoint_requirement(&candidate.platform, true) {
-                candidate.bridge_idle_timeout = status.remote_bridge_idle_timeout;
-                return Ok(candidate);
-            }
-        }
-    }
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        format!(
-            "matching Herdr is not ready on {}; run `herdr --remote {}` interactively to install or update it",
-            ssh.target(),
-            ssh.target()
-        ),
-    ))
-}
-
 fn prepare_windows_remote_herdr(
     ssh: &RemoteSsh,
     remote_herdr: RemoteHerdr,
@@ -1669,56 +1471,6 @@ fn prepare_windows_remote_herdr(
         remote_herdr,
         stop_after_install_approved,
     })
-}
-
-pub(super) fn discover_remote_api_metadata(
-    ssh: &RemoteSsh,
-    session: &str,
-) -> io::Result<crate::client::endpoint::SshMachineMetadata> {
-    let platform = detect_remote_platform(ssh)?.platform;
-    if !platform.is_windows() {
-        // Deliver the discovery script on stdin (`/bin/sh -s`). OpenSSH for
-        // Windows hands the SSH command argument to the login shell wrapped in
-        // double quotes, which would expand the `$` and `$(...)` this script
-        // needs before the intended `/bin/sh` parses it. Stdin is not
-        // re-expanded, so a WSL-backed Windows host is discovered correctly.
-        let output = ssh.sh_output(&posix_remote_api_discovery_script(&platform, session))?;
-        if !output.status.success() {
-            return Err(command_failed("remote binary discovery failed", &output));
-        }
-        let metadata = crate::client::endpoint::SshMachineMetadata {
-            os: platform.os.to_owned(),
-            executable: String::from_utf8_lossy(&output.stdout).trim().to_owned(),
-        };
-        if !metadata.is_valid() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid remote Herdr executable path",
-            ));
-        }
-        return Ok(metadata);
-    }
-    let remote_herdr = RemoteHerdr::for_platform(platform);
-    let candidates = remote_binary_candidates(ssh, &remote_herdr)?;
-    for candidate in candidates {
-        let probe =
-            ssh.framed_user_shell_output(&remote_api_bridge_command(&candidate, session, true))?;
-        if probe.status.code() == Some(255) {
-            return Err(command_failed("remote SSH connection failed", &probe));
-        }
-        if probe.status.success()
-            && String::from_utf8_lossy(&probe.stdout).trim() == "herdr-api-bridge-v1"
-        {
-            return Ok(crate::client::endpoint::SshMachineMetadata {
-                os: "windows".into(),
-                executable: candidate.executable.display().to_owned(),
-            });
-        }
-    }
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "remote Herdr does not support machine API forwarding; update Herdr on this machine",
-    ))
 }
 
 fn detect_remote_platform(ssh: &RemoteSsh) -> io::Result<DetectedRemotePlatform> {
@@ -2420,6 +2172,7 @@ struct RemoteClientStatusJson {
     endpoint_capabilities: Vec<String>,
     #[serde(default)]
     remote_host_bridge: bool,
+    #[cfg(test)]
     #[serde(default)]
     remote_bridge_idle_timeout: bool,
 }
@@ -2882,36 +2635,10 @@ fn confirm_remote_install(
     Ok(())
 }
 
-fn posix_remote_api_discovery_script(platform: &RemotePlatform, session: &str) -> String {
-    format!(
-        r#"set -f
-candidates=$(
-command -v herdr
-{discovery}
-)
-IFS='
-'
-for candidate in $candidates; do
-    case "$candidate" in
-        */mise/shims/herdr) continue ;;
-        /*) ;;
-        *) continue ;;
-    esac
-    [ -x "$candidate" ] || continue
-    if capability=$("$candidate" --session {session} remote-api-bridge --check </dev/null 2>/dev/null) && [ "$capability" = herdr-api-bridge-v1 ]; then
-        printf '%s\n' "$candidate"
-        exit 0
-    fi
-done
-printf '%s\n' 'remote Herdr does not support machine API forwarding; update Herdr on this machine' >&2
-exit 2"#,
-        discovery = known_remote_binary_candidate_script(platform),
-        session = shell_quote(session),
-    )
-}
-
+#[cfg(test)]
 pub(super) const STALE_API_METADATA: &str = "herdr-machine-metadata-stale-v1";
 
+#[cfg(test)]
 pub(super) fn cached_remote_api_command(
     metadata: &crate::client::endpoint::SshMachineMetadata,
     session: &str,
@@ -2941,6 +2668,7 @@ pub(super) fn cached_remote_api_command(
     posix_base64_command(&script)
 }
 
+#[cfg(test)]
 pub(super) fn remote_api_bridge_command(
     remote_herdr: &RemoteHerdr,
     session_name: &str,
@@ -3676,6 +3404,14 @@ fn sanitize_path_component(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn hc_ssh_repair_without_managed_transport_is_a_noop() {
+        let policy = RemoteSsh::new("must-not-connect.invalid".into(), false, "default".into());
+        let cancelled = policy.cancelled.clone();
+        assert!(!crate::hc::source::repair_ssh(policy).await.unwrap());
+        assert!(cancelled.load(Ordering::Acquire));
+    }
 
     #[cfg(unix)]
     #[test]

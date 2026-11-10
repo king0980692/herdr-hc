@@ -1420,6 +1420,49 @@ async fn zoom_hidden_synchronized_pane_does_not_block_surface() {
 }
 
 #[tokio::test]
+async fn vertical_zoom_sidebar_remains_visible_to_clients_and_output_routing() {
+    let mut server = test_headless_server();
+    let mut workspace = crate::workspace::Workspace::test_new("zoom-sidebar");
+    let hidden = workspace.tabs[0].root_pane;
+    let sidebar = workspace.test_split(ratatui::layout::Direction::Horizontal);
+    workspace.tabs[0].layout.focus_pane(hidden);
+    let focused = workspace.test_split(ratatui::layout::Direction::Vertical);
+    workspace.tabs[0].zoomed = true;
+    for (pane, text) in [
+        (hidden, b"HIDDEN".as_slice()),
+        (focused, b"FOCUSED"),
+        (sidebar, b"SIDEBAR"),
+    ] {
+        workspace.insert_test_runtime(
+            pane,
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(40, 23, text),
+        );
+    }
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.active = Some(0);
+    server.app.state.selected = 0;
+    server.app.state.mode = crate::app::Mode::Terminal;
+    let (_control, render) = connect_matching_test_shell(&mut server, 7);
+    assert!(server.shell_client_views_pane(7, 0, sidebar));
+    assert!(server.shell_client_views_pane(7, 0, focused));
+    assert!(!server.shell_client_views_pane(7, 0, hidden));
+    assert!(server.pty_sources_visible_to_any_render_target(&HashSet::from([sidebar])));
+    assert!(!server.pty_sources_visible_to_any_render_target(&HashSet::from([hidden])));
+    write_shared_test_pane(&mut server, hidden, b"\x1b[?2026h\rPARTIAL");
+    server.render_and_stream();
+    let surface = recv_pane_surface(&render, "zoom with sidebar");
+    let text = frame_text(&surface.frame);
+    assert!(text.contains("FOCUSED"));
+    assert!(text.contains("SIDEBAR"));
+    assert!(!text.contains("PARTIAL"));
+    write_shared_test_pane(&mut server, sidebar, b"\rUPDATED");
+    server.render_and_stream();
+    let surface = recv_pane_surface(&render, "sidebar output while zoomed");
+    assert!(frame_text(&surface.frame).contains("UPDATED"));
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
 async fn retained_snapshot_survives_a_writer_waiting_for_the_terminal_core() {
     let mut server = test_headless_server();
     let pane_id = install_shared_view_test_runtime(&mut server);
@@ -3113,7 +3156,7 @@ async fn client_shell_streams_and_targets_popup_terminal_content() {
     );
     assert!(popup_input.try_recv().is_err());
 
-    assert!(server.app.close_popup_pane());
+    assert!(server.app.close_popup_pane().unwrap());
     server.render_and_stream();
     let ServerMessage::PaneSurface(surface) =
         read_server_message(render_rx.recv().expect("popup close surface"))

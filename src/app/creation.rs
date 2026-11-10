@@ -75,6 +75,13 @@ impl App {
     }
 
     pub(super) fn resolve_new_terminal_cwd(&self, follow_cwd: Option<PathBuf>) -> PathBuf {
+        if self.terminal_factory.is_saved_source() {
+            return match &self.state.new_terminal_cwd {
+                NewTerminalCwdConfig::Path(path) => PathBuf::from(path),
+                NewTerminalCwdConfig::Follow => follow_cwd.unwrap_or_default(),
+                _ => PathBuf::new(),
+            };
+        }
         resolve_new_terminal_cwd(&self.state.new_terminal_cwd, follow_cwd)
     }
 
@@ -130,7 +137,8 @@ impl App {
         extra_env: Vec<(String, String)>,
     ) -> std::io::Result<usize> {
         let (rows, cols) = self.state.new_pane_size(crate::ui::NewPanePlacement::Alone);
-        let (ws, terminal, runtime) = Workspace::new_with_extra_env(
+        self.default_workspace_initialized = true;
+        let (ws, terminal, runtime) = Workspace::new_with_tab(
             initial_cwd,
             rows,
             cols,
@@ -141,7 +149,9 @@ impl App {
             self.event_tx.clone(),
             self.render_notify.clone(),
             self.render_dirty.clone(),
+            None,
             extra_env,
+            &self.terminal_factory,
         )?;
         self.terminal_runtimes.insert(terminal.id.clone(), runtime);
         self.state.terminals.insert(terminal.id.clone(), terminal);
@@ -356,7 +366,7 @@ impl App {
             terminal_title: terminal.terminal_title.clone(),
             terminal_title_stripped: terminal.terminal_title_stripped(),
             display_agent: presentation.display_agent,
-            agent_status: pane_agent_status(terminal.state, pane.seen),
+            agent_status: super::api_helpers::terminal_agent_status(terminal, pane.seen),
             state_labels: presentation.state_labels,
             tokens: terminal.metadata_tokens.values(),
             agent_session: terminal_agent_session_info(terminal),

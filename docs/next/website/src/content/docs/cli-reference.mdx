@@ -27,7 +27,7 @@ Optional launch and update settings:
 
 - Add `--session <name>` to use a named session instead of the default.
 - Add `--remote-keybindings server` to remote attach to use server keybindings instead of local ones.
-- Experimental live handoff requires explicit `--handoff` on `herdr --remote` or `herdr update`. It is not the normal setup or connection path; see [Updates](/docs/install/#update).
+- Experimental `--handoff` is a legacy Herdr-owned PTY feature, not hc recovery or migration. hc attachments reconnect without PTY transfer; see [Session state and restore](/docs/session-state/).
 
 Status commands:
 
@@ -55,19 +55,20 @@ with the installed binary. Use `--json` for the full JSON Schema document, or
 herdr machine list
 herdr machine add workbox
 herdr machine add workbox --label "Build machine"
+herdr machine add workbox --remote-session agents --hc-path /home/user/.local/opt/hc/bin/hc
 herdr machine rename <profile-id> --label "New name"
 herdr machine disable <profile-id>
 herdr machine enable <profile-id>
 herdr machine remove <profile-id>
 ```
 
-In an interactive terminal, `machine add` discovers running sessions and lets you choose when several are running. No running sessions, or no Herdr installation, uses `default`; failed queries against an installed binary require an explicit choice. Add `--remote-session <name>` to skip discovery. Non-interactive commands use `default` unless that flag is supplied. `machine list` accepts optional `--json` for scripts. See [Connecting machines](/docs/connecting-machines/) for the full setup and connection guide.
+`machine add` verifies installed **hc** over SSH and saves its target and source session. Optional `--hc-path <absolute-source-path>` selects a side-by-side source executable for setup, status, reconnect, and TUI connections; omission keeps remote PATH lookup, and failure never falls back to another executable. Run normal `herdr` afterward; no source-specific launcher is needed. Use `--remote-session <name>` to select an hc session; otherwise it uses `default`, without remote Herdr session discovery. It never installs, starts, updates, or replaces remote Herdr, and creates no terminal program. Failed setup does not save a profile. `machine list` accepts optional `--json` for scripts. See [Connecting machines](/docs/connecting-machines/) for setup and recovery details.
 
-`machine add` checks the remote installation's capabilities, installs or updates with approval only when needed, and starts the requested session's background server before saving. Compatible release versions do not need to match. Run setup in an interactive terminal when installation or restart approval is required; failed or cancelled setup does not save a profile. Replacing a running server requires explicit approval with a default answer of No, and stops its pane processes. `machine add` never enables experimental handoff implicitly.
+Each enabled profile uses an isolated **local** presentation host. Herdr renders locally while hc owns the source programs, terminals, and explicitly reported status. Existing programs are not automatically adopted; only saved bindings are reattached.
 
 Changes apply automatically to open local Herdr clients, normally within a second. Added or enabled machines connect in the background; renaming does not reconnect. Removing or disabling disconnects only that machine and leaves its remote sessions running. Removing the machine you are viewing returns to Local, or shows Local as unavailable until it reconnects. Each profile stores an opaque ID, label, SSH target, explicit remote session, and enabled state in client state. Herdr does not store passwords, private keys, or other SSH credentials.
 
-Use `herdr machine status [<label-or-id>] [--json]` for fresh, noninteractive SSH and remote Herdr checks. `reachable` describes this check, not a TUI's current connection. Use `herdr machine reconnect <label-or-id>` in a terminal for SSH authentication and verification; it does not install or update Herdr. Open clients retry failed connections within 30 seconds. Clicking `! auth` or `! error` retries the connection; a failed attempt shows the latest error and CLI guidance; collapsed sidebars show `!`. See [Recovering SSH authentication](/docs/connecting-machines/#recovering-ssh-authentication) for platform limits. For remote setup, use `herdr --remote workbox`, adding `--session <name>` only for a named session.
+Use `herdr machine status [<label-or-id>] [--json]` for a fresh, noninteractive SSH/hc check. `reachable` describes that probe, not the TUI's current source connection. Use `herdr machine reconnect <label-or-id>` in a terminal for supported SSH authentication and hc verification; it does not install or update either runtime. Background attempts use strict host-key checks, never prompt, and have backoff capped at 30 seconds, separate from SSH transport timeouts. See [Connection problems](/docs/connecting-machines/#connection-problems). Explicit legacy `--remote` attachment is separate from this saved hc path.
 
 Workspace, tab, pane IDs, and agent names belong to a single server. Selecting a machine in the UI does not retarget CLI commands. Use the global **prefix** `--machine <label-or-id>` to route API commands to a saved SSH machine:
 
@@ -75,16 +76,16 @@ Workspace, tab, pane IDs, and agent names belong to a single server. Selecting a
 herdr --machine "Build machine" agent list
 herdr --machine <profile-id> pane list
 herdr --machine "Build machine" agent prompt w1:p1 "review this change"
-herdr --machine "Build machine" worktree create --cwd /srv/project --branch review
+herdr --machine "Build machine" workspace list
 ```
 
-The selector must match an enabled saved profile ID or a unique, case-sensitive label, not an arbitrary SSH hostname. The saved remote session is used; combining `--machine` with `--session` or `--remote` is an error. Without the prefix, commands retain their existing local session/socket behavior.
+The selector must match an enabled saved profile ID or a unique, case-sensitive label, not an arbitrary SSH hostname. The saved hc source session is used; combining `--machine` with `--session` or `--remote` is an error. Without the prefix, commands retain their existing local session/socket behavior.
 
-Supported commands are `workspace`, `worktree`, `tab`, `pane`, `notification`, `agent` (except `attach` and local `explain --file`), `api snapshot`, `status server`, and API-backed plugin commands (`link`, `unlink`, `enable`, `disable`, `list`, `action`, `log`, `pane`). Server commands support `stop`, `reload-config`, `agent-manifests`, and `reload-agent-manifests`. Local installation/configuration commands, plugin installation, session management, and interactive terminal attachment are not forwarded.
+API routing includes `workspace`, `tab`, `pane`, `notification`, `agent` (except `attach` and local `explain --file`), `api snapshot`, `status server`, and API-backed plugin commands. Source Git discovery and `worktree` filesystem operations are currently unavailable: they fail without touching a similarly named client-local path. Local installation/configuration commands, plugin installation, session management, and interactive terminal attachment are not forwarded. Plugin definitions belong to the local presentation host; their terminal commands execute on the source. Legacy agent-manifest reloads do not replace hc-reported status.
 
-Requests and responses travel through the JSON API over non-interactive SSH; API payloads are not interpolated into the SSH shell command. No open TUI is required, and the bridge never installs, starts, or restarts a server. Update the local CLI and remote Herdr installation to support machine forwarding, and keep the running remote server's API protocol compatible. Authentication, unavailable machines, and incompatible versions fail without falling back to Local. Requests are not automatically retried after connection failure.
+No open TUI is required. The CLI may start the profile's local presentation host and sends JSON requests pinned to that host instance; hc control travels separately over SSH. A replaced host rejects stale requests. Requests, uncertain program launches, and input are never automatically replayed. Missing or incompatible runtimes fail without falling back to Local; update local Herdr or source hc explicitly as appropriate. Stopping the presentation host detaches viewers rather than killing hc programs.
 
-Local pane IDs are not inherited by remote commands. Use explicit remote IDs; `--current` cannot refer to the caller's local pane. Remote worktree paths must be absolute, `~`, or start with `~/` (expanded on the server); plugin link paths must be absolute. The prefix targets one machine at a time; combined listings and routing through another TUI's connections are not included.
+Local pane IDs are not inherited by machine-targeted commands. Use explicit IDs from that presentation host; `--current` cannot refer to the caller's local pane. Terminal cwd/argv values refer to the source, not the client's filesystem. The prefix targets one machine at a time; combined listings and routing through another TUI's connections are not included.
 
 ## Shell completions
 
@@ -174,6 +175,8 @@ A workspace is a top-level project or work context. Creating one also creates it
 
 ## Worktrees
 
+Saved hc sources reject Git/worktree filesystem operations with `unsupported_runtime`; they never touch a same-named local path. Worktree removal also rejects the legacy process/respawn path for hc-owned panes. The commands below are not a source filesystem implementation.
+
 ```bash
 herdr worktree list [--workspace ID | --cwd PATH] [--trust-repository]
 herdr worktree create [--workspace ID | --cwd PATH] [--branch NAME] [--base REF] [--path PATH] [--label TEXT] [--focus] [--no-focus] [--trust-repository]
@@ -228,6 +231,8 @@ herdr pane move <pane_id> --new-workspace [--label TEXT] [--tab-label TEXT] [--f
 herdr pane close <pane_id>
 ```
 
+Saved SSH source programs do not automatically receive `HERDR_PANE_ID`; prefer explicit IDs from the intended presentation host. Local hc launches can carry caller context, but do not assume that context crosses SSH.
+
 For pane commands that accept `--current`, Herdr uses the calling pane's
 `HERDR_PANE_ID` when the command runs inside a Herdr pane. For `pane split`,
 an explicit pane id or `--pane ID` splits that pane. An omitted target splits
@@ -240,7 +245,7 @@ mouse-reporting pane application. `herdr` restores the default pane menu.
 Right-clicking the pane frame still opens Herdr's menu. `pane split
 --right-click pane` applies the same policy to the new pane at creation.
 
-After `pane move`, use `.result.move_result.pane.pane_id` for later commands. A cross-workspace move changes the workspace-qualified pane ID; the prior value remains at `.result.move_result.previous_pane_id`. The running process keeps its launch-time `HERDR_PANE_ID`, `HERDR_TAB_ID`, and `HERDR_WORKSPACE_ID`; Herdr retains the old pane ID as an alias for that terminal, so pane commands using `--current` still resolve it. A live agent name follows the terminal and continues to resolve after the move.
+After `pane move`, use `.result.move_result.pane.pane_id`; the old public ID is `.result.move_result.previous_pane_id`. The hc core/address binding stays the same. Do not infer source routing from old inherited IDs. An agent's presentation alias is not its permanent source identity.
 
 Read output:
 
@@ -272,6 +277,8 @@ aliases for `ctrl+c`.
 
 Report agent state from custom hooks:
 
+The following agent reports, session/resume reports, release, authority-clear, and pane metadata reports are **legacy-only**. hc-owned panes reject them with `unsupported_runtime`, including `pane report-metadata`. Use source hc / OSC 7501 for facts and status; `agent rename` remains a presentation alias. Saved SSH source programs do not automatically receive client routing variables or public pane IDs; local launch context does not grant status authority.
+
 ```bash
 herdr pane report-agent <pane_id> \
   --source ID \
@@ -302,9 +309,7 @@ herdr pane release-agent <pane_id> \
 
 Arguments after `--` are the command Herdr runs to resume this session after a server restart. The first argument must be a plain command name on `PATH`, and no argument may contain an apostrophe.
 
-`pane get`, `pane list`, `agent get`, and `agent list` include a read-only `agent_session` object when an official integration has reported a native session reference. If no native session reference is stored, the field is omitted.
-
-Those commands include `foreground_cwd` when Herdr can resolve the cwd of the foreground process controlling the pane. The `cwd` field remains the pane/workspace cwd used for labels and follow-cwd behavior.
+Legacy official integrations may populate the read-only `agent_session` field; it is not an hc restore or readiness signal. For hc panes, cwd and foreground facts come from the source snapshot, never from a client-local process lookup. `cwd` remains the pane/workspace label and follow-cwd value; paths refer to the source filesystem.
 
 `pane get` and `pane list` include `scroll` when terminal scroll metrics are available. `scroll.offset_from_bottom == 0` means the pane is at the bottom of its scrollback.
 
@@ -356,15 +361,17 @@ Agent targets are either a unique live agent name or the pane ID that currently 
 
 `agent start` activates an existing available shell pane: the pane's interactive shell must own the foreground, with no foreground command, editor, or agent running. Topology must be created separately. Names are unique among live agents and must match `[a-z][a-z0-9_-]{0,31}`. The kind selects Herdr's canonical interactive executable, while arguments after `--` are passed to that executable. Supported kinds are `pi`, `claude`, `codex`, `gemini`, `cursor`, `devin`, `agy`, `cline`, `omp`, `mastracode`, `opencode`, `copilot`, `kimi`, `kiro`, `droid`, `amp`, `grok`, `hermes`, `kilo`, `qodercli`, `qwen`, `letta`, `maki`, and `muse`. A name follows the current pane occupant and is cleared when that agent exits, is released, or is replaced. Temporary detection uncertainty does not clear it.
 
+For hc, shell admission requires positive source facts that the source root process is the foreground interactive shell. A requested kind, reserved name, or submitted command is only launch intent, not agent identity or readiness. Until an explicit usable source report arrives, status stays `unknown`. Only a pre-submission `agent_pane_busy` can be retried; after submission, timeout or disconnect must not trigger an automatic launch/input replay.
+
 A successful start returns only after the expected agent owns the same terminal and is ready for interactive input. If detection reports `blocked` during startup, the command returns `agent_not_ready` immediately. The name remains available for `agent read` and `agent send-keys`, and becomes ready for prompts after detection reports `idle`. The default startup timeout is 30000 milliseconds; explicit values must be greater than 3000 and no more than 300000.
 
 `agent prompt` honors live bracketed-paste mode and writes text followed by delayed Enter as one ordered submission, including while the agent is working. Success without `--wait` acknowledges the writes, not the start of a turn. On Windows, Codex receives a paste boundary before Enter so submission does not depend on prompt size; the caller timeout includes submission time. If the agent is already `blocked`, it returns `agent_blocked` without sending input. With `--wait`, a prompt sent from another non-working state has up to five seconds after submission to produce an observed `working` or `blocked` state or Herdr returns `agent_prompt_stalled`; if the caller timeout expires first, Herdr returns the normal `timeout` error. This prevents unrelated `idle`, `done`, or session changes from completing the wait. After activity is observed, it waits for the first requested settled status. It does not track individual turns. If the agent is already working, completion of that active turn may satisfy the wait. `--until` narrows the matching states and is rejected unless `--wait` is also present. Standalone `agent wait` returns immediately when the current status matches. Both default to `idle`, `done`, or `blocked`; use `--until unknown` explicitly when needed.
 
-`idle` and `done` both mean ready for input. The CLI/API uses the server's seen state: `done` is idle but not yet marked seen, explicit `pane focus` / `agent focus` commands mark the target seen, and reads do not. Each TUI client tracks viewed completions independently, so its Done badge can differ from the CLI or another client. `blocked` means Herdr recognized an approval or question UI. `unknown` means an agent is present but Herdr cannot classify it confidently, not that its work succeeded.
+For hc, `idle` and `done` come from explicit source reports; focus and reads never turn source `done` into `idle`. Source `blocked` or `error` maps to blocked, and a missing, disconnected, or unrecognized status maps to `unknown`, not successful completion. Client attention markers do not change that authority. Only live reported transitions notify; reconnect snapshots do not replay notifications. The legacy seen-state and screen-classification rules apply only to older Herdr-owned PTYs.
 
 `agent send-keys` sends logical terminal keys such as `enter`, `up`, `esc`, or `ctrl+c`. Herdr validates every key before writing any bytes. `agent read` reads the resolved terminal stream, and `agent rename` names an already detected agent.
 
-`agent explain` asks the running server to classify the same bottom-buffer detection snapshot used by screen detection, so live output reflects the server's active manifest cache. Because this uses the `agent.explain` socket method, restart or hand off to an updated server after upgrading Herdr before using live explain. Use `--file PATH --agent LABEL` to explain a saved fixture locally instead. The default output shows the agent, final state, manifest source and version, matched rule with its region evidence, and any fallback, skip, or warning reasons. Add `--verbose` for visible evidence flags, cached remote version, local override shadowing, remote update status, and the full evaluated-rules list with matcher and region evidence. Add `--json` for issue reports or tests.
+`agent explain` is a legacy manifest diagnostic using the server's detection snapshot and active manifest cache. It does not classify or override hc's authoritative reported status. Do not restart a source or request handoff to change hc status. Use `--file PATH --agent LABEL` to explain a saved fixture locally instead. The default output shows the agent, final state, manifest source and version, matched rule with its region evidence, and any fallback, skip, or warning reasons. Add `--verbose` for visible evidence flags, cached remote version, local override shadowing, remote update status, and the full evaluated-rules list with matcher and region evidence. Add `--json` for issue reports or tests.
 
 Use `pane send-text`, `pane send-keys`, `pane run`, and `terminal attach` for ordinary terminals, servers, tests, shells, or low-level terminal control. Use `pane run` when you want to submit a command with Enter.
 
@@ -534,20 +541,9 @@ terminal size, and values smaller than the popup minimum are clamped. A popup
 is not a Herdr pane, does not export `HERDR_PANE_ID`, and does not participate
 in pane or agent APIs. Native non-terminal plugin panes are outside plugin v1.
 
-New panes identify as `TERM_PROGRAM=herdr`, with `TERM_PROGRAM_VERSION` set to
-Herdr's version. They keep `TERM=xterm-256color` and `COLORTERM=truecolor`.
-They also get `fish_handle_reflow=0`, because Herdr reflows text on resize;
-an inherited or explicit `fish_handle_reflow` value is kept.
-Herdr removes inherited outer-terminal session markers (iTerm2, WezTerm, Kitty,
-Windows Terminal, tmux, screen, and Zellij), iTerm2's `LC_TERMINAL` identity,
-and known Claude Code, Codex, and OMP session markers before applying explicit
-launch environment values. This prevents new panes from claiming the terminal
-or agent session that originally started the server. Ordinary environment
-variables, including API keys and display settings, remain inherited rather than
-being replaced with the attaching client's environment. SSH-agent forwarding has
-its own reconnect handling. Existing pane processes are unchanged by this cleanup.
+Programs run through hc, using source defaults for saved SSH launches and local configuration for local launches. Saved SSH launches do not bulk-copy an attaching client's environment, API credentials, executable path, public IDs, or API socket. Source credentials and the source's own SSH-agent environment remain source-owned. Terminal plugin commands run there too; plugin executables/configuration are not copied from the client, and missing source commands fail without local fallback.
 
-`--env KEY=VALUE` can be repeated on process-launching commands. It applies to the newly launched process only. Herdr-managed variables such as `HERDR_SOCKET_PATH`, `HERDR_BIN_PATH`, `HERDR_ENV`, `HERDR_WORKSPACE_ID`, `HERDR_TAB_ID`, `HERDR_PANE_ID`, `HERDR_PLUGIN_ID`, `HERDR_PLUGIN_ROOT`, `HERDR_PLUGIN_CONFIG_DIR`, `HERDR_PLUGIN_STATE_DIR`, `HERDR_PLUGIN_ENTRYPOINT_ID`, and `HERDR_PLUGIN_CONTEXT_JSON` stay authoritative when they conflict with caller-provided env.
+Repeat `--env KEY=VALUE` for intentional values on a new launch only. Values are source-side overrides, not client-path discovery; review the target before sending secrets. Local hc launches may carry Herdr pane/plugin context; saved SSH launches do not automatically export that client context. Neither context grants status authority.
 
 ## Read sources
 
@@ -561,6 +557,8 @@ its own reconnect handling. Existing pane processes are unchanged by this cleanu
 These meanings apply to reads. For `pane wait-output` only, both `recent` and `recent-unwrapped` search the unwrapped recent snapshot; `recent` remains the default spelling.
 
 ## Environment variables
+
+This table describes Herdr/client configuration and local launch context, not a promise to inject it into saved SSH programs. In particular, `HERDR_PROCESS_DETECTION` does not enable hc status inference.
 
 | Variable | Purpose |
 | --- | --- |

@@ -9,10 +9,11 @@ use std::time::{Duration, Instant};
 
 use portable_pty::CommandBuilder;
 
+pub mod hc;
+
 static PID_REGISTRY: OnceLock<Mutex<HashSet<u32>>> = OnceLock::new();
 static RUNTIME_DIR_REGISTRY: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
 static INIT: Once = Once::new();
-static CLEANUP_GUARD: OnceLock<CleanupGuard> = OnceLock::new();
 const WATCHDOG_SCAN_INTERVAL: Duration = Duration::from_secs(1);
 const RUNTIME_OWNER_MARKER: &str = ".herdr-test-owner-pid";
 pub const CURRENT_PROTOCOL: u32 = 22;
@@ -43,6 +44,14 @@ pub fn register_spawned_herdr_pid(pid: Option<u32>) {
 
 /// Asks a spawned herdr process to exit. portable-pty's `kill` sends SIGHUP,
 /// which the server deliberately ignores.
+/// Drain diagnostics so unread PTY output cannot block graceful server exit.
+pub fn drain_pty(master: &dyn portable_pty::MasterPty) {
+    let mut reader = master.try_clone_reader().expect("clone server PTY reader");
+    std::thread::spawn(move || {
+        let _ = std::io::copy(&mut reader, &mut std::io::sink());
+    });
+}
+
 pub fn stop_spawned_herdr(child: &mut (dyn portable_pty::Child + Send + Sync)) {
     match child.process_id() {
         Some(pid) => unsafe {
@@ -109,6 +118,13 @@ pub fn cleanup_test_base(base: &Path) {
     let runtime_dirs = HashSet::from([runtime_dir.clone()]);
 
     terminate_servers_for_runtime_dirs(&runtime_dirs);
+    if let Err(error) = hc::cleanup(&runtime_dir) {
+        if !std::thread::panicking() {
+            panic!("hc fixture cleanup: {error}");
+        }
+        eprintln!("hc fixture cleanup: {error}");
+        return;
+    }
     unregister_runtime_dir(&runtime_dir);
     let _ = fs::remove_dir_all(base);
 }
@@ -543,7 +559,7 @@ pub fn wait_for_disconnect(stream: &mut UnixStream, timeout: Duration) -> Result
     result
 }
 
-pub fn cleanup_registered_herdr_pids() {
+pub fn cleanup_registered_herdr_pids() -> bool {
     let pids: Vec<u32> = {
         let mut registry = pid_registry_lock();
         registry.drain().collect()
@@ -560,14 +576,13 @@ pub fn cleanup_registered_herdr_pids() {
 
     terminate_servers_for_runtime_dirs(&runtime_dirs);
     let _ = cleanup_servers_with_missing_runtime_dir();
+    hc::cleanup_all().is_ok()
 }
 
 fn ensure_cleanup_hooks() {
     INIT.call_once(|| {
         let _ = cleanup_servers_with_missing_runtime_dir();
         start_global_watchdog();
-
-        let _ = CLEANUP_GUARD.set(CleanupGuard);
 
         let previous_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |panic_info| {
@@ -784,14 +799,9 @@ fn is_test_herdr_binary(path: &Path) -> bool {
 }
 
 extern "C" fn run_atexit_cleanup() {
-    cleanup_registered_herdr_pids();
-}
-
-struct CleanupGuard;
-
-impl Drop for CleanupGuard {
-    fn drop(&mut self) {
-        cleanup_registered_herdr_pids();
+    if !cleanup_registered_herdr_pids() {
+        // Never report a green fixture process while private resources remain.
+        unsafe { libc::_exit(1) };
     }
 }
 
@@ -800,6 +810,8 @@ fn terminate_pid(pid: u32) {
 
     if process_exists(pid_t) {
         unsafe {
+            // Panic hooks run before suspension guards can unwind.
+            libc::kill(pid_t, libc::SIGCONT);
             libc::kill(pid_t, libc::SIGTERM);
         }
     }
@@ -877,6 +889,43 @@ mod tests {
             "herdr-watchdog-scoping-{label}-{}-{unique}",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn owned_cleanup_resumes_a_stopped_process_before_termination() {
+        let base = unique_missing_runtime_dir("resume-before-term");
+        fs::create_dir_all(&base).unwrap();
+        let ready = base.join("ready");
+        let terminated = base.join("terminated");
+        let mut child=std::process::Command::new("/bin/sh")
+            .args(["-c", "trap 'printf terminated > \"$1\"; exit 0' TERM; printf ready > \"$2\"; while :; do /bin/sleep 0.02; done", "owned-cleanup"])
+            .arg(&terminated).arg(&ready)
+            .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
+        register_spawned_herdr_pid(Some(child.id()));
+        wait_for_file(&ready, Duration::from_secs(5));
+        assert_eq!(
+            unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGSTOP) },
+            0
+        );
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(child.id() as libc::pid_t, &mut status, libc::WUNTRACED) },
+            child.id() as libc::pid_t
+        );
+        assert!(libc::WIFSTOPPED(status));
+        terminate_pid(child.id());
+        unregister_spawned_herdr_pid(Some(child.id()));
+        assert!(!process_exists(child.id() as libc::pid_t));
+        // terminate_pid owns reaping; Child must confirm that no zombie remains.
+        assert_eq!(
+            child
+                .wait()
+                .expect_err("cleanup must have reaped the child")
+                .raw_os_error(),
+            Some(libc::ECHILD)
+        );
+        assert_eq!(fs::read_to_string(terminated).unwrap(), "terminated");
+        fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

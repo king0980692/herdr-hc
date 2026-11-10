@@ -27,6 +27,7 @@ use crate::render_signal::RenderSignal;
 mod agent_detection;
 mod background_agent;
 mod cursor;
+mod hc;
 mod input;
 mod kitty_keyboard;
 mod osc;
@@ -97,6 +98,41 @@ where
     })
 }
 
+const HC_SOURCE_CLIENT_ENV: &[&str] = &[
+    "HERDR_ENV",
+    "HERDR_BIN_PATH",
+    "HERDR_SOCKET_PATH",
+    "HERDR_CLIENT_SOCKET_PATH",
+    "HERDR_SESSION",
+    "HERDR_STARTUP_CWD",
+    "HERDR_WORKSPACE_ID",
+    "HERDR_TAB_ID",
+    "HERDR_PANE_ID",
+];
+const OUTER_TERMINAL_ENV: &[&str] = &[
+    crate::hc::source::PROFILE_ENV,
+    "ITERM_SESSION_ID",
+    "LC_TERMINAL",
+    "LC_TERMINAL_VERSION",
+    "WEZTERM_PANE",
+    "KITTY_WINDOW_ID",
+    "WT_SESSION",
+    "TMUX",
+    "TMUX_PANE",
+    "STY",
+    "ZELLIJ",
+    "ZELLIJ_SESSION_NAME",
+    "ZELLIJ_PANE_ID",
+];
+const CHILD_AGENT_ENV: &[&str] = &[
+    "CODEX_THREAD_ID",
+    "OMPCODE",
+    "CLAUDECODE",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+];
+
 fn apply_pane_terminal_env(cmd: &mut CommandBuilder) {
     // Each pane is rendered by herdr's own terminal layer, not the outer terminal
     // that launched the app. Advertising the inherited TERM leaks the host terminal
@@ -117,20 +153,7 @@ fn apply_pane_terminal_env(cmd: &mut CommandBuilder) {
         cmd.env(FISH_HANDLE_REFLOW_ENV_VAR, "0");
     }
     // Host handles refer to the outer terminal, never to this pane.
-    for key in [
-        "ITERM_SESSION_ID",
-        "LC_TERMINAL",
-        "LC_TERMINAL_VERSION",
-        "WEZTERM_PANE",
-        "KITTY_WINDOW_ID",
-        "WT_SESSION",
-        "TMUX",
-        "TMUX_PANE",
-        "STY",
-        "ZELLIJ",
-        "ZELLIJ_SESSION_NAME",
-        "ZELLIJ_PANE_ID",
-    ] {
+    for key in OUTER_TERMINAL_ENV {
         cmd.env_remove(key);
     }
 }
@@ -186,14 +209,7 @@ fn apply_pane_launch_env(cmd: &mut CommandBuilder, launch_env: &PaneLaunchEnv) {
     crate::platform::ssh_agent::apply_pane_env(cmd);
     // A new pane is not a child agent of the process that started the server.
     // Explicit launch env below can opt back into an intentional child session.
-    for key in [
-        "CODEX_THREAD_ID",
-        "OMPCODE",
-        "CLAUDECODE",
-        "CLAUDE_CODE_CHILD_SESSION",
-        "CLAUDE_CODE_SESSION_ID",
-        "CLAUDE_CODE_MESSAGING_TOKEN",
-    ] {
+    for key in CHILD_AGENT_ENV {
         cmd.env_remove(key);
     }
     for (key, value) in &launch_env.extra {
@@ -1523,6 +1539,7 @@ pub struct PaneRuntime {
 
 enum PaneRuntimeIo {
     Actor(PtyIoActorHandle),
+    Hc(hc::HcIo),
     #[cfg(test)]
     TestChannel {
         sender: mpsc::Sender<Bytes>,
@@ -1534,6 +1551,7 @@ impl PaneRuntimeIo {
     fn shutdown(&self) {
         match self {
             PaneRuntimeIo::Actor(actor) => actor.shutdown(),
+            PaneRuntimeIo::Hc(io) => io.shutdown(),
             #[cfg(test)]
             PaneRuntimeIo::TestChannel { .. } => {}
         }
@@ -1543,6 +1561,10 @@ impl PaneRuntimeIo {
     fn duplicate_handoff_fd(&self) -> std::io::Result<std::os::fd::RawFd> {
         match self {
             PaneRuntimeIo::Actor(actor) => actor.duplicate_for_handoff(),
+            PaneRuntimeIo::Hc(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "hc attachments do not own PTY descriptors",
+            )),
             #[cfg(test)]
             PaneRuntimeIo::TestChannel { .. } => {
                 Err(std::io::Error::other("test runtime has no PTY master fd"))
@@ -1554,6 +1576,7 @@ impl PaneRuntimeIo {
     fn foreground_process_group_id(&self) -> Option<u32> {
         match self {
             PaneRuntimeIo::Actor(actor) => actor.foreground_process_group_id(),
+            PaneRuntimeIo::Hc(_) => None,
             #[cfg(test)]
             PaneRuntimeIo::TestChannel { .. } => None,
         }
@@ -1563,6 +1586,10 @@ impl PaneRuntimeIo {
     fn begin_handoff(&self, timeout: std::time::Duration) -> std::io::Result<()> {
         match self {
             PaneRuntimeIo::Actor(actor) => actor.begin_handoff(timeout),
+            PaneRuntimeIo::Hc(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "hc attachments must reconnect, not transfer PTY ownership",
+            )),
             #[cfg(test)]
             PaneRuntimeIo::TestChannel { .. } => Ok(()),
         }
@@ -1571,6 +1598,10 @@ impl PaneRuntimeIo {
     #[cfg(unix)]
     fn set_handoff_paused(&self, paused: bool) -> std::io::Result<()> {
         match self {
+            PaneRuntimeIo::Hc(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "hc attachment handoff is not implemented",
+            )),
             PaneRuntimeIo::Actor(actor) => {
                 if paused {
                     actor.begin_handoff(std::time::Duration::from_secs(1))
@@ -1587,6 +1618,7 @@ impl PaneRuntimeIo {
     fn release_after_commit(&self) -> std::io::Result<()> {
         match self {
             PaneRuntimeIo::Actor(actor) => actor.release_after_commit(),
+            PaneRuntimeIo::Hc(_) => Ok(()),
             #[cfg(test)]
             PaneRuntimeIo::TestChannel { .. } => Ok(()),
         }
@@ -1601,6 +1633,13 @@ impl PaneRuntimeIo {
         terminal_responses: Vec<Bytes>,
     ) {
         match self {
+            PaneRuntimeIo::Hc(io) => io.resize(
+                rows,
+                cols,
+                cell_width_px,
+                cell_height_px,
+                terminal_responses,
+            ),
             PaneRuntimeIo::Actor(actor) => {
                 actor.resize(
                     rows,
@@ -1626,6 +1665,7 @@ impl PaneRuntimeIo {
         cell_height_px: u32,
     ) {
         match self {
+            PaneRuntimeIo::Hc(_) => {}
             PaneRuntimeIo::Actor(actor) => {
                 actor.nudge_child_redraw_after_handoff(rows, cols, cell_width_px, cell_height_px);
             }
@@ -1637,6 +1677,7 @@ impl PaneRuntimeIo {
     fn try_send_bytes(&self, bytes: Bytes) -> Result<(), mpsc::error::TrySendError<Bytes>> {
         match self {
             PaneRuntimeIo::Actor(actor) => actor.try_write_user_input(bytes),
+            PaneRuntimeIo::Hc(io) => io.try_send_bytes(bytes),
             #[cfg(test)]
             PaneRuntimeIo::TestChannel { sender, .. } => sender.try_send(bytes),
         }
@@ -1645,6 +1686,7 @@ impl PaneRuntimeIo {
     fn write_terminal_response(&self, response: impl FnOnce() -> Option<Bytes>) {
         match self {
             PaneRuntimeIo::Actor(actor) => actor.write_terminal_response(response),
+            PaneRuntimeIo::Hc(io) => io.automatic(response),
             #[cfg(test)]
             PaneRuntimeIo::TestChannel { sender, .. } => {
                 if let Some(bytes) = response() {
@@ -1662,6 +1704,7 @@ impl PaneRuntimeIo {
         deadline: Option<std::time::Instant>,
     ) -> std::io::Result<std::sync::mpsc::Receiver<std::io::Result<()>>> {
         match self {
+            PaneRuntimeIo::Hc(io) => io.submission(text, enter, delay, deadline),
             PaneRuntimeIo::Actor(actor) => {
                 #[cfg(windows)]
                 return actor.queue_user_input_submission(text, enter, delay, deadline);
@@ -2155,6 +2198,96 @@ fn pane_shell_command_builder(shell_config: PaneShellConfig<'_>) -> io::Result<C
     pane_shell_command_builder_for_target(shell_config, ShellLaunchTarget::current())
 }
 
+pub(crate) fn hc_launch_command(
+    command: crate::terminal::TerminalCommand<'_>,
+    launch_env: &PaneLaunchEnv,
+    source_only: bool,
+) -> io::Result<(Vec<String>, std::collections::BTreeMap<String, String>)> {
+    use crate::terminal::TerminalCommand;
+    let mut cmd = match command {
+        TerminalCommand::Shell(shell) => {
+            let cmd = pane_shell_command_builder(shell)?;
+            if cmd.get_argv().is_empty() {
+                // hc accepts argv, not portable-pty's special login argv0 builder.
+                let mut login = CommandBuilder::new(resolve_shell_for_login_mode(&pane_shell(
+                    shell.default_shell,
+                ))?);
+                login.arg("-l");
+                login
+            } else {
+                cmd
+            }
+        }
+        TerminalCommand::Argv(argv, _legacy_detection) => {
+            let Some(program) = argv.first().filter(|arg| !arg.is_empty()) else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "terminal argv must name a program",
+                ));
+            };
+            let mut cmd = CommandBuilder::new(program);
+            cmd.args(&argv[1..]);
+            cmd
+        }
+        TerminalCommand::Line(line, _legacy_detection) => {
+            crate::platform::pane_custom_command_pty_builder(line)
+        }
+    };
+    apply_pane_terminal_env(&mut cmd);
+    if source_only {
+        // Local API paths, integration flags and SSH-agent proxies cannot route on an SSH source.
+        for key in CHILD_AGENT_ENV.iter().chain(HC_SOURCE_CLIENT_ENV) {
+            cmd.env_remove(key);
+        }
+        for (key, value) in &launch_env.extra {
+            cmd.env(key, value);
+        }
+        if matches!(launch_env.identity, PaneLaunchIdentity::OmitPane) {
+            cmd.env_remove(crate::integration::HERDR_PANE_ID_ENV_VAR);
+        }
+    } else {
+        apply_pane_launch_env(&mut cmd, launch_env);
+    }
+    // hc's env map can set but not unset; exec env on the source to preserve removals.
+    let mut argv = vec!["/usr/bin/env".to_owned()];
+    for key in OUTER_TERMINAL_ENV
+        .iter()
+        .chain(CHILD_AGENT_ENV)
+        .chain(if source_only {
+            HC_SOURCE_CLIENT_ENV
+        } else {
+            &[]
+        })
+        .copied()
+        .chain(
+            std::iter::once(crate::integration::HERDR_PANE_ID_ENV_VAR).filter(|_| {
+                !source_only && matches!(launch_env.identity, PaneLaunchIdentity::OmitPane)
+            }),
+        )
+    {
+        if cmd.get_env(key).is_none() {
+            argv.extend(["-u".to_owned(), key.to_owned()]);
+        }
+    }
+    argv.push("--".into());
+    argv.extend(
+        cmd.get_argv()
+            .iter()
+            .map(|arg| {
+                arg.to_str().map(str::to_owned).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "hc argv must be UTF-8")
+                })
+            })
+            .collect::<io::Result<Vec<_>>>()?,
+    );
+    // Send explicit overrides only, never the client's inherited environment/secrets to another core.
+    let env = cmd
+        .iter_extra_env_as_str()
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .collect();
+    Ok((argv, env))
+}
+
 /// True when panes launch an interactive PowerShell directly on Windows.
 /// Gates the prompt-based cwd reporting pipeline and the agent-exit shell
 /// respawn recovery.
@@ -2232,6 +2365,10 @@ fn publish_reported_cwd(
 
 impl PaneRuntime {
     pub fn shutdown(mut self) {
+        if let PaneRuntimeIo::Hc(io) = &self.io {
+            io.request_terminate();
+            return;
+        }
         if let Some(handle) = self.detect_handle.take() {
             handle.abort();
         }
@@ -2268,7 +2405,9 @@ impl PaneRuntime {
 
     #[cfg(unix)]
     pub fn assume_handoff_ownership(&mut self) {
-        self.preserve_processes_on_drop = false;
+        if !matches!(&self.io, PaneRuntimeIo::Hc(_)) {
+            self.preserve_processes_on_drop = false;
+        }
     }
 
     #[cfg(unix)]
@@ -2326,6 +2465,9 @@ impl PaneRuntime {
 
     pub fn apply_host_terminal_theme(&self, theme: crate::terminal_theme::TerminalTheme) {
         self.terminal.apply_host_terminal_theme(theme);
+        if let PaneRuntimeIo::Hc(io) = &self.io {
+            io.theme(theme);
+        }
     }
 
     pub fn apply_host_terminal_appearance(
@@ -2415,6 +2557,7 @@ impl PaneRuntime {
 
     // Runtime construction needs to thread PTY size, environment, theme, and render hooks together.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub fn spawn_shell_command(
         pane_id: PaneId,
         rows: u16,
@@ -2453,6 +2596,7 @@ impl PaneRuntime {
 
     // Runtime construction needs to thread PTY size, environment, theme, render hooks, and detection policy together.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub fn spawn_argv_command(
         pane_id: PaneId,
         rows: u16,
@@ -3677,6 +3821,16 @@ impl PaneRuntime {
     /// Preflight a complete API command without changing input queue semantics.
     pub(crate) fn validate_input_submission(&self, bytes: &[u8]) -> std::io::Result<()> {
         match &self.io {
+            PaneRuntimeIo::Hc(_) => {
+                if bytes.len() > crate::hc::wire::MAX_PAYLOAD {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "hc input exceeds 16 MiB",
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
             #[cfg(unix)]
             PaneRuntimeIo::Actor(actor) => actor.validate_input_submission(bytes),
             #[cfg(windows)]
@@ -3716,6 +3870,9 @@ impl PaneRuntime {
     }
 
     pub fn try_send_focus_event(&self, event: crate::ghostty::FocusEvent) -> bool {
+        if let PaneRuntimeIo::Hc(io) = &self.io {
+            return io.focus(matches!(event, crate::ghostty::FocusEvent::Gained));
+        }
         if !self.focus_reporting_enabled() {
             return false;
         }
@@ -3805,6 +3962,9 @@ impl PaneRuntime {
 
     /// Get the current working directory of the child shell process.
     pub fn cwd(&self) -> Option<std::path::PathBuf> {
+        if let PaneRuntimeIo::Hc(io) = &self.io {
+            return io.cwd(false);
+        }
         if let Some(cwd) = self
             .reported_cwd
             .lock()
@@ -3819,6 +3979,9 @@ impl PaneRuntime {
     }
 
     pub fn cwd_for_persistence(&self) -> Option<std::path::PathBuf> {
+        if let PaneRuntimeIo::Hc(io) = &self.io {
+            return io.cwd(true).or_else(|| io.cwd(false));
+        }
         let pid = self.child_pid.load(Ordering::Acquire);
         let exited = self.cwd_process_exited.load(Ordering::Acquire);
         if let Some(cwd) = (!exited)
@@ -3840,11 +4003,18 @@ impl PaneRuntime {
     }
 
     pub fn child_pid(&self) -> Option<u32> {
+        // Core PIDs may be remote and must never enter local process-control paths.
+        if matches!(&self.io, PaneRuntimeIo::Hc(_)) {
+            return None;
+        }
         let pid = self.child_pid.load(Ordering::Acquire);
         (pid > 0).then_some(pid)
     }
 
     pub fn follow_cwd(&self) -> Option<std::path::PathBuf> {
+        if let PaneRuntimeIo::Hc(io) = &self.io {
+            return io.cwd(true).or_else(|| io.cwd(false));
+        }
         #[cfg(unix)]
         {
             let leader_cwd = self
@@ -3862,6 +4032,9 @@ impl PaneRuntime {
 
     /// Get the current working directory of the process group controlling the pane PTY.
     pub fn foreground_cwd(&self) -> Option<std::path::PathBuf> {
+        if let PaneRuntimeIo::Hc(io) = &self.io {
+            return io.cwd(true);
+        }
         #[cfg(unix)]
         {
             let pid = self.child_pid.load(Ordering::Acquire);

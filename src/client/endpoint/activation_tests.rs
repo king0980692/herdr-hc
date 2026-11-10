@@ -91,6 +91,7 @@ fn shell_and_registry_with_source_failure(source_fail_after_write: bool) -> Test
         label: "Remote".into(),
         target: "dev@example.com".into(),
         session: "main".into(),
+        hc_path: None,
         enabled: true,
     };
     let target = ClientEndpointId::Ssh(profile.id.clone());

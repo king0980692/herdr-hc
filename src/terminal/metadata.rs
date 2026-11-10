@@ -398,6 +398,9 @@ impl TerminalState {
         now: Instant,
         enforce_ttl: bool,
     ) -> EffectivePresentation {
+        if self.hc_authority {
+            return self.hc_presentation();
+        }
         let mut presentation = EffectivePresentation::empty();
         presentation.title = self.newest_metadata_title(now, enforce_ttl);
         presentation.display_agent = self.newest_metadata_display_agent(now, enforce_ttl);

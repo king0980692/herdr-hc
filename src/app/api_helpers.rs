@@ -106,6 +106,24 @@ pub(super) fn pane_agent_status(
     }
 }
 
+pub(super) fn terminal_agent_status(
+    terminal: &crate::terminal::TerminalState,
+    seen: bool,
+) -> crate::api::schema::AgentStatus {
+    if terminal.hc_authority {
+        if terminal
+            .hc_status()
+            .and_then(|status| status.get("state"))
+            .and_then(serde_json::Value::as_str)
+            == Some("done")
+        {
+            return crate::api::schema::AgentStatus::Done;
+        }
+        return pane_agent_status(terminal.state, true);
+    }
+    pane_agent_status(terminal.state, seen)
+}
+
 pub(super) fn read_terminal_snapshot(
     terminal: &crate::terminal::TerminalRuntime,
     source: crate::api::schema::ReadSource,

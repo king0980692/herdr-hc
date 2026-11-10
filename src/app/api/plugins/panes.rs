@@ -131,18 +131,24 @@ impl App {
         let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
             return encode_error(id, "workspace_not_found", "workspace not found");
         };
-        let result = ws.split_pane_argv_command(
+        let result = ws.split_pane_with_runtime(
             target_pane,
             direction,
+            None,
             rows,
             cols,
             Some(cwd),
-            &pane.command,
-            extra_env,
             self.state.pane_scrollback_limit_bytes,
             self.state.host_terminal_theme,
             host_terminal_appearance,
+            crate::pane::PaneShellConfig::new("", crate::config::ShellModeConfig::NonLogin),
+            extra_env,
             params.focus || placement == PluginPanePlacement::Zoomed,
+            Some(crate::terminal::TerminalCommand::Argv(
+                &pane.command,
+                crate::pane::AgentDetection::Enabled,
+            )),
+            &self.terminal_factory,
         );
         let (tab_idx, new_pane) = match result {
             Some(Ok(result)) => result,
@@ -169,6 +175,9 @@ impl App {
                 .and_then(|ws| ws.tabs.get_mut(tab_idx))
             {
                 tab.zoomed = true;
+                if let Some(pane) = tab.panes.get_mut(&new_pane.pane_id) {
+                    pane.full_zoom = true;
+                }
             }
         }
         self.finish_plugin_pane_open(
@@ -211,15 +220,17 @@ impl App {
         let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
             return encode_error(id, "workspace_not_found", "workspace not found");
         };
-        let (tab_idx, terminal, runtime) = match ws.create_tab_argv_command(
+        let (tab_idx, terminal, runtime) = match ws.create_tab_with_runtime(
             rows,
             cols,
             cwd,
-            &pane.command,
-            extra_env,
             self.state.pane_scrollback_limit_bytes,
             self.state.host_terminal_theme,
             host_terminal_appearance,
+            crate::pane::PaneShellConfig::new("", crate::config::ShellModeConfig::NonLogin),
+            Some(&pane.command),
+            extra_env,
+            &self.terminal_factory,
         ) {
             Ok(result) => result,
             Err(err) => return encode_error(id, "plugin_pane_open_failed", err.to_string()),

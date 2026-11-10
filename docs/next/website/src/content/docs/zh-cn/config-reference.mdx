@@ -5,6 +5,8 @@ description: Herdr 的所有规范 config.toml 键，包含类型、默认值与
 
 import ConfigReference from '../../../components/ConfigReference.astro';
 
+运行时范围：保留的检测、hook 和智能体 resume 键不覆盖 hc 事实，也不重新启动 hc 绑定。本地启动配置与已保存源端默认值不同，见[配置](/zh-cn/docs/configuration/)与[会话状态与恢复](/zh-cn/docs/session-state/)。
+
 Herdr 从 `config.toml` 读取的所有规范键都在这里平铺列出，并支持筛选。
 配置的分步指南与各选项的背景说明见[配置](/zh-cn/docs/configuration/)。
 

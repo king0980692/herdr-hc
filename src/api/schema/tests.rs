@@ -12,7 +12,9 @@ fn rewrite_schema_refs(value: &mut serde_json::Value, schema_name: &str) {
     match value {
         serde_json::Value::Object(object) => {
             if let Some(serde_json::Value::String(reference)) = object.get_mut("$ref") {
-                if let Some(path) = reference.strip_prefix("#/") {
+                if reference == "#" {
+                    *reference = format!("#/schemas/{schema_name}");
+                } else if let Some(path) = reference.strip_prefix("#/") {
                     *reference = format!("#/schemas/{schema_name}/{path}");
                 }
             }
@@ -204,6 +206,21 @@ fn generated_protocol_schema_artifact_is_current() {
         expected, actual,
         "generated API schema artifact is stale; run `HERDR_UPDATE_API_SCHEMA=1 just test-one generated_protocol_schema_artifact_is_current`"
     );
+}
+
+#[test]
+fn runtime_source_hc_path_is_optional_and_roundtrips_without_changing_baseline_fields() {
+    let mut value = serde_json::json!({"id":"source","result":{
+        "type":"runtime_source","host_instance":"host","profile_id":null,"target":null,
+        "session":null,"generation":1,"connected":false,"core_id":null,"error":null,"retired":false
+    }});
+    let old: SuccessResponse = serde_json::from_value(value.clone()).unwrap();
+    assert!(serde_json::to_value(old).unwrap()["result"]
+        .get("hc_path")
+        .is_none());
+    value["result"]["hc_path"] = serde_json::json!("/opt/hc-pinned");
+    let custom: SuccessResponse = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(serde_json::to_value(custom).unwrap(), value);
 }
 
 #[test]

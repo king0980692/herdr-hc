@@ -130,6 +130,7 @@ fn spawn_server_with_path(
     if let Some(path) = path_override {
         cmd.env("PATH", path);
     }
+    support::hc::configure_pty(&mut cmd, runtime_dir);
 
     let child = pair.slave.spawn_command(cmd).unwrap();
     register_spawned_herdr_pid(child.process_id());
@@ -158,6 +159,7 @@ fn spawn_client_process(
 
     let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_herdr"));
     support::isolate_herdr_test_process(&mut cmd);
+    support::hc::configure_pty(&mut cmd, runtime_dir);
     cmd.arg("client");
     cmd.env("HERDR_DISABLE_SOUND", "1");
     cmd.env("XDG_STATE_HOME", runtime_dir.join("state"));
@@ -306,24 +308,6 @@ fn pane_read_recent_contains(
         thread::sleep(Duration::from_millis(50));
     }
     false
-}
-
-fn pane_report_agent(socket_path: &Path, pane_id: &str, agent: &str, state: &str, source: &str) {
-    let response = send_json_request(
-        socket_path,
-        "pane_report_agent",
-        "pane.report_agent",
-        json!({
-            "pane_id": pane_id,
-            "agent": agent,
-            "state": state,
-            "source": source,
-        }),
-    );
-    assert!(
-        response.get("error").is_none(),
-        "pane.report_agent should succeed: {response}"
-    );
 }
 
 fn pane_agent_status(socket_path: &Path, pane_id: &str) -> Option<String> {
@@ -561,7 +545,7 @@ fn cross_area_agent_process_survives_detach_and_reattach() {
     let bin_dir = base.join("bin");
     fs::create_dir_all(&bin_dir).unwrap();
     let fake_pi = bin_dir.join("pi");
-    fs::write(&fake_pi, "#!/bin/sh\nprintf 'Working...\\n'\nsleep 8\n").unwrap();
+    fs::write(&fake_pi, "#!/bin/sh\nprintf '\\033]7501;state=working:app=pi\\007Working...\\n'\nread -r transition\nprintf '\\033]7501;state=blocked:app=pi\\007'\nread -r hold\n").unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -592,7 +576,7 @@ fn cross_area_agent_process_survives_detach_and_reattach() {
         .expect("root pane id")
         .to_string();
 
-    // Ensure detected agent surface is populated by running fake `pi`.
+    // The real program reports its own status; its screen/PID carry no authority.
     pane_send_text(&api_socket, &pane_id, "pi");
     pane_send_input(&api_socket, &pane_id, "");
     let detected_before_hook = {
@@ -615,11 +599,16 @@ fn cross_area_agent_process_survives_detach_and_reattach() {
     };
     assert!(
         detected_before_hook,
-        "expected fake pi process to be detected before hook status assertions"
+        "expected source-reported pi status before detach"
     );
 
-    // Use agent status surfaces directly instead of a generic sleep command.
-    pane_report_agent(&api_socket, &pane_id, "pi", "working", "cross-area-test");
+    let rejected = send_json_request(
+        &api_socket,
+        "legacy-report",
+        "pane.report_agent",
+        json!({"pane_id":pane_id,"agent":"pi","state":"blocked","source":"test"}),
+    );
+    assert_eq!(rejected["error"]["code"], "unsupported_runtime");
     assert!(
         wait_for_agent_status(&api_socket, &pane_id, "working", Duration::from_secs(3)),
         "pane agent status should become working before detach"
@@ -639,10 +628,9 @@ fn cross_area_agent_process_survives_detach_and_reattach() {
     client_shell_handshake(&mut client_b, CURRENT_PROTOCOL, 80, 24).expect("shell handshake");
     assert!(wait_for_frame(&mut client_b, Duration::from_secs(5)));
 
-    // Transition to blocked and verify API + client surfaces both observe it.
-    // The fake process remains visibly working, so blocked is the deterministic
-    // higher-priority semantic transition for this cross-area projection test.
-    pane_report_agent(&api_socket, &pane_id, "pi", "blocked", "cross-area-test");
+    // Ask the same program for its next explicit report after reattachment.
+    pane_send_text(&api_socket, &pane_id, "continue");
+    pane_send_input(&api_socket, &pane_id, "");
     assert!(
         wait_for_agent_status(&api_socket, &pane_id, "blocked", Duration::from_secs(3)),
         "pane agent status should transition to blocked"

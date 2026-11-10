@@ -3,9 +3,9 @@ title: 集成
 description: 为 Pi、OMP、Claude Code、Codex、GitHub Copilot CLI、Devin CLI、Droid、Kimi Code CLI、OpenCode、Kilo Code CLI、Hermes Agent、Qoder CLI、Qwen Code、Letta Code、Cursor Agent CLI、MastraCode、Antigravity CLI 和 Grok CLI 安装 Herdr 集成。
 ---
 
-Herdr 会自动检测它支持的智能体。安装智能体的集成后,Herdr 可以在服务器重启后恢复同一个会话。部分集成还会直接上报智能体的状态。哪些智能体由 Herdr 支持、哪些智能体自己支持 Herdr,见[智能体](/zh-cn/docs/agents/)。
+**运行时范围：**hc 窗格要求源端 hc／OSC 7501 报告。Herdr 不从屏幕推测状态、不接受旧窗格状态／元数据报告、不执行智能体 resume 命令。原生上报见[为你的智能体添加 Herdr 支持](/zh-cn/docs/add-herdr-support/)。
 
-当你想要智能体原生会话恢复、直接生命周期上报,或两者都要时,使用集成。完整的状态权威模型见[智能体](/zh-cn/docs/agents/)。
+以下安装器、hook、插件、版本、环境变量、元数据示例及 resume 行为**仅适用于旧版 Herdr 拥有 PTY 的服务器**。它们不是 hc 集成或已通过 hc 资格验证的智能体列表。在客户端安装不会在源端安装，也不启用 hc 状态报告。不要仅为恢复 hc 窗格而安装：hc 只附加仍存活的精确绑定。
 
 ## 安装集成
 

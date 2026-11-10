@@ -168,6 +168,25 @@ jobs:
           restore-keys: |
             ci-incremental-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_TOOLCHAIN_VERSION }}-${{ env.CARGO_PROFILE_DEV_DEBUG }}-${{ env.CARGO_PROFILE_TEST_DEBUG }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml', 'build.rs', 'crates/*/Cargo.toml', 'crates/*/build.rs') }}-
 
+      - name: Checkout pinned hc test runtime
+        if: matrix.kind == 'unix'
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          repository: herdrdev/herdr-core
+          ref: 9ce385d9c8abb041dd4437476d770365b3fb5282 # hc 0.1.18
+          path: .local/hc-test-source
+          submodules: true
+          persist-credentials: false
+
+      - name: Build isolated-test hc executable
+        if: matrix.kind == 'unix'
+        shell: bash
+        run: |
+          cargo build --locked --manifest-path .local/hc-test-source/Cargo.toml -p herdr-core
+          mkdir -p "$RUNNER_TEMP/herdr-hc-test-bin"
+          ln -s "$GITHUB_WORKSPACE/.local/hc-test-source/target/debug/herdr-core" "$RUNNER_TEMP/herdr-hc-test-bin/hc"
+          echo "$RUNNER_TEMP/herdr-hc-test-bin" >> "$GITHUB_PATH"
+
       - name: Run Linux lint
         if: runner.os == 'Linux'
         run: CARGO_INCREMENTAL=1 just lint

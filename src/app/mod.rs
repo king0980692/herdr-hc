@@ -18,6 +18,7 @@ pub(crate) use api_helpers::limit_snapshot_lines;
 mod creation;
 mod custom_commands;
 mod git_refresh;
+mod hc;
 mod ids;
 mod popup;
 mod runtime;
@@ -105,7 +106,11 @@ impl AppPolicy {
 pub struct App {
     pub state: AppState,
     pub(crate) pixel_mouse_available: bool,
+    pub(crate) hc_recovery: hc::Recovery,
     pub(crate) terminal_runtimes: crate::terminal::TerminalRuntimeRegistry,
+    // Drop the source executor after attachment runtimes; stopping it never kills hc programs.
+    pub(crate) terminal_factory: crate::terminal::TerminalFactory,
+    default_workspace_initialized: bool,
     pub event_tx: mpsc::Sender<AppEvent>,
     pub(crate) event_rx: mpsc::Receiver<AppEvent>,
     pub(crate) api_rx: tokio::sync::mpsc::UnboundedReceiver<crate::api::ApiRequestMessage>,
@@ -395,6 +400,28 @@ impl App {
         api_rx: tokio::sync::mpsc::UnboundedReceiver<crate::api::ApiRequestMessage>,
         event_hub: crate::api::EventHub,
     ) -> std::io::Result<Self> {
+        #[cfg(test)]
+        let factory = crate::terminal::TerminalFactory::Legacy;
+        #[cfg(not(test))]
+        let factory = crate::terminal::TerminalFactory::local()?;
+        Self::try_new_with_terminal_factory(
+            config,
+            policy,
+            config_diagnostic,
+            api_rx,
+            event_hub,
+            factory,
+        )
+    }
+
+    pub(crate) fn try_new_with_terminal_factory(
+        config: &Config,
+        policy: AppPolicy,
+        config_diagnostic: Option<String>,
+        api_rx: tokio::sync::mpsc::UnboundedReceiver<crate::api::ApiRequestMessage>,
+        event_hub: crate::api::EventHub,
+        terminal_factory: crate::terminal::TerminalFactory,
+    ) -> io::Result<Self> {
         let prefix_keys = config.prefix_keys();
         crate::kitty_graphics::set_enabled(config.kitty_graphics_enabled());
         let (event_tx, event_rx) = mpsc::channel::<AppEvent>(APP_EVENT_CHANNEL_CAPACITY);
@@ -403,7 +430,8 @@ impl App {
 
         // Try to restore previous session
         let mut restored_terminals = std::collections::HashMap::new();
-        let mut restored_terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let mut restored_terminal_runtimes =
+            crate::terminal::TerminalRuntimeRegistry::with_events(event_tx.clone());
         let snapshot = policy.restore_session.then(crate::persist::load).flatten();
         let mut plugin_installation_leases = crate::plugin_installations::Leases::new();
         let mut plugin_installation_cleanup_allowed = true;
@@ -431,7 +459,7 @@ impl App {
                 .pane_history
                 .then(crate::persist::load_history)
                 .flatten();
-            let (ws, terminals, terminal_runtimes) = crate::persist::restore(
+            let (ws, terminals, terminal_runtimes) = crate::persist::restore_with_factory(
                 &snap,
                 history.as_ref(),
                 24,
@@ -443,9 +471,10 @@ impl App {
                 event_tx.clone(),
                 render_notify.clone(),
                 render_dirty.clone(),
+                &terminal_factory,
             );
             restored_terminals = terminals;
-            restored_terminal_runtimes = terminal_runtimes.into();
+            restored_terminal_runtimes.extend(terminal_runtimes);
             if ws.is_empty() {
                 crate::logging::session_restored(0, "empty");
                 (Vec::new(), None, 0)
@@ -618,6 +647,9 @@ impl App {
         let endpoint_commands =
             custom_commands::EndpointCommandRegistry::new(&state.keybinds.custom_commands);
 
+        let default_workspace_initialized =
+            !state.workspaces.is_empty() || terminal_factory.is_saved_source();
+        terminal_factory.watch_source(event_tx.clone());
         let mut app = Self {
             plugin_installation_leases,
             plugin_installation_cleanup_allowed,
@@ -627,6 +659,9 @@ impl App {
             state,
             pixel_mouse_available: false,
             terminal_runtimes: restored_terminal_runtimes,
+            terminal_factory,
+            default_workspace_initialized,
+            hc_recovery: hc::Recovery::default(),
             event_tx,
             event_rx,
             last_git_remote_status_refresh: Instant::now() - GIT_REMOTE_STATUS_REFRESH_INTERVAL,
@@ -715,6 +750,12 @@ impl App {
             api_rx,
             event_hub,
         )?;
+        if app.terminal_factory.is_hc() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "hc App restores persisted bindings; live PTY import is unsupported",
+            ));
+        }
         if !crate::plugin_installations::retain_startup(
             &mut app.plugin_installation_leases,
             &[],
@@ -736,8 +777,11 @@ impl App {
 
         app.state.pane_id_aliases = pane_id_aliases;
         app.state.workspaces = workspaces;
+        app.default_workspace_initialized = !app.state.workspaces.is_empty();
         app.state.terminals = terminals;
-        app.terminal_runtimes = runtimes.into();
+        app.terminal_runtimes =
+            crate::terminal::TerminalRuntimeRegistry::with_events(app.event_tx.clone());
+        app.terminal_runtimes.extend(runtimes);
         app.state.active = snapshot
             .active
             .filter(|&idx| idx < app.state.workspaces.len());
@@ -771,8 +815,14 @@ impl App {
 
     pub(crate) fn ensure_default_workspace(&mut self) -> bool {
         if !self.state.workspaces.is_empty() {
+            self.default_workspace_initialized = true;
             return false;
         }
+        if self.terminal_factory.is_hc() && self.default_workspace_initialized {
+            return false;
+        }
+        // An ambiguous run must not be retried by the event loop, nor a closed program respawned.
+        self.default_workspace_initialized = true;
 
         let cwd = self.resolve_new_terminal_cwd(None);
         let preserve_checkpoint = self.pane_exit_checkpoint_pending && !self.state.session_dirty;
@@ -1856,9 +1906,12 @@ mod tests {
         let report = app.apply_live_config(&config, &[], &[], false);
         assert_eq!(report.status, crate::config::ConfigReloadStatus::Partial);
         assert_eq!(app.startup_per_agent_delay, Duration::from_millis(100));
-        assert_eq!(report.diagnostics, vec![
-            "session.startup_per_agent_delay_ms changes require restarting Herdr; kept current setting"
-        ]);
+        assert_eq!(
+            report.diagnostics,
+            vec![
+                "session.startup_per_agent_delay_ms changes require restarting Herdr; kept current setting"
+            ]
+        );
 
         let report = app.apply_live_config(&config, &[], &["session".into()], false);
         assert!(report.diagnostics.is_empty());

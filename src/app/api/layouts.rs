@@ -113,29 +113,18 @@ impl App {
             let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
                 return encode_error(id, "workspace_not_found", "workspace not found");
             };
-            if let Some(argv) = command.as_deref() {
-                ws.create_tab_argv_command(
-                    rows,
-                    cols,
-                    first_cwd,
-                    argv,
-                    extra_env,
-                    scrollback_limit_bytes,
-                    host_terminal_theme,
-                    host_terminal_appearance,
-                )
-            } else {
-                ws.create_tab(
-                    rows,
-                    cols,
-                    first_cwd,
-                    scrollback_limit_bytes,
-                    host_terminal_theme,
-                    host_terminal_appearance,
-                    crate::pane::PaneShellConfig::new(&default_shell, self.state.shell_mode),
-                    extra_env,
-                )
-            }
+            ws.create_tab_with_runtime(
+                rows,
+                cols,
+                first_cwd,
+                scrollback_limit_bytes,
+                host_terminal_theme,
+                host_terminal_appearance,
+                crate::pane::PaneShellConfig::new(&default_shell, self.state.shell_mode),
+                command.as_deref(),
+                extra_env,
+                &self.terminal_factory,
+            )
         };
 
         let (new_tab_idx, terminal, runtime) = match created {
@@ -154,7 +143,10 @@ impl App {
         if let Err(message) =
             self.apply_layout_node_to_pane(ws_idx, new_root_pane, &params.root, &pane_sizes)
         {
-            self.rollback_layout_tab(ws_idx, new_root_pane);
+            let message = match self.rollback_layout_tab(ws_idx, new_root_pane) {
+                Ok(()) => message,
+                Err(cleanup) => format!("{message}; rollback retained created bindings: {cleanup}"),
+            };
             return encode_error(id, "layout_apply_failed", message);
         }
 
@@ -171,6 +163,14 @@ impl App {
                 .state
                 .terminal_ids_for_tab(target_ws_idx, target_tab_idx);
             let plugin_pane_ids = self.state.pane_ids_for_tab(target_ws_idx, target_tab_idx);
+            if let Err(error) = self.terminate_hc_terminals(terminal_ids.iter().cloned()) {
+                let cleanup = self.rollback_layout_tab(ws_idx, new_root_pane);
+                return encode_error(
+                    id,
+                    "layout_apply_failed",
+                    format!("could not close old layout: {error}; rollback: {cleanup:?}"),
+                );
+            }
             let Some(ws) = self.state.workspaces.get_mut(target_ws_idx) else {
                 return encode_error(id, "tab_not_found", "tab not found");
             };
@@ -428,37 +428,27 @@ impl App {
             let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
                 return Err("workspace not found".into());
             };
-            if let Some(argv) = command.as_deref() {
-                ws.split_pane_argv_command_with_ratio(
-                    target_pane_id,
-                    direction,
-                    ratio,
-                    rows,
-                    cols,
-                    cwd,
-                    argv,
-                    extra_env,
-                    scrollback_limit_bytes,
-                    host_terminal_theme,
-                    host_terminal_appearance,
-                    false,
-                )
-            } else {
-                ws.split_pane_with_ratio(
-                    target_pane_id,
-                    direction,
-                    ratio,
-                    rows,
-                    cols,
-                    cwd,
-                    scrollback_limit_bytes,
-                    host_terminal_theme,
-                    host_terminal_appearance,
-                    crate::pane::PaneShellConfig::new(&default_shell, self.state.shell_mode),
-                    extra_env,
-                    false,
-                )
-            }
+            ws.split_pane_with_runtime(
+                target_pane_id,
+                direction,
+                Some(ratio),
+                rows,
+                cols,
+                cwd,
+                scrollback_limit_bytes,
+                host_terminal_theme,
+                host_terminal_appearance,
+                crate::pane::PaneShellConfig::new(&default_shell, self.state.shell_mode),
+                extra_env,
+                false,
+                command.as_deref().map(|argv| {
+                    crate::terminal::TerminalCommand::Argv(
+                        argv,
+                        crate::pane::AgentDetection::Enabled,
+                    )
+                }),
+                &self.terminal_factory,
+            )
         };
         let (_, new_pane) = result
             .ok_or_else(|| "pane not found".to_string())?
@@ -502,16 +492,20 @@ impl App {
         }
     }
 
-    fn rollback_layout_tab(&mut self, ws_idx: usize, root_pane: PaneId) {
+    fn rollback_layout_tab(&mut self, ws_idx: usize, root_pane: PaneId) -> std::io::Result<()> {
         let Some(tab_idx) = self
             .state
             .workspaces
             .get(ws_idx)
             .and_then(|ws| ws.tabs.iter().position(|tab| tab.root_pane == root_pane))
         else {
-            return;
+            return Ok(());
         };
         let terminal_ids = self.state.terminal_ids_for_tab(ws_idx, tab_idx);
+        if let Err(error) = self.terminate_hc_terminals(terminal_ids.iter().cloned()) {
+            self.schedule_session_save();
+            return Err(error);
+        }
         let plugin_pane_ids = self.state.pane_ids_for_tab(ws_idx, tab_idx);
         if self
             .state
@@ -523,6 +517,7 @@ impl App {
             self.state.remove_unattached_terminal_ids(terminal_ids);
             self.shutdown_detached_terminal_runtimes();
         }
+        Ok(())
     }
 }
 

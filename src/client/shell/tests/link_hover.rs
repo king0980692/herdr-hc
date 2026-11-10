@@ -97,6 +97,7 @@ fn ctrl_hover_pending_request_does_not_block_another_endpoint_with_the_same_boot
         label: "Other connection".into(),
         target: "host".into(),
         session: "default".into(),
+        hc_path: None,
         enabled: true,
     };
     let endpoint = ClientEndpointId::Ssh(profile.id.clone());

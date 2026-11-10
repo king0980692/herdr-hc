@@ -188,6 +188,7 @@ pub(super) fn spawn_named_server(
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
 
+    crate::support::hc::configure(&mut command, runtime_dir);
     let child = command.spawn().unwrap();
     register_spawned_herdr_pid(Some(child.id()));
     SpawnedServerProcess { child }
@@ -241,6 +242,7 @@ pub(super) fn run_named_cli_with_env_and_socket_override(
     } else {
         command.env_remove("HERDR_SOCKET_PATH");
     }
+    crate::support::hc::configure(&mut command, runtime_dir);
     command.output().unwrap()
 }
 
@@ -314,6 +316,7 @@ pub(super) fn spawn_herdr_with_config(
         cmd.env("PATH", path);
     }
 
+    crate::support::hc::configure_pty(&mut cmd, runtime_dir);
     let child = pair.slave.spawn_command(cmd).unwrap();
     register_spawned_herdr_pid(child.process_id());
     SpawnedHerdr {

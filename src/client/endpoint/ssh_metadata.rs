@@ -1,10 +1,13 @@
-use std::io::{self, Read as _};
-use std::path::{Path, PathBuf};
+use std::io;
+use std::path::PathBuf;
+#[cfg(test)]
+use std::{io::Read as _, path::Path};
 
 use serde::{Deserialize, Serialize};
 
 use super::ProfileId;
 
+#[cfg(test)]
 const MAX_METADATA_BYTES: u64 = 16 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,6 +64,7 @@ impl SshMetadataCache {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn load(&self) -> Option<SshMachineMetadata> {
         load_metadata(&self.path, &self.target, &self.session)
     }
@@ -94,6 +98,7 @@ impl SshMetadataCache {
     }
 }
 
+#[cfg(test)]
 fn load_metadata(path: &Path, target: &str, session: &str) -> Option<SshMachineMetadata> {
     let file_type = std::fs::symlink_metadata(path).ok()?.file_type();
     if !file_type.is_file() {

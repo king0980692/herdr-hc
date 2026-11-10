@@ -132,6 +132,7 @@ fn spawn_server(
     cmd.env("SHELL", "/bin/sh");
     cmd.env_remove("HERDR_ENV");
 
+    support::hc::configure_pty(&mut cmd, runtime_dir);
     let child = pair.slave.spawn_command(cmd).unwrap();
     register_spawned_herdr_pid(child.process_id());
     drop(pair.slave);
@@ -366,6 +367,7 @@ fn duplicate_server_start_fails_gracefully() {
     cmd.env("SHELL", "/bin/sh");
     cmd.env_remove("HERDR_ENV");
 
+    support::hc::configure_pty(&mut cmd, &runtime_dir);
     let mut child2 = pair.slave.spawn_command(cmd).unwrap();
     register_spawned_herdr_pid(child2.process_id());
     drop(pair.slave);
@@ -632,6 +634,7 @@ fn server_stop_request_logs_its_caller() {
     let mut spawned = spawn_server(&config_home, &runtime_dir, &api_socket, &client_socket);
     wait_for_socket(&api_socket, Duration::from_secs(10));
 
+    support::drain_pty(spawned._master.as_deref().unwrap());
     let mut stream = UnixStream::connect(&api_socket).unwrap();
     writeln!(
         stream,
@@ -642,7 +645,12 @@ fn server_stop_request_logs_its_caller() {
     BufReader::new(stream).read_line(&mut response).unwrap();
     assert!(response.contains("\"ok\""), "{response}");
 
-    assert!(wait_for_exit(&mut spawned.child, Duration::from_secs(10)));
+    let exited = wait_for_exit(&mut spawned.child, Duration::from_secs(10));
+    assert!(
+        exited,
+        "server did not exit; log: {}",
+        fs::read_to_string(server_log_path(&config_home)).unwrap_or_default()
+    );
     let line = wait_for_log_line(
         &server_log_path(&config_home),
         "server shutdown initiated",

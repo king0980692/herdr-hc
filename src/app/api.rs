@@ -28,7 +28,45 @@ enum RuntimeExitAction {
 
 impl App {
     pub(crate) fn handle_internal_event_with_render_impact(&mut self, ev: AppEvent) -> bool {
+        if ev
+            .legacy_runtime_pane()
+            .is_some_and(|pane| self.state.hc_owns_pane(pane))
+        {
+            return false;
+        }
         match ev {
+            AppEvent::HcTerminalEffects {
+                enabled,
+                pane_id,
+                bells,
+                clipboard_writes,
+            } => {
+                if !enabled.load(std::sync::atomic::Ordering::Acquire) {
+                    return false;
+                }
+                let mut changed = false;
+                if bells != 0 {
+                    changed |=
+                        self.handle_internal_event_with_render_impact(AppEvent::TerminalBell {
+                            pane_id,
+                            count: bells,
+                        });
+                }
+                for content in clipboard_writes {
+                    changed |=
+                        self.handle_internal_event_with_render_impact(AppEvent::ClipboardWrite {
+                            content,
+                        });
+                }
+                changed
+            }
+            AppEvent::HcSourceChanged { generation } => self.hc_source_changed(generation),
+            AppEvent::HcRecoveryReady => self.finish_hc_recovery(),
+            AppEvent::HcTerminalUpdated {
+                terminal_id,
+                runtime_token,
+                snapshot,
+            } => self.apply_hc_update(terminal_id, runtime_token, snapshot).0,
             AppEvent::GitStatusRefreshed {
                 results,
                 cache_updates,
@@ -90,6 +128,53 @@ impl App {
         &mut self,
         ev: AppEvent,
     ) -> Vec<crate::app::actions::PaneStateUpdate> {
+        if ev
+            .legacy_runtime_pane()
+            .is_some_and(|pane| self.state.hc_owns_pane(pane))
+        {
+            return Vec::new();
+        }
+        let ev = match ev {
+            AppEvent::HcTerminalEffects {
+                enabled,
+                pane_id,
+                bells,
+                clipboard_writes,
+            } => {
+                if !enabled.load(std::sync::atomic::Ordering::Acquire) {
+                    return Vec::new();
+                }
+                let mut updates = Vec::new();
+                if bells != 0 {
+                    updates.extend(self.handle_internal_event_with_pane_updates(
+                        AppEvent::TerminalBell {
+                            pane_id,
+                            count: bells,
+                        },
+                    ));
+                }
+                for content in clipboard_writes {
+                    updates.extend(self.handle_internal_event_with_pane_updates(
+                        AppEvent::ClipboardWrite { content },
+                    ));
+                }
+                return updates;
+            }
+            AppEvent::HcSourceChanged { generation } => {
+                self.hc_source_changed(generation);
+                return Vec::new();
+            }
+            AppEvent::HcRecoveryReady => {
+                self.finish_hc_recovery();
+                return Vec::new();
+            }
+            AppEvent::HcTerminalUpdated {
+                terminal_id,
+                runtime_token,
+                snapshot,
+            } => return self.apply_hc_update(terminal_id, runtime_token, snapshot).1,
+            ev => ev,
+        };
         let mut worktree_restore_failed = false;
         let ev = match ev {
             AppEvent::WorktreeRuntimeRestoreFailed {
@@ -214,7 +299,9 @@ impl App {
                 .as_ref()
                 .is_some_and(|popup| popup.pane_id == *pane_id)
             {
-                self.close_popup_pane();
+                if let Err(error) = self.close_popup_pane() {
+                    tracing::warn!(%error,"popup close failed");
+                }
                 return Vec::new();
             }
             if worktree_restore_failed {
@@ -546,6 +633,9 @@ impl App {
             return RuntimeExitAction::ClosePane;
         };
 
+        if terminal.hc_authority {
+            return RuntimeExitAction::ClosePane;
+        }
         if terminal.respawn_shell_on_exit || self.should_respawn_shell_after_agent_exit(terminal) {
             RuntimeExitAction::RespawnShell
         } else {
@@ -592,6 +682,9 @@ impl App {
             return false;
         };
 
+        if self.terminal_factory.is_hc() || terminal.hc_authority {
+            return false;
+        }
         let cwd = terminal.cwd.clone();
         let (rows, cols) = self
             .terminal_runtimes
@@ -718,7 +811,12 @@ impl App {
             .workspaces
             .get(update.ws_idx)
             .and_then(|ws| ws.pane_state(update.pane_id))
-            .map(|pane| pane_agent_status(update.state, pane.seen))
+            .and_then(|pane| {
+                self.state
+                    .terminals
+                    .get(&pane.attached_terminal_id)
+                    .map(|terminal| super::api_helpers::terminal_agent_status(terminal, pane.seen))
+            })
             .unwrap_or_else(|| pane_agent_status(update.state, update.seen));
 
         if previous_agent_status != agent_status
@@ -936,12 +1034,87 @@ impl App {
         &mut self,
         request: crate::api::schema::Request,
     ) -> String {
+        let request = match self.unwrap_runtime_request(request) {
+            Ok(request) => request,
+            Err(response) => return response,
+        };
+        if let Some(response) = self.saved_source_worktree_rejection(&request) {
+            return response;
+        }
         self.sync_pending_terminal_titles();
         use crate::api::schema::{
             ErrorBody, ErrorResponse, Method, ResponseResult, SuccessResponse,
         };
 
+        if let Method::WorktreeRemove(params) = &request.method {
+            if self
+                .parse_workspace_id(&params.workspace_id)
+                .is_some_and(|ws| {
+                    self.state
+                        .pane_ids_for_workspace(ws)
+                        .into_iter()
+                        .any(|pane| self.state.hc_owns_pane(pane))
+                })
+            {
+                return responses::encode_error(
+                    request.id,
+                    "unsupported_runtime",
+                    "worktree removal cannot use the legacy process/respawn path for hc-owned panes",
+                );
+            }
+        }
+        let report_target = match &request.method {
+            Method::PaneReportAgent(p) => Some(&p.pane_id),
+            Method::PaneReportAgentSession(p) => Some(&p.pane_id),
+            Method::PaneReportMetadata(p) => Some(&p.pane_id),
+            Method::PaneClearAgentAuthority(p) => Some(&p.pane_id),
+            Method::PaneReleaseAgent(p) => Some(&p.pane_id),
+            _ => None,
+        };
+        if report_target
+            .and_then(|target| self.parse_pane_id(target))
+            .is_some_and(|(_, pane)| self.state.hc_owns_pane(pane))
+        {
+            return responses::encode_error(
+                request.id,
+                "unsupported_runtime",
+                "hc-owned terminal facts must be reported through hc / OSC 7501",
+            );
+        }
         let response = match request.method {
+            Method::RuntimeRequest(_) => {
+                return responses::encode_error(
+                    request.id,
+                    "invalid_request",
+                    "nested runtime request",
+                )
+            }
+            Method::RuntimeSource(_) => {
+                let Some(source) = self.terminal_factory.source_state() else {
+                    return responses::encode_error(
+                        request.id,
+                        "unsupported_runtime",
+                        "hc source is unavailable",
+                    );
+                };
+                self.hc_source_changed(source.generation);
+                let locator = source.locator;
+                SuccessResponse {
+                    id: request.id,
+                    result: ResponseResult::RuntimeSource {
+                        host_instance: source.host_instance,
+                        profile_id: locator.as_ref().map(|l| l.profile_id.clone()),
+                        target: locator.as_ref().map(|l| l.target.clone()),
+                        hc_path: locator.as_ref().and_then(|l| l.hc_path.clone()),
+                        session: locator.map(|l| l.session),
+                        generation: source.generation,
+                        connected: source.client.is_some(),
+                        core_id: source.client.map(|c| c.hello.core.id.clone()),
+                        error: source.error,
+                        retired: source.retired,
+                    },
+                }
+            }
             Method::ServerStop(_) => {
                 self.state.should_quit = true;
                 SuccessResponse {
@@ -1210,10 +1383,14 @@ impl App {
             }
             Method::PaneClose(target) => return self.handle_pane_close(request.id, target),
             Method::PopupClose(_) => {
-                return if self.close_popup_pane() {
-                    responses::encode_success(request.id, ResponseResult::Ok {})
-                } else {
-                    responses::encode_error(request.id, "popup_not_open", "no popup is open")
+                return match self.close_popup_pane() {
+                    Ok(true) => responses::encode_success(request.id, ResponseResult::Ok {}),
+                    Ok(false) => {
+                        responses::encode_error(request.id, "popup_not_open", "no popup is open")
+                    }
+                    Err(error) => {
+                        responses::encode_error(request.id, "hc_close_failed", error.to_string())
+                    }
                 };
             }
             Method::PaneSendKeys(params) => return self.handle_pane_send_keys(request.id, params),

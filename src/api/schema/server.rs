@@ -3,6 +3,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
 pub struct PingParams {}
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct RuntimeRequestParams {
+    pub host_instance: String,
+    pub request: Box<super::Request>,
+}
+
 crate::cli::projection::cli_params! {
     #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
     pub struct ServerLiveHandoffParams => ServerLiveHandoffProjection {

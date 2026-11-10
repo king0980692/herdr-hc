@@ -64,12 +64,15 @@ mod tests {
     fn sample_value(
         schema: &serde_json::Value,
         definitions: &serde_json::Value,
+        root: &serde_json::Value,
     ) -> serde_json::Value {
         if let Some(reference) = schema.get("$ref").and_then(serde_json::Value::as_str) {
-            return sample_value(
-                &definitions[reference.rsplit('/').next().unwrap()],
-                definitions,
-            );
+            let target = if reference == "#" {
+                root
+            } else {
+                &definitions[reference.rsplit('/').next().unwrap()]
+            };
+            return sample_value(target, definitions, root);
         }
         if let Some(value) = schema.get("const") {
             return value.clone();
@@ -77,21 +80,24 @@ mod tests {
         if let Some(values) = schema.get("enum").and_then(serde_json::Value::as_array) {
             return values[0].clone();
         }
-        for key in ["oneOf", "anyOf"] {
-            if let Some(branches) = schema.get(key).and_then(serde_json::Value::as_array) {
-                return sample_value(&branches[0], definitions);
-            }
-        }
+        let branch = ["oneOf", "anyOf"]
+            .into_iter()
+            .find_map(|key| schema.get(key).and_then(serde_json::Value::as_array))
+            .map(|branches| sample_value(&branches[0], definitions, root));
         match schema.get("type").and_then(serde_json::Value::as_str) {
             Some("object") => {
-                let mut object = serde_json::Map::new();
+                let mut object = branch
+                    .as_ref()
+                    .and_then(serde_json::Value::as_object)
+                    .cloned()
+                    .unwrap_or_default();
                 if let Some(required) = schema.get("required").and_then(serde_json::Value::as_array)
                 {
                     for name in required {
                         let name = name.as_str().unwrap();
                         object.insert(
                             name.into(),
-                            sample_value(&schema["properties"][name], definitions),
+                            sample_value(&schema["properties"][name], definitions, root),
                         );
                     }
                 }
@@ -101,7 +107,7 @@ mod tests {
             Some("string") => serde_json::json!("sample"),
             Some("integer" | "number") => serde_json::json!(1),
             Some("boolean") => serde_json::json!(false),
-            _ => serde_json::Value::Null,
+            _ => branch.unwrap_or(serde_json::Value::Null),
         }
     }
 
@@ -125,7 +131,7 @@ mod tests {
             let request: Request = serde_json::from_value(serde_json::json!({
                 "id": "catalog",
                 "method": name,
-                "params": sample_value(&branch["properties"]["params"], &schema["$defs"]),
+                "params": sample_value(&branch["properties"]["params"], &schema["$defs"],&schema),
             }))
             .unwrap_or_else(|error| panic!("sample for {name}: {error}"));
             let operation = request.method.operation();

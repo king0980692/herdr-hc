@@ -68,9 +68,11 @@ herdr server stop
 herdr
 ```
 
-Stopping a server exits its pane processes. Named sessions use `herdr session stop <name>`. See [Install Herdr](/docs/install/#update) for updater, package-manager, and live-handoff behavior.
+For hc, this stops only the presentation host; source programs are not terminated or relaunched. Named sessions use `herdr session stop <name>`. Older Herdr-owned PTY servers do terminate their programs on stop and are not automatically imported into hc. See [Install Herdr](/docs/install/#update).
 
 ## Keychain-backed tools fail inside Herdr on macOS
+
+For hc, check the **source program's hc launch context**. Restarting Herdr presentation cannot change it. The instructions below apply only to legacy Herdr-owned PTYs; do not stop hc merely to test this, because hc stop ends its current programs.
 
 Check the server launch context from a Herdr pane:
 
@@ -88,6 +90,8 @@ herdr
 Stopping the server exits its pane processes. Herdr panes inherit the long-lived server's macOS launch context, so a server started through SSH or a background job may not have access to interactive Keychain services. See [Herdr issue #966](https://github.com/herdrdev/herdr/issues/966) for details.
 
 ## SSH or DNS fails after macOS logout
+
+For hc, source networking and service context belong to hc, not the Herdr viewer. The legacy server-restart advice below does not repair an hc source, and restarting presentation never authorizes program replacement.
 
 Automatically started macOS servers use a per-user service context so logging out does not leave their panes with a dead connection to macOS services. Explicit `herdr server` launches retain their caller's context.
 

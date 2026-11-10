@@ -376,6 +376,12 @@ fn handle_connection_with_stop(
         }
     };
 
+    let request =
+        match unwrap_connection_runtime_request(request, api_tx, capabilities.clone(), server_stop)
+        {
+            Ok(request) => request,
+            Err(response) => return write_text_line_allow_disconnect(&mut stream, &response),
+        };
     let request_id = request.id.clone();
     let method = api_method_name(&request.method);
     let changes_ui = request_changes_ui(&request);
@@ -517,6 +523,56 @@ fn handle_connection_with_stop(
             result
         }
     }
+}
+
+fn unwrap_connection_runtime_request(
+    request: Request,
+    api_tx: &ApiRequestSender,
+    capabilities: Option<ServerCapabilities>,
+    server_stop: Option<&ServerStop>,
+) -> Result<Request, String> {
+    // These operations belong to this accepted socket, so validate its host before unwrapping.
+    let local = matches!(&request.method,Method::RuntimeRequest(p) if matches!(p.request.method,Method::Ping(_)|Method::ServerStop(_)|Method::ServerSshAgentRegister(_)|Method::EventsSubscribe(_)|Method::EventsWait(_)|Method::PaneWaitForOutput(_)|Method::AgentWait(_)|Method::AgentPrompt(_)));
+    if !local {
+        return Ok(request);
+    }
+    let Method::RuntimeRequest(params) = request.method else {
+        return Ok(request);
+    };
+    let expected_host = params.host_instance.clone();
+    let validation = Request {
+        id: request.id.clone(),
+        method: Method::RuntimeRequest(crate::api::schema::RuntimeRequestParams {
+            host_instance: params.host_instance,
+            request: Box::new(Request {
+                id: request.id.clone(),
+                method: Method::RuntimeSource(Default::default()),
+            }),
+        }),
+    };
+    let response = handle_request(validation, api_tx, capabilities, server_stop, None, None);
+    match serde_json::from_str::<SuccessResponse>(&response) {
+        Ok(SuccessResponse {
+            result:
+                ResponseResult::RuntimeSource {
+                    host_instance,
+                    retired: false,
+                    ..
+                },
+            ..
+        }) if host_instance == expected_host => {}
+        Ok(_) => {
+            return Err(error_response_json(
+                request.id,
+                "stale_runtime_source",
+                "source host changed; request was not forwarded".into(),
+            ))
+        }
+        Err(_) => return Err(response),
+    }
+    let mut inner = *params.request;
+    inner.id = request.id;
+    Ok(inner)
 }
 
 fn finish_wait_response(
@@ -1379,6 +1435,77 @@ mod tests {
         assert_eq!(response["result"]["type"], "pong");
     }
 
+    #[test]
+    fn hc_connection_local_requests_validate_source_before_unwrapping() {
+        for (method, params) in [
+            ("ping", serde_json::json!({})),
+            ("server.stop", serde_json::json!({})),
+            (
+                "server.ssh_agent.register",
+                serde_json::json!({"socket_path":"/source-only"}),
+            ),
+            ("events.subscribe", serde_json::json!({"subscriptions":[]})),
+            (
+                "agent.wait",
+                serde_json::json!({"target":"w1:p1","until":["blocked"]}),
+            ),
+            (
+                "agent.prompt",
+                serde_json::json!({"target":"w1:p1","text":"must-not-submit-stale","wait":{"until":["blocked"],"timeout_ms":100}}),
+            ),
+            (
+                "events.wait",
+                serde_json::json!({"match_event":{"event":"workspace_created"}}),
+            ),
+            (
+                "pane.wait_for_output",
+                serde_json::json!({"pane_id":"w1:p1","source":"visible","match":{"type":"substring","value":"needle"}}),
+            ),
+        ] {
+            for scenario in 0..4 {
+                let request:Request=serde_json::from_value(serde_json::json!({"id":"outer","method":"runtime.request","params":{"host_instance":"expected","request":{"id":"inner","method":method,"params":params}}})).unwrap();
+                let expected = if let Method::RuntimeRequest(p) = &request.method {
+                    p.request.method.clone()
+                } else {
+                    unreachable!()
+                };
+                let (tx, mut rx) = mpsc::unbounded_channel::<ApiRequestMessage>();
+                let responder = std::thread::spawn(move || {
+                    let message = rx
+                        .blocking_recv()
+                        .expect("host validation must reach App before socket-local effects");
+                    assert_eq!(message.request.id, "outer");
+                    let Method::RuntimeRequest(p) = message.request.method else {
+                        panic!("validation lost source envelope")
+                    };
+                    assert_eq!(p.host_instance, "expected");
+                    assert!(matches!(p.request.method, Method::RuntimeSource(_)));
+                    let response = if scenario == 3 {
+                        error_response_json(
+                            "outer".into(),
+                            "stale_runtime_source",
+                            "obsolete".into(),
+                        )
+                    } else {
+                        serde_json::json!({"id":"outer","result":{"type":"runtime_source","host_instance":if scenario==1{"obsolete"}else{"expected"},"generation":1,"connected":false,"retired":scenario==2}}).to_string()
+                    };
+                    message.respond_to.send(response).unwrap();
+                });
+                let result = unwrap_connection_runtime_request(request, &tx, None, None);
+                drop(tx);
+                responder.join().unwrap();
+                if scenario == 0 {
+                    let request = result.unwrap();
+                    assert_eq!(request.id, "outer");
+                    assert_eq!(request.method, expected);
+                } else {
+                    let error: serde_json::Value =
+                        serde_json::from_str(&result.unwrap_err()).unwrap();
+                    assert_eq!(error["error"]["code"], "stale_runtime_source");
+                }
+            }
+        }
+    }
     #[test]
     fn ping_request_returns_pong() {
         let (tx, _rx) = mpsc::unbounded_channel();

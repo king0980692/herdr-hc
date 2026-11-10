@@ -155,6 +155,7 @@ impl EndpointSupervisors {
                     && profile.enabled
                     && profile.target == previous.target
                     && profile.session == previous.session
+                    && profile.hc_path == previous.hc_path
             });
             if !keep {
                 retired.push(endpoint_id.clone());
@@ -478,6 +479,7 @@ fn connect_once(
                 profile.id.as_str(),
                 &profile.target,
                 &profile.session,
+                profile.hc_path.as_deref(),
                 Arc::clone(&cancelled),
             )?;
             (connected.stream, Box::new(connected.bridge))
@@ -826,6 +828,7 @@ mod tests {
             label: "Build".into(),
             target: "build".into(),
             session: "agents".into(),
+            hc_path: None,
             enabled: true,
         }
     }
@@ -898,6 +901,32 @@ mod tests {
         );
         assert_eq!(supervisors.endpoints[&id].generation, None);
         assert_eq!(supervisors.endpoints[&other_id].generation, Some(3));
+    }
+
+    #[test]
+    fn hc_path_retarget_retires_connected_offline_and_in_flight_routes() {
+        let now = Instant::now();
+        for in_flight in [false, true] {
+            let mut changed = profile();
+            let other = super::super::SavedSshEndpoint::new("Other", "other", "main").unwrap();
+            let id = ClientEndpointId::Ssh(changed.id.clone());
+            let other_id = ClientEndpointId::Ssh(other.id.clone());
+            let mut supervisors = EndpointSupervisors::new(&[changed.clone(), other.clone()], now);
+            let state = supervisors.endpoints.get_mut(&id).unwrap();
+            state.generation = Some(7);
+            state.in_flight = in_flight;
+            state.completed.store(!in_flight, Ordering::Release);
+            supervisors.endpoints.get_mut(&other_id).unwrap().generation = Some(3);
+            changed.hc_path = Some("/opt/another-hc".into());
+            assert_eq!(
+                supervisors.reconcile_profiles(&[changed, other], now),
+                vec![id.clone()]
+            );
+            assert_eq!(supervisors.endpoints[&id].generation, None);
+            assert_eq!(supervisors.endpoints[&other_id].generation, Some(3));
+            assert!(!supervisors.record_status(&id, 7, ClientEndpointStatus::Online, now));
+            assert_eq!(supervisors.retired.contains_key(&id), in_flight);
+        }
     }
 
     #[test]

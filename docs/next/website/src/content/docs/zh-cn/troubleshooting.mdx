@@ -68,9 +68,11 @@ herdr server stop
 herdr
 ```
 
-停止服务器会结束窗格进程。命名会话使用 `herdr session stop <name>`。更新器、软件包管理器和实时移交行为见[安装 Herdr](/zh-cn/docs/install/#update)。
+hc 路径只停止呈现主机，不终止或重新启动源端程序。命名会话用 `herdr session stop <name>`。拥有 PTY 的旧 Herdr 服务器停止时确实会结束程序，且不会自动导入 hc。见[安装 Herdr](/zh-cn/docs/install/)。
 
 ## macOS 上依赖钥匙串的工具仅在 Herdr 内失败
+
+hc 路径要检查**源端程序的 hc 启动上下文**，重启 Herdr 呈现不能改变它。以下步骤仅适用于旧 Herdr PTY；不要仅为测试而停止 hc，因为这会结束其当前程序。
 
 在 Herdr 窗格中检查服务器的启动上下文:
 
@@ -88,6 +90,8 @@ herdr
 停止服务器会结束窗格进程。Herdr 窗格会继承长期运行服务器的 macOS 启动上下文，因此通过 SSH 或后台任务启动的服务器可能无法访问交互式钥匙串服务。详情见 [Herdr issue #966](https://github.com/herdrdev/herdr/issues/966)。
 
 ## macOS 注销后 SSH 或 DNS 失败
+
+hc 的源端网络和服务上下文属于 hc，不属于 Herdr 查看端。以下旧版服务器重启建议不能修复 hc 源端，重启呈现也不授权替换程序。
 
 自动启动的 macOS 服务器使用用户级服务上下文，避免注销后窗格与 macOS 服务的连接失效。显式运行 `herdr server` 时仍会保留调用方的上下文。
 

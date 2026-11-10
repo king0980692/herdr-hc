@@ -38,7 +38,7 @@ struct WorkspaceGitRefreshOutput {
 
 impl App {
     pub(crate) fn refresh_restored_workspace_git_metadata(&mut self) {
-        if self.state.workspaces.is_empty() {
+        if self.state.workspaces.is_empty() || self.terminal_factory.is_saved_source() {
             return;
         }
         self.pending_restored_worktree_spaces = self
@@ -62,6 +62,9 @@ impl App {
 
     pub(crate) fn start_restored_worktree_validation(&mut self, now: Instant) {
         self.restored_worktree_validation_retry_at = None;
+        if self.terminal_factory.is_saved_source() {
+            return;
+        }
         let jobs = Arc::new(self.pending_restored_worktree_spaces.clone());
         let next = Arc::new(AtomicUsize::new(0));
         let worker_count = jobs.len().min(4);
@@ -175,7 +178,8 @@ impl App {
     }
 
     pub(crate) fn git_refresh_deadline(&self) -> Option<Instant> {
-        (!self.git_refresh_in_flight
+        (!self.terminal_factory.is_saved_source()
+            && !self.git_refresh_in_flight
             && !self.state.workspaces.is_empty()
             && (self.git_identity_refresh_requested || !self.git_refresh_demand().is_empty()))
         .then_some(self.last_git_remote_status_refresh + GIT_REMOTE_STATUS_REFRESH_INTERVAL)

@@ -129,6 +129,10 @@ struct RecentAgentProcessExit {
 pub struct TerminalState {
     pub id: TerminalId,
     pub cwd: PathBuf,
+    /// Keep even malformed/offline persisted bindings, so autosave cannot erase identity.
+    pub hc_binding: Option<serde_json::Value>,
+    pub(crate) hc_snapshot: Option<crate::hc::state::RuntimeSnapshot>,
+    pub(crate) hc_authority: bool,
     pub detected_agent: Option<Agent>,
     pub fallback_state: AgentState,
     fallback_visible_blocker: bool,
@@ -169,6 +173,9 @@ impl TerminalState {
         Self {
             id,
             cwd,
+            hc_binding: None,
+            hc_snapshot: None,
+            hc_authority: false,
             detected_agent: None,
             fallback_state: AgentState::Unknown,
             fallback_visible_blocker: false,
@@ -2037,6 +2044,13 @@ impl TerminalState {
     }
 
     pub fn effective_agent_label(&self) -> Option<&str> {
+        if self.hc_authority {
+            return self
+                .hc_status()
+                .and_then(|status| status.get("app"))
+                .and_then(serde_json::Value::as_str)
+                .filter(|s| !s.is_empty());
+        }
         self.hook_authority
             .as_ref()
             .filter(|authority| self.hook_authority_is_effective(authority))
@@ -2324,6 +2338,22 @@ impl TerminalState {
         self.managed_agent = None;
     }
 
+    pub(super) fn claim_hc_authority(&mut self) {
+        if self.hc_authority {
+            return;
+        }
+        self.hc_authority = true;
+        self.hook_authority = None;
+        self.detected_agent = None;
+        self.managed_agent = None;
+        self.managed_agent_launch_session = None;
+        self.reported_resume = None;
+        self.persisted_agent_session = None;
+        self.pending_agent_resume_plan = None;
+        self.respawn_shell_on_exit = false;
+        self.state = AgentState::Unknown;
+    }
+
     pub fn clear_agent_runtime_identity_after_respawn(&mut self) {
         self.detected_agent = None;
         self.fallback_state = AgentState::Unknown;
@@ -2347,6 +2377,9 @@ impl TerminalState {
     }
 
     pub fn is_agent_terminal(&self) -> bool {
+        if self.hc_authority {
+            return self.hc_status().is_some();
+        }
         self.agent_name.is_some() || self.effective_agent_label().is_some()
     }
 
@@ -2409,7 +2442,9 @@ impl TerminalState {
         previous_presentation: EffectivePresentation,
         now: Instant,
     ) -> Option<EffectiveStateChange> {
-        let state = if self.visible_blocker_overrides_hook() {
+        let state = if self.hc_authority {
+            self.hc_agent_state()
+        } else if self.visible_blocker_overrides_hook() {
             AgentState::Blocked
         } else {
             self.hook_authority

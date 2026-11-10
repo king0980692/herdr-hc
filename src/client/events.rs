@@ -33,5 +33,10 @@ pub(super) enum ClientLoopEvent {
         /// latest target have the same identity after restoration.
         force: bool,
     },
+    /// An external request to show an endpoint and focus a target on it.
+    JumpRequest {
+        endpoint_id: endpoint::ClientEndpointId,
+        target: shell::ClientEndpointFocusTarget,
+    },
     Timer,
 }

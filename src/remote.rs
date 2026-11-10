@@ -11,6 +11,7 @@ pub(crate) use args::*;
 pub(crate) use attach::*;
 pub(crate) use host::run_remote_client_bridge;
 pub(crate) use saved::*;
+pub(crate) use saved::{check_saved_ssh, SavedSshSetup};
 
 pub(crate) fn run_remote_api_bridge(args: &[String]) -> std::io::Result<()> {
     match args {
@@ -43,6 +44,9 @@ pub(crate) fn print_saved_ssh_error_hint(err: &std::io::Error, target: &str) {
         eprintln!(
             "hint: saved machines use strict host-key checking; add the host key to the configured known_hosts file, then retry."
         );
+    } else if err.kind() == std::io::ErrorKind::UnexpectedEof {
+        // hc streams SSH diagnostics directly; an early hello EOF has no captured stderr.
+        eprintln!("hint: saved machines use strict host-key checking; check the SSH diagnostics above and verify access with `{}` before retrying.", ssh_check_command(target));
     } else {
         print_remote_error_hint(err, target);
     }
@@ -78,7 +82,7 @@ fn ssh_check_command(target: &str) -> String {
     format!("ssh {}", shell_quote(target))
 }
 
-fn shell_quote(value: &str) -> String {
+pub(crate) fn shell_quote(value: &str) -> String {
     if !value.is_empty()
         && value.chars().all(|ch| {
             ch.is_ascii_alphanumeric()

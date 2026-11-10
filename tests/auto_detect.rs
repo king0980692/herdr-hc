@@ -114,6 +114,7 @@ fn spawn_server(
     cmd.env_remove("HERDR_CLIENT_SOCKET_PATH");
     cmd.env("SHELL", "/bin/sh");
     cmd.env_remove("HERDR_ENV");
+    support::hc::configure_pty(&mut cmd, runtime_dir);
 
     let child = pair.slave.spawn_command(cmd).unwrap();
     register_spawned_herdr_pid(child.process_id());
@@ -152,6 +153,7 @@ fn spawn_herdr_auto(
 
     let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_herdr"));
     support::isolate_herdr_test_process(&mut cmd);
+    support::hc::configure_pty(&mut cmd, runtime_dir);
     // No subcommand → auto-detect launch.
     cmd.env("XDG_CONFIG_HOME", config_home);
     cmd.env("XDG_RUNTIME_DIR", runtime_dir);
@@ -280,6 +282,7 @@ fn session_attach_without_terminal_leaves_no_session() {
                 Ok(())
             });
         }
+        support::hc::configure(&mut command, &runtime_dir);
         command.output().unwrap()
     };
     let before = run(&["session", "list", "--json"]);
@@ -611,6 +614,7 @@ fn auto_detect_default_socket_path_from_config_dir() {
     // Explicitly remove socket overrides to test default path resolution.
     cmd.env_remove("HERDR_SOCKET_PATH");
     cmd.env_remove("HERDR_CLIENT_SOCKET_PATH");
+    support::hc::configure_pty(&mut cmd, &runtime_dir);
 
     let child = pair.slave.spawn_command(cmd).unwrap();
     register_spawned_herdr_pid(child.process_id());
@@ -711,14 +715,15 @@ fn auto_detect_respects_nested_guard_before_auto_attach() {
         .map(|workspaces| workspaces.len())
         .unwrap_or(0);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_herdr"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_herdr"));
+    command
         .env("XDG_CONFIG_HOME", &config_home)
         .env("XDG_RUNTIME_DIR", &runtime_dir)
         .env("HERDR_SOCKET_PATH", &api_socket)
         .env_remove("HERDR_CLIENT_SOCKET_PATH")
-        .env("HERDR_ENV", "1")
-        .output()
-        .unwrap();
+        .env("HERDR_ENV", "1");
+    support::hc::configure(&mut command, &runtime_dir);
+    let output = command.output().unwrap();
 
     assert!(
         !output.status.success(),

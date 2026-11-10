@@ -25,6 +25,15 @@ test-windows-input *args:
 test-one filter:
     cargo nextest run --locked "{{filter}}" --status-level fail --final-status-level fail --failure-output final --success-output never
 
+# Opt-in core terminal bridge PoC wire tests (no running core required)
+test-core-bridge:
+    {{python}} -m unittest scripts.test_core_terminal_bridge
+
+# Native Rust hc API smoke in a disposable local/SSH core (needs installed hc)
+test-hc-native:
+    cargo build --locked --bin herdr
+    cargo test --locked --bin herdr hc_native_live_smoke -- --ignored --nocapture
+
 # Enforce deterministic UI hot-path architecture boundaries
 ui-hot-path-architecture-test:
     {{python}} -m unittest scripts.test_ui_hot_path_architecture

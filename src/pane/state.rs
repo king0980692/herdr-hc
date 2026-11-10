@@ -10,6 +10,8 @@ pub struct PaneState {
     pub seen: bool,
     /// Whether unmodified right-click gestures should be forwarded to the pane application.
     pub right_click_passthrough: bool,
+    /// Transient overlays and explicitly zoomed plugin launches retain full-tab zoom.
+    pub(crate) full_zoom: bool,
 }
 
 impl PaneState {
@@ -18,6 +20,7 @@ impl PaneState {
             attached_terminal_id,
             seen: true,
             right_click_passthrough: false,
+            full_zoom: false,
         }
     }
 }

@@ -9,12 +9,73 @@ use tokio::sync::{mpsc, Notify};
 use crate::events::AppEvent;
 use crate::layout::PaneId;
 
-/// Live runtime for a server-owned terminal.
+/// Presentation runtime for a terminal: parser/view state plus PTY or native hc IO.
 ///
-/// The PTY implementation still delegates to the legacy pane runtime while the
-/// migration proceeds, but production code now depends on this terminal-layer
-/// type instead of the pane module's implementation detail.
+/// An hc attachment never owns the program. Dropping it detaches; explicit
+/// shutdown requests termination through the hc API, never local PID signals.
 pub struct TerminalRuntime(crate::pane::PaneRuntime);
+
+impl TerminalRuntime {
+    // Mirrors the existing runtime construction geometry/theme/render hooks.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn attach_hc(
+        pane_id: PaneId,
+        rows: u16,
+        cols: u16,
+        client: crate::hc::Client,
+        address: &str,
+        history: usize,
+        scrollback_limit_bytes: usize,
+        host_terminal_theme: crate::terminal_theme::TerminalTheme,
+        host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
+        events: mpsc::Sender<AppEvent>,
+        render_notify: Arc<Notify>,
+        render_dirty: Arc<RenderSignal>,
+        committed: bool,
+    ) -> std::io::Result<Self> {
+        crate::pane::PaneRuntime::attach_hc(
+            pane_id,
+            rows,
+            cols,
+            client,
+            address,
+            history,
+            scrollback_limit_bytes,
+            host_terminal_theme,
+            host_terminal_appearance,
+            events,
+            render_notify,
+            render_dirty,
+            committed,
+        )
+        .await
+        .map(Self)
+    }
+
+    pub(crate) fn hc_commit_events(&self, enabled: bool) {
+        self.0.hc_commit_events(enabled);
+    }
+
+    pub(crate) fn hc_executor(&self) -> Option<tokio::runtime::Handle> {
+        self.0.hc_executor()
+    }
+
+    pub(crate) fn hc_snapshot(&self) -> Option<crate::hc::state::RuntimeSnapshot> {
+        self.0.hc_snapshot()
+    }
+
+    pub(crate) fn hc_updates(
+        &self,
+    ) -> Option<tokio::sync::watch::Receiver<crate::hc::state::RuntimeSnapshot>> {
+        self.0.hc_updates()
+    }
+
+    /// Adapter lifecycle contract; production close is acknowledged by TerminalFactory.
+    #[cfg(test)]
+    pub(crate) async fn terminate_hc(&self) -> std::io::Result<()> {
+        self.0.terminate_hc().await
+    }
+}
 
 impl TerminalRuntime {
     pub fn shutdown(self) {
@@ -151,6 +212,7 @@ impl TerminalRuntime {
 
     // Wrapper mirrors pane runtime construction arguments.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub fn spawn_shell_command(
         pane_id: PaneId,
         rows: u16,
@@ -186,6 +248,7 @@ impl TerminalRuntime {
 
     // Wrapper mirrors pane runtime construction arguments, including detection policy.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub fn spawn_argv_command(
         pane_id: PaneId,
         rows: u16,

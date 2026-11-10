@@ -29,6 +29,7 @@ mod frame_output_tests;
 mod handshake;
 mod image_files;
 mod input;
+mod jump_request;
 mod loop_config;
 mod notifications;
 mod shell;
@@ -666,6 +667,7 @@ async fn run_client_loop(
     let mut pending_catalog: Option<Result<Vec<endpoint::SavedSshEndpoint>, String>> = None;
     if state.shell.is_some() && !is_remote_client && state.attach_escape.is_none() {
         catalog_reload::watch_profiles(event_tx.clone(), should_quit.clone());
+        jump_request::watch(event_tx.clone(), should_quit.clone());
     }
 
     // This (foreground) client owns the prefix ASCII input-source switch
@@ -1255,6 +1257,30 @@ async fn run_client_loop(
                     if !outcome.actions.is_empty() {
                         crate::platform::foreground_desktop_notification_host();
                     }
+                    let frame = outcome
+                        .repaint
+                        .then(|| shell.compose(state.reported_size.0, state.reported_size.1))
+                        .flatten();
+                    if finish_client_shell_input(
+                        &mut state,
+                        outcome,
+                        frame,
+                        &mut write_stream,
+                        &mut pending_activation,
+                        &mut endpoint_commands,
+                        &mut prefix_input_source,
+                        &mut scheduled_activation,
+                    )? {
+                        return Ok(());
+                    }
+                }
+            }
+            ClientLoopEvent::JumpRequest {
+                endpoint_id,
+                target,
+            } => {
+                if let Some(shell) = state.shell.as_mut() {
+                    let outcome = shell.jump_to_endpoint_target(endpoint_id, target);
                     let frame = outcome
                         .repaint
                         .then(|| shell.compose(state.reported_size.0, state.reported_size.1))

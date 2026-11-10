@@ -1,5 +1,7 @@
 #![cfg(target_os = "linux")]
 
+pub mod support;
+
 use std::io::{BufRead, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -124,26 +126,25 @@ async fn host_shutdown_saves_layout_before_releasing_delay_lock() {
     let socket = base.join("herdr-dev/sessions/shutdown/herdr.sock");
     let config = base.join("config.toml");
     std::fs::write(&config, "onboarding = false\n[experimental]\nallow_nested = true\n[terminal]\ndefault_shell = \"/bin/sh\"\n").unwrap();
-    let mut server = ChildGuard(
-        Command::new(env!("CARGO_BIN_EXE_herdr"))
-            .args(["--session", "shutdown", "server"])
-            .env("XDG_CONFIG_HOME", &base)
-            .env("XDG_STATE_HOME", &base)
-            .env("XDG_RUNTIME_DIR", &base)
-            .env("HERDR_CONFIG_PATH", &config)
-            .env_remove("HERDR_SOCKET_PATH")
-            .env("DBUS_SYSTEM_BUS_ADDRESS", address.trim())
-            .env_remove("HERDR_CLIENT_SOCKET_PATH")
-            .env_remove("HERDR_STARTUP_CWD")
-            .env_remove("HERDR_SESSION")
-            .env_remove("HERDR_WORKSPACE_ID")
-            .env_remove("HERDR_TAB_ID")
-            .env_remove("HERDR_PANE_ID")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .spawn()
-            .unwrap(),
-    );
+    let mut command = Command::new(env!("CARGO_BIN_EXE_herdr"));
+    command
+        .args(["--session", "shutdown", "server"])
+        .env("XDG_CONFIG_HOME", &base)
+        .env("XDG_STATE_HOME", &base)
+        .env("XDG_RUNTIME_DIR", &base)
+        .env("HERDR_CONFIG_PATH", &config)
+        .env_remove("HERDR_SOCKET_PATH")
+        .env("DBUS_SYSTEM_BUS_ADDRESS", address.trim())
+        .env_remove("HERDR_CLIENT_SOCKET_PATH")
+        .env_remove("HERDR_STARTUP_CWD")
+        .env_remove("HERDR_SESSION")
+        .env_remove("HERDR_WORKSPACE_ID")
+        .env_remove("HERDR_TAB_ID")
+        .env_remove("HERDR_PANE_ID")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null());
+    support::hc::configure(&mut command, &base);
+    let mut server = ChildGuard(command.spawn().unwrap());
     tokio::time::timeout(Duration::from_secs(10), async {
         while !socket.exists() || peer.lock().unwrap().is_none() {
             assert!(
@@ -218,5 +219,7 @@ async fn host_shutdown_saves_layout_before_releasing_delay_lock() {
     drop(server);
     drop(service);
     drop(bus);
+    support::hc::cleanup(&base).unwrap();
+    support::unregister_runtime_dir(&base);
     std::fs::remove_dir_all(base).unwrap();
 }

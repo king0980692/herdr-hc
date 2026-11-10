@@ -80,7 +80,7 @@ impl App {
             .get_mut(ws_idx)
             .ok_or_else(|| std::io::Error::other("workspace disappeared"))
             .and_then(|ws| {
-                ws.create_tab(
+                ws.create_tab_with_runtime(
                     rows,
                     cols,
                     cwd,
@@ -88,7 +88,9 @@ impl App {
                     host_terminal_theme,
                     host_terminal_appearance,
                     crate::pane::PaneShellConfig::new(&default_shell, self.state.shell_mode),
+                    None,
                     extra_env,
+                    &self.terminal_factory,
                 )
             });
         match result {
@@ -246,6 +248,11 @@ impl App {
                     "closing this tab would close a worktree group",
                 );
             }
+            if let Err(error) =
+                self.terminate_hc_workspaces(&self.state.workspace_close_indices(ws_idx))
+            {
+                return encode_error(id, "hc_close_failed", error.to_string());
+            }
             let workspace = self.workspace_info(ws_idx);
             self.state.selected = ws_idx;
             self.state.close_selected_workspace();
@@ -268,6 +275,9 @@ impl App {
             return encode_success(id, ResponseResult::Ok {});
         }
 
+        if let Err(error) = self.terminate_hc_terminals(terminal_ids.iter().cloned()) {
+            return encode_error(id, "hc_close_failed", error.to_string());
+        }
         let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
             return tab_not_found(id, &target.tab_id);
         };

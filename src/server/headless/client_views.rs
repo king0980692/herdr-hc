@@ -134,7 +134,11 @@ impl HeadlessServer {
             .is_some_and(|tab_id| self.app.parse_tab_id(tab_id).is_none())
         {
             self.popup_owner_tab_id = None;
-            self.app.close_popup_pane();
+            if !self.app.detach_hc_popup_pane() {
+                if let Err(error) = self.app.close_popup_pane() {
+                    tracing::warn!(%error,"could not close orphan popup");
+                }
+            }
         } else if self.popup_owner_tab_id.is_none() {
             self.popup_owner_tab_id = self
                 .default_shell_target()
@@ -511,11 +515,7 @@ impl HeadlessServer {
         else {
             return false;
         };
-        if tab.zoomed {
-            tab.layout.focused() == pane_id
-        } else {
-            tab.layout.pane_ids().contains(&pane_id)
-        }
+        tab.pane_visible(pane_id)
     }
 
     fn finish_shell_tab_geometry_change(&mut self, start_pending_agent_resumes: bool) {
@@ -811,6 +811,13 @@ impl HeadlessServer {
         &mut self,
         mut msg: api::ApiRequestMessage,
     ) -> bool {
+        msg.request = match self.app.unwrap_runtime_request(msg.request) {
+            Ok(request) => request,
+            Err(response) => {
+                let _ = msg.respond_to.send(response);
+                return false;
+            }
+        };
         let target_before = self.default_shell_target();
         let popup_before = self.app.state.popup_pane.is_some();
         let method_claims_geometry = Self::public_request_may_change_geometry(&msg.request.method);

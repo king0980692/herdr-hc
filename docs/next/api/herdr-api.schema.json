@@ -3856,6 +3856,21 @@
           ],
           "type": "object"
         },
+        "RuntimeRequestParams": {
+          "properties": {
+            "host_instance": {
+              "type": "string"
+            },
+            "request": {
+              "$ref": "#/schemas/request"
+            }
+          },
+          "required": [
+            "host_instance",
+            "request"
+          ],
+          "type": "object"
+        },
         "ServerLiveHandoffParams": {
           "properties": {
             "expected_protocol": {
@@ -6305,6 +6320,38 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/PluginPaneCloseParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "runtime.source",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "runtime.request",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/RuntimeRequestParams"
             }
           },
           "required": [
@@ -10413,6 +10460,72 @@
               },
               "required": [
                 "type"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "connected": {
+                  "type": "boolean"
+                },
+                "core_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "error": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "generation": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "hc_path": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "host_instance": {
+                  "type": "string"
+                },
+                "profile_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "retired": {
+                  "type": "boolean"
+                },
+                "session": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "target": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "type": {
+                  "const": "runtime_source",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "host_instance",
+                "generation",
+                "connected",
+                "retired"
               ],
               "type": "object"
             }

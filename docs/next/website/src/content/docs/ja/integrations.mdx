@@ -3,9 +3,9 @@ title: インテグレーション
 description: Pi、OMP、Claude Code、Codex、GitHub Copilot CLI、Devin CLI、Droid、Kimi Code CLI、OpenCode、Kilo Code CLI、Hermes Agent、Qoder CLI、Qwen Code、Letta Code、Cursor Agent CLI、MastraCode、Antigravity CLI、Grok CLI 向けの Herdr インテグレーションをインストールします。
 ---
 
-Herdr は対応するエージェントを自動的に検出します。エージェントのインテグレーションをインストールすると、サーバーの再起動後に Herdr が同じセッションを resume できます。一部のインテグレーションはエージェントの状態も直接報告します。Herdr が対応するエージェントと、自ら Herdr に対応するエージェントについては[エージェント](/ja/docs/agents/)を参照してください。
+**実行環境の範囲:** hc ペインは接続先 hc／OSC 7501 の報告を必要とします。Herdr は画面から推測せず、従来のペイン状態・メタデータ報告を受け付けず、resume コマンドも実行しません。ネイティブ報告は[エージェントに Herdr 対応を追加する](/ja/docs/add-herdr-support/)を参照してください。
 
-エージェントネイティブのセッション復元、直接のライフサイクル報告、またはその両方が欲しいときにインテグレーションを使ってください。状態権威モデルの全体像は[エージェント](/ja/docs/agents/)を参照してください。
+以下のインストーラー、hook、プラグイン、バージョン、環境変数、メタデータ例、resume 動作は**従来の Herdr 所有 PTY サーバー専用**です。hc 統合や hc 検証済みエージェント一覧ではありません。クライアントへのインストールで接続先にも導入されたり hc 報告が有効になったりしません。hc の復元目的だけで導入しないでください。hc は生きた正確なバインディングにアタッチします。
 
 ## インテグレーションをインストールする
 

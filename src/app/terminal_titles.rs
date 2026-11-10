@@ -49,6 +49,14 @@ impl App {
             else {
                 continue;
             };
+            if self
+                .state
+                .terminals
+                .get(&terminal_id)
+                .is_some_and(|terminal| terminal.hc_authority)
+            {
+                continue;
+            }
             let Some(runtime) = self.terminal_runtimes.get(&terminal_id) else {
                 continue;
             };

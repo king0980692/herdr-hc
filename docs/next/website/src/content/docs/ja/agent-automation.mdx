@@ -7,6 +7,8 @@ Herdr はコーディングエージェントの自動化レイヤーとして�
 
 ## 3 つのプリミティブ
 
+対象表示ホストへ Herdr CLI でアクセスできるクライアントから例を実行します。保存済み hc 接続先にはリモート Herdr を導入せず、エージェントへ API 経路も自動提供しません。
+
 | プリミティブ | 責務 |
 | --- | --- |
 | レイアウト（`workspace`、`tab`、ペイン構成） | ターミナルの場所を作成し、整理する。 |
@@ -20,7 +22,7 @@ Herdr はコーディングエージェントの自動化レイヤーとして�
 作成コマンドは JSON を出力します。ID を推測せず、レスポンスから取得してください:
 
 ```bash
-created=$(herdr workspace create --cwd ~/project --label api --no-focus)
+created=$(herdr workspace create --cwd /srv/project --label api --no-focus)
 pane_id=$(printf '%s\n' "$created" | jq -r '.result.root_pane.pane_id')
 
 split=$(herdr pane split "$pane_id" --direction right --no-focus)
@@ -29,7 +31,7 @@ review_pane=$(printf '%s\n' "$split" | jq -r '.result.pane.pane_id')
 
 `workspace create` は `.result.workspace`、`.result.tab`、`.result.root_pane` を返します。`tab create` は `.result.tab` と `.result.root_pane` を返し、`pane split` は新しいペインを `.result.pane` として返します。
 
-ペインを別のワークスペースへ移動すると、ワークスペース修飾付きのペイン ID が変わります。`pane move` の後は `.result.move_result.pane.pane_id` を使い、以前の値が必要なら `.result.move_result.previous_pane_id` を参照してください。実行中プロセスは起動時の Herdr 環境を保ちますが、以前の `HERDR_PANE_ID` はそのターミナルの別名として残るため、`--current` は引き続き安全に使えます。移動後に始めるコマンドはエージェント名で解決できますが、すでに進行中の待機は `agent_not_running` で終了します。
+ペイン移動でワークスペース修飾の公開 ID が変わります。`.result.move_result.pane.pane_id` を使い、旧値は `.result.move_result.previous_pane_id` で確認します。hc core／アドレスのバインディングは変わりません。保存済み SSH プログラムはクライアントのペイン ID・ソケット経路を継承しないため、`--current` を前提にしないでください。ローカル hc の起動コンテキストは別です。対象の表示ホストを選び、その返却 ID を明示します。例の `/srv/project` は接続先のパスです。
 
 シェル、テスト、サーバー、CI ウォッチャーなどの通常のターミナルプロセスにはペインコマンドを使います。どのエージェントが動いているか、または状態が `working`、`blocked`、`done`、`idle`、`unknown` のどれかを Herdr に判断させる場合はエージェントコマンドを使います。
 
@@ -43,13 +45,13 @@ review_pane=$(printf '%s\n' "$split" | jq -r '.result.pane.pane_id')
 
 `--kind` は対応済みエージェントとその標準実行ファイルを選びます。対応する kind は `pi`、`claude`、`codex`、`gemini`、`cursor`、`devin`、`agy`、`cline`、`omp`、`mastracode`、`opencode`、`copilot`、`kimi`、`kiro`、`droid`、`amp`、`grok`、`hermes`、`kilo`、`qodercli`、`qwen`、`letta`、`maki`、`muse` です。`--` より後の引数は、その実行ファイルへそのまま渡されます。
 
-成功した `agent start` は、同じターミナルで期待したエージェントを検出し、対話入力の準備ができたと Herdr が判断してから返ります。起動中の検出状態が `blocked` の場合、コマンドは直ちに `agent_not_ready` を返します。名前は `agent read` と `agent send-keys` で引き続き使用でき、検出状態が `idle` になるとプロンプトを送信できるようになります。起動待機はデフォルトで 30 秒です。`--timeout` は 3000 より大きく 300000 以下のミリ秒で指定します。
+hc のシェル受け入れには、接続先ルートプロセスがフォアグラウンド対話シェルであるという明確な情報が必要です。Kind、予約名、送信コマンドは起動予定にすぎず、有効な明示的報告まで unknown です。同じターミナルの期待したエージェントが準備できて初めて成功します。blocked／error の報告では `agent_not_ready` を返すため、`agent read` で確認して `agent send-keys` で意図的に応答します。待機は標準 30 秒で、`--timeout` は 3000 より大きく 300000 以下です。再試行は送信前の `agent_pane_busy` だけで、送信後の起動を自動再送しません。
 
 ```bash
 herdr agent start reviewer --kind codex --pane "$review_pane" -- -m gpt-5.4
 ```
 
-手動で起動したエージェントも自動検出され、ペイン ID で指定できます。人が読みやすい安定した対象名が必要なら名前を付けます:
+手動起動したエージェントも明示的な hc 報告が必要です。報告済みエージェントはペイン ID で指定し、必要なら表示別名を付けます:
 
 ```bash
 herdr agent get w1:p2
@@ -75,11 +77,11 @@ herdr agent rename w1:p2 reviewer
 
 `agent prompt --wait` は、エージェントがすでに `blocked` の場合、入力も待機も開始せずに `agent_blocked` を返します。それ以外は、プロンプトと遅延した Enter を順序付きの 1 回の送信として書き込んでから待機します。Windows の Codex では Enter の前にペースト境界が送られるため、送信はプロンプトのサイズに依存しません。呼び出し側のタイムアウトには送信時間も含まれます。別の non-working 状態から始まった場合、送信後に最大 5 秒間、`working` または `blocked` を観測するまで待ちます。観測できなければ `agent_prompt_stalled` を返し、呼び出し側のタイムアウトが先に切れた場合は通常の `timeout` エラーを返します。これにより、無関係な `idle`、`done`、またはセッションの変化によって待機が誤って完了することを防ぎます。活動を観測した後、要求された安定状態を待ちます。個々のターンは追跡しません。エージェントがすでに working の場合、進行中ターンの完了が待機を満たすことがあります。単独の `agent wait` は現在のエージェントを監視し、すでに状態が一致していれば即座に返ります。どちらもデフォルトでは `idle`、`done`、`blocked` を待ちます。複数の正確な状態を許可するには、`--until idle --until done` のように `--until` を繰り返します。`unknown` が必要な場合は `--until unknown` を明示してください。`agent prompt` では `--until` に `--wait` が必要です。
 
-`idle` と `done` はどちらも入力可能な状態です。CLI/API はサーバーの既読状態を使い、未確認の idle を `done` とします。明示的な `pane focus` / `agent focus` は対象を既読にしますが、読み取りでは変わりません。各 TUI クライアントは表示済みの完了を独立して管理するため、Done バッジが CLI やほかのクライアントと異なる場合があります。`blocked` は承認または質問 UI を Herdr が認識した状態です。`unknown` はエージェントが存在するもののライフサイクルを確実に分類できない状態で、成功完了を意味しません。違いが重要なら正確な `--until` を指定してください。
+hc の `idle`・`done` は接続先から取得し、フォーカス・読み取りで `done` を `idle` に変えません。`blocked`・`error` の報告は blocked です。欠落、切断、認識できない報告は成功ではなく `unknown` です。クライアントの注意マーカーは権威を変えません。必要なら正確な `--until` を使い、idle を操作承認とみなさないでください。
 
-起動準備、idle な会話の復元、エージェント会話の切り替えは、作業の完了として数えません。起動直後に作業を始めるエージェントは、Herdr が先に idle プロンプトを確認しなくても最初のタスクを完了できます。エージェントのレスポンスには `completion_seq` が含まれる場合があり、誰が確認したかに関係なく、現在の idle 遷移が完了した作業であることを示します。これはその遷移の `state_change_seq` と一致し、起動やセッション変更では設定されません。古いサーバーではこのフィールドが省略される場合があります。古いサーバーに接続したクライアントは、観測した working 状態を使って Done バッジを保護するため、更新の合間に開始して終了したターンを見逃す可能性があります。
+起動予定、タイマー、フォーカス、再接続スナップショットで完了を作り出しません。従来の `completion_seq`・既読動作は hc の権威ではありません。ライブの接続先報告による変化だけが通知を発生させ、再接続で完了通知を再生しません。
 
-タイムアウトや `agent_prompt_stalled` は、入力が送られていないことを保証しません。二重送信を避けるため、再試行の前にエージェントを読み取ってください。ID とエージェント名はサーバーごとに独立しています。TUI で別のマシンを選んでも、既存ペイン内の CLI コマンドの接続先は変わりません。
+タイムアウトや `agent_prompt_stalled` は未送信を保証しません。次の明示的操作の前に結果を確認し、送信済みかもしれないプロンプトを自動再送しないでください。ID とエージェント名はサーバーごとに独立しています。TUI で別のマシンを選んでも、既存ペイン内の CLI コマンドの接続先は変わりません。
 
 `pane wait-output` はエージェントのライフサイクルを解釈しません。選択したターミナルスナップショットをポーリングし、最初にすぐ検索するため、すでに存在する文字列も一致します。デフォルトのソース名は `recent` で、直近 80 行の描画済みターミナル行を折り返し前の出力として扱います。`--lines` でその行数を変更でき、`--regex` は Rust の正規表現構文で 1 行ずつ一致します。
 
@@ -91,7 +93,7 @@ Claude Code や OpenCode などの全画面エージェントは、トランス�
 
 その他の読み取りは受動的なままです。`visible`、`detection`、ANSI 読み取り、出力待機と購読、手動でスクロールされたエージェント、直接アタッチ中のペイン、マウスホイール入力を報告しないアプリケーションでは、Herdr はアプリケーションのビューポートを動かしません。明示的な `agent read --lines N` が代替画面の履歴を必要とする場合、エージェントが working、blocked、または unknown の間は `agent_not_idle` を返します。idle になるまで待って再試行するか、`--source visible` を使ってください。その他の recent 読み取りは従来どおり、利用可能な画面とホスト側スクロールバックを返します。
 
-完全な応答を取得できない場合は、一時ディレクトリの Markdown ファイルに応答を書き込み、ファイルパスだけを返すようエージェントに依頼して、そのファイルを直接読み取ってください。
+完全な応答を取得できない場合は、接続先に Markdown ファイルを書いてパスを返すよう依頼します。明示的に認可した接続先アクセスだけで読み、同名のクライアント側ファイルを読まないでください。Herdr の保存済み接続先ファイルシステム・worktree 操作は未対応で、ローカルへのフォールバックはありません。
 
 成功した `agent start`、`agent prompt`、`agent wait` は現在のエージェントを `.result.agent` に返します。`pane wait-output` は `.result.pane_id`、`.result.matched_line`、一致したスナップショット `.result.read` を返します。
 
@@ -102,7 +104,7 @@ wait コマンドにはデフォルトのタイムアウトがなく、無期限
 補助エージェントを起動して作業を渡し、その作業が落ち着くまで待ちます:
 
 ```bash
-split=$(herdr pane split --current --direction right --no-focus)
+split=$(herdr pane split w1:p1 --direction right --no-focus)
 review_pane=$(printf '%s\n' "$split" | jq -r '.result.pane.pane_id')
 herdr agent start reviewer --kind codex --pane "$review_pane" -- -m gpt-5.4
 herdr agent prompt reviewer "Review the current diff" --wait --timeout 120000

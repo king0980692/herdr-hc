@@ -558,6 +558,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
         label: "Remote".into(),
         target: "dev@example.com".into(),
         session: "main".into(),
+        hc_path: None,
         enabled: true,
     };
     let target_id = ClientEndpointId::Ssh(profile.id.clone());

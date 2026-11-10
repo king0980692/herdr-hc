@@ -3,7 +3,9 @@ title: Integrations
 description: Install Herdr integrations for Pi, OMP, Claude Code, Codex, GitHub Copilot CLI, Devin CLI, Droid, Kimi Code CLI, OpenCode, Kilo Code CLI, Hermes Agent, Qoder CLI, Qwen Code, Letta Code, Cursor Agent CLI, MastraCode, Antigravity CLI, and Grok CLI.
 ---
 
-Herdr detects the agents it supports automatically. Install an agent's integration so Herdr can resume the same session after a server restart. Some integrations also report the agent's state directly. See [Agents](/docs/agents/) for which agents Herdr supports and which support Herdr themselves.
+**Runtime scope:** hc-owned panes require source hc / OSC 7501 reports. Herdr does not infer their state from screens, accept legacy pane reports/metadata, or run agent resume commands. See [Add Herdr support to your agent](/docs/add-herdr-support/) for the native reporting path.
+
+The installers, hooks, plugins, versions, environment variables, metadata examples, and resume behavior documented below are for **legacy Herdr-owned PTY servers only**. They are not hc integrations or a list of hc-qualified agents. Installing one on the client does not install it at the source or enable hc state reporting. Do not install these merely to restore hc panes; hc attaches exact surviving bindings instead.
 
 ## Install integrations
 

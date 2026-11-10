@@ -96,6 +96,7 @@ fn add_remote(state: &mut ClientShellState) -> ClientEndpointId {
         label: "Build".into(),
         target: "dev@build.example".into(),
         session: "agents".into(),
+        hc_path: None,
         enabled: true,
     };
     let remote = ClientEndpointId::Ssh(profile.id.clone());

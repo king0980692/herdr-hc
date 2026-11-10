@@ -143,9 +143,9 @@ Windows 的常规使用建议选择稳定版。预览版能更早获得修复,�
 
 默认情况下,`herdr update` 会安装新二进制文件,并让端点第 1 代服务器及其窗格进程继续运行。再次启动 Herdr 即可用更新后的客户端重新连接。纯客户端改动会立即生效。新的服务器端操作会保持不可用,直到对应服务器更新并重启;客户端会显示通知,而不会断开连接。只有早于端点第 1 代的服务器需要在更新时再停止最后一次。
 
-完成后,`herdr update` 会列出仍在运行旧版本的服务器及重启它们的命令,以及运行各自 Herdr 的已保存 SSH 机器。请在每台机器上也运行 `herdr update` 来更新。
+已保存 hc 机器不运行远程 Herdr 来呈现。请分别明确更新本地 Herdr 与源端 hc；添加、探测或重连配置都不安装任一运行时。重启 hc 呈现主机只重新附加绑定，不终止或重启源端程序。旧版 Herdr 拥有 PTY 的服务器不同：停止它会结束程序，hc 不能导入这些程序。
 
-要对受支持的运行中会话启用实验性的实时服务器交接,运行:
+以下实验性 handoff **仅用于旧 PTY 兼容**，不是 hc 迁移或恢复路径：
 
 ```bash
 herdr update --handoff
@@ -156,5 +156,7 @@ herdr update --handoff
 实时交接不适用于 Homebrew、mise 或 Nix 的包管理器更新。这些安装先用包管理器更新,再重新运行 Herdr,用更新后的客户端连接。兼容的旧服务器会继续运行。只有需要新版本的服务器端改动时,才稍后用 `herdr server stop` 或 `herdr session stop <name>` 重启它。
 
 ## 系统要求
+
+原生运行时要求本地和各 SSH 源端分别安装兼容的[上游 hc](https://github.com/herdrdev/herdr-core)，并在 `PATH` 可用。Herdr 安装器不安装 hc。hc 缺失、离线或不兼容会报错，不允许回退本地 PTY 或启动替代程序。本草稿的 hc 迁移仍待平台资格验证，已发布的旧版平台支持不证明 native-hc 支持。
 
 Linux、macOS 和 Windows x86_64 都提供稳定通道二进制文件。受支持的工作流和已知限制见 [Windows 支持](/zh-cn/docs/windows-beta/)。Windows ARM64 通过 Windows 模拟运行 x86_64 构建。

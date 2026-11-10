@@ -234,6 +234,8 @@ Herdr 恢复会话且 API socket 就绪后,会为每个已启用插件运行一�
 
 ## 命令与环境
 
+本地插件 action／hook 与终端程序是不同执行面。**已保存 SSH 终端命令通过源端 hc 执行**：不复制插件可执行文件／配置、客户端 API 路径、窗格 ID 或本地 SSH-agent 代理。源端缺失命令会失败，不改为本地执行。本地 hc 可携带本地上下文。以下环境注入不承诺跨 SSH 生效；所有 hc 窗格仍拒绝旧状态／元数据上报方法。
+
 运行时命令以插件目录为工作目录执行。Herdr 注入 `HERDR_SOCKET_PATH`、
 `HERDR_BIN_PATH`、`HERDR_ENV=1`、`HERDR_PLUGIN_ID`、`HERDR_PLUGIN_ROOT`、
 `HERDR_PLUGIN_CONFIG_DIR`、`HERDR_PLUGIN_STATE_DIR`、

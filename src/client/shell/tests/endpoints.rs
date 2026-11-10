@@ -13,6 +13,7 @@ fn remote_profile() -> SavedSshEndpoint {
         label: "Build".into(),
         target: "dev@build.example".into(),
         session: "agents".into(),
+        hc_path: None,
         enabled: true,
     }
 }
@@ -3019,4 +3020,38 @@ fn navigator_foreign_workspace_heading_keeps_the_workspace_target() {
             target: Some(ClientEndpointFocusTarget::Workspace(workspace_id)),
         }] if activated == &endpoint_id && workspace_id == "ws_1"
     ));
+}
+
+#[test]
+fn external_jump_request_activates_online_endpoints_only() {
+    let (mut state, endpoint_id) = state_with_remote();
+
+    let outcome = state.jump_to_endpoint_target(
+        endpoint_id.clone(),
+        ClientEndpointFocusTarget::Pane("pane_9".into()),
+    );
+    assert!(matches!(
+        outcome.actions.as_slice(),
+        [ClientShellAction::ActivateEndpoint {
+            endpoint_id: activated,
+            target: Some(ClientEndpointFocusTarget::Pane(pane_id)),
+        }] if activated == &endpoint_id && pane_id == "pane_9"
+    ));
+
+    // An offline machine reports a notice instead of leaving the displayed one.
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Reconnecting);
+    let outcome = state.jump_to_endpoint_target(
+        endpoint_id,
+        ClientEndpointFocusTarget::Pane("pane_9".into()),
+    );
+    assert!(outcome.actions.is_empty());
+    assert!(outcome.repaint);
+
+    // A profile this client does not know is ignored.
+    let unknown =
+        ClientEndpointId::Ssh(ProfileId::parse("fedcba9876543210fedcba9876543210").unwrap());
+    let outcome =
+        state.jump_to_endpoint_target(unknown, ClientEndpointFocusTarget::Pane("pane_9".into()));
+    assert!(outcome.actions.is_empty());
+    assert!(!outcome.repaint);
 }

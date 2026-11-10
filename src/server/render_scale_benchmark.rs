@@ -228,6 +228,72 @@ fn print_profiles(label: &str, build: fn(usize) -> Vec<Workspace>) {
     print_stage("combined pipeline", &rows, |stats| stats.total);
 }
 
+fn profile_hc_metadata(
+    build: fn(usize) -> Vec<Workspace>,
+    count: usize,
+    native: bool,
+) -> PipelineStats {
+    let mut pipeline = RenderPipeline::new(build(count));
+    pipeline.app.state.ensure_test_terminals();
+    for (index, terminal) in pipeline.app.state.terminals.values_mut().enumerate() {
+        if native {
+            terminal.apply_hc_snapshot(crate::hc::state::RuntimeSnapshot {
+                binding: crate::hc::state::TerminalBinding {
+                    core_id: "bench-core".into(),
+                    address: format!("t{}", index + 1),
+                },
+                terminal: serde_json::from_value(
+                    serde_json::json!({"address":format!("t{}",index+1),"cwd":terminal.cwd,
+                    "reported":true,"status":{"app":"claude","state":"blocked"}}),
+                )
+                .unwrap(),
+                connected: true,
+                attached: true,
+                error: None,
+            });
+        } else {
+            terminal.set_detected_state(
+                Some(crate::detect::Agent::Claude),
+                crate::detect::AgentState::Blocked,
+            );
+        }
+    }
+    pipeline
+        .client
+        .set_snapshot(Box::new(super::client_shell::snapshot(
+            &pipeline.app,
+            "bench-boot",
+            1,
+            None,
+            None,
+        )));
+    profile_pipeline(pipeline)
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "fixed-geometry metadata projection profile; no live hc or wall-clock CI limit"]
+async fn hc_metadata_render_scale_profile() {
+    for (label, build) in [
+        (
+            "background workspaces",
+            workspaces as fn(usize) -> Vec<Workspace>,
+        ),
+        ("active panes", active_panes),
+    ] {
+        let legacy = CARDINALITIES.map(|count| (count, profile_hc_metadata(build, count, false)));
+        let native = CARDINALITIES.map(|count| (count, profile_hc_metadata(build, count, true)));
+        println!("hc reported metadata / {label}: fixed {COLS}x{ROWS}; existing parser fixtures, not native I/O throughput");
+        print_stage("legacy combined pipeline", &legacy, |stats| stats.total);
+        print_stage("hc combined pipeline", &native, |stats| stats.total);
+        for ((count, old), (_, new)) in legacy.iter().zip(&native) {
+            println!(
+                "  count={count} hc_vs_legacy={:.2}x",
+                new.total.median_us as f64 / old.total.median_us.max(1) as f64
+            );
+        }
+    }
+}
+
 fn profile_snapshot_encoding(
     build: fn(usize) -> Vec<Workspace>,
     count: usize,

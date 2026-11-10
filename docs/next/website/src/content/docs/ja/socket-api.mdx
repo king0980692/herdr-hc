@@ -96,6 +96,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | 通知 | `notification.show` |
 | クライアント | `client.window_title.set`、`client.window_title.clear` |
 | セッション | `session.snapshot` |
+| ランタイム | `runtime.source`、`runtime.request` |
 | ワークスペース | `workspace.create`、`workspace.list`、`workspace.get`、`workspace.focus`、`workspace.rename`、`workspace.move`、`workspace.move_block`、`workspace.report_metadata`、`workspace.close` |
 | Worktree | `worktree.list`、`worktree.create`、`worktree.open`、`worktree.remove` |
 | タブ | `tab.create`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.close` |
@@ -340,7 +341,7 @@ worktree コマンドはライフサイクルイベントも発行します。`w
 またはコンテキストオブジェクトを指定できます。コンテキスト値は
 `current_workspace_id` と `current_tab_id` で、対応する ID フィールドとの比較にだけ
 使えます。保存済みマシンに接続するクライアントでは、選択中サーバーのビューを統合エージェント一覧に適用します。現在のワークスペースとタブのコンテキストには選択中のマシンも含まれるため、別マシンの同じ ID は一致しません。一方、`status` が `blocked` かどうかなど独立したフィルター条件は、接続中のすべてのマシンに一致できます。有効な status は `idle`、`working`、`blocked`、`done`、`unknown` です。
-`done` は idle かつ未確認の状態を表します。
+hc の `done` は接続先の明示的な完了で、フォーカス後も done のままです。既読マーカーは表示上の情報で、未確認の idle という意味は従来の PTY 専用です。
 
 ソートフィールドは `workspace_order`、`tab_order`、`pane_order`、`attention`、
 `status`、`agent`、`seen`、`state_change_seq`、または `{"token":"name"}` です。
@@ -367,6 +368,8 @@ source が一致しない場合、アクティブなビューは変わりませ�
 `type: "agent_view"` で、`active`、`source`、任意の `label` を報告します。
 
 ## プラグイン API
+
+プラグイン定義とローカル action・hook は表示ホストに属します。保存済み SSH ターミナルは接続先 hc で実行し、クライアントのプラグインファイル、私有 API パス、識別コンテキストをコピーしません。ローカル hc のコンテキストはローカルのままです。メタデータから hc 状態を推測せず、従来のペイン報告を使わないでください。[ランタイム接続先の経路](#ランタイム接続先の経路)を参照してください。
 
 プラグイン API は、実行可能なワークフローツールのための初期のホスト面です。プラグインは `herdr-plugin.toml` マニフェストを持つパッケージです。マニフェストは、共有可能なアクション、イベントフック、ターミナルペインのエントリーポイント、リンクハンドラーを宣言します。アクションとペインはマニフェスト専用です。ランタイムでのアクション登録とランタイムでの argv ペイン作成は v1 の範囲外です。
 
@@ -514,9 +517,31 @@ JSON のデコードまで到達したリクエスト行では、メソッドや
 
 プラグインでは、移植性のある Windows の挙動が必要なときは `HERDR_BIN_PATH` と CLI ラッパーの呼び出しを推奨します。生のソケットクライアントは、プラットフォームネイティブのローカルソケット形式を使う責任を負います。
 
+## ランタイム接続先の経路
+
+hc 表示ホストの固定した接続先を `runtime.source` で検出します:
+
+```json
+{"id":"discover","method":"runtime.source","params":{}}
+```
+
+結果には `host_instance`、接続先の `generation`、`connected`、`core_id`、`error`、`retired`、該当時の保存プロファイル経路が含まれます。`host_instance` はこの表示ホストであり、恒久 hc core やターミナルバインディングではありません。オフラインでも別の接続先を選ぶ許可にはなりません。
+
+後続の要求を返されたホストインスタンスに固定します:
+
+```json
+{"id":"outer","method":"runtime.request","params":{"host_instance":"<returned-host-instance>","request":{"id":"inner","method":"pane.list","params":{}}}}
+```
+
+外側 ID が優先します。ホストの置換・退役時は操作を転送せず `stale_runtime_source`、入れ子の `runtime.request` は `invalid_request` です。CLI `--machine` はこの境界を使います。接続先の喪失、拒否、未対応で Local にフォールバックしません。再検出は読み取り専用で、結果不明の操作・起動・入力の再送を許可しません。
+
+hc バインディングは恒久 core ID と正規の接続先ローカルアドレスを使い、表示ホスト、公開ペイン ID、PID で代用しません。接続先の cwd、フォアグラウンド情報、明示的報告が権威です。Herdr のエンドポイント codec に hc のフレーミングを流す機能ではありません。[マシンへの接続](/ja/docs/connecting-machines/)を参照してください。
+
 ## エージェント状態の報告
 
-インテグレーションは `pane.report_agent` でエージェント状態を報告します。
+**以下は従来の契約です:** hc ペインは `pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent` を `unsupported_runtime` で拒否します。報告の権威は接続先 hc／OSC 7501 です。従来の例、メタデータトークン、resume コマンド、既読ルールでは上書きできません。フォーカスで done を消さず、再接続で通知を再生しません。[エージェントに Herdr 対応を追加する](/ja/docs/add-herdr-support/)を参照してください。
+
+従来のインテグレーションは `pane.report_agent` でエージェント状態を報告します。
 
 ```json
 {

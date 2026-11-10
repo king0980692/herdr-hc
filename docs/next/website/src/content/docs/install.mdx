@@ -143,9 +143,9 @@ Stable is the recommended channel for normal Windows use. Preview receives fixes
 
 By default, `herdr update` installs the new binary and leaves endpoint-generation-1 servers and their pane processes running. Start Herdr again to reconnect with the updated client. Client-only changes work immediately. A new server-side action stays unavailable until that server is updated and restarted; the client shows a notice instead of disconnecting. Servers from before endpoint generation 1 need one final stop during update.
 
-When it finishes, `herdr update` lists any running server still on the old version with the command that restarts it, and your saved SSH machines, which run their own Herdr. Run `herdr update` on each machine to update it too.
+Saved hc machines do not run remote Herdr for presentation. Update local Herdr and source hc separately and explicitly; adding, probing, or reconnecting a saved profile installs neither runtime. Restarting an hc presentation host reattaches bindings without terminating or restarting source programs. Older Herdr-owned PTY servers are different: stopping one ends its programs, and hc cannot import them.
 
-To opt into experimental live server handoff for supported running sessions, run:
+The following experimental handoff option is **legacy PTY compatibility only**, not an hc migration or recovery path:
 
 ```bash
 herdr update --handoff
@@ -156,5 +156,7 @@ When both servers support agent-status transfer, live handoff preserves hook-rep
 Live handoff does not apply to Homebrew, mise, or Nix package-manager updates. For those installs, update with the package manager, then run Herdr again to reconnect with the updated client. The compatible old server keeps running. Restart it later with `herdr server stop` or `herdr session stop <name>` only when you want server-side changes from the new release.
 
 ## Requirements
+
+The native runtime requires a compatible [upstream hc](https://github.com/herdrdev/herdr-core) executable installed separately on `PATH` locally and at each SSH source. The Herdr installer is not an hc installer. hc missing, offline, or incompatible is an error, not permission to fall back to local PTYs or launch substitutes. This draft's hc migration still requires platform qualification; published legacy platform support is not proof of native-hc support.
 
 Stable-channel binaries are available for Linux, macOS, and Windows x86_64. See [Windows support](/docs/windows-beta/) for supported workflows and known limitations. Windows ARM64 runs the x86_64 build under Windows emulation.

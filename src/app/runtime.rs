@@ -155,6 +155,7 @@ impl App {
         };
 
         [
+            self.hc_recovery.deadline(),
             self.config_diagnostic_deadline,
             self.toast_deadline,
             self.state.next_pending_agent_notification_deadline(),

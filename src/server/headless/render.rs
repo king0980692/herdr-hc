@@ -87,10 +87,7 @@ impl HeadlessServer {
         else {
             return false;
         };
-        if tab.zoomed {
-            return false;
-        }
-        tab.layout.pane_ids().into_iter().any(|pane_id| {
+        tab.visible_pane_ids().into_iter().any(|pane_id| {
             self.app
                 .state
                 .runtime_for_pane_in_workspace(
@@ -311,11 +308,7 @@ impl HeadlessServer {
                 else {
                     continue;
                 };
-                if tab.zoomed {
-                    pane_ids.insert(tab.layout.focused());
-                } else {
-                    pane_ids.extend(tab.layout.pane_ids());
-                }
+                pane_ids.extend(tab.visible_pane_ids());
                 if self.popup_owner_tab_id == self.shell_tab_id_for_client(client_id) {
                     if let Some(popup) = &self.app.state.popup_pane {
                         pane_ids.insert(popup.pane_id);
@@ -438,7 +431,7 @@ impl HeadlessServer {
             else {
                 return false;
             };
-            tab.panes.contains_key(&pane_id) && (!tab.zoomed || tab.layout.focused() == pane_id)
+            tab.pane_visible(pane_id)
         })
     }
 

@@ -127,7 +127,8 @@ fn server_restores_while_git_metadata_is_blocked() {
         fs::write(data_dir.join("config.toml"),
             "onboarding = false\n[terminal]\ndefault_shell = \"/bin/sh\"\n[ui.sidebar.spaces]\nrows = [[\"workspace\"]]\n").unwrap();
         support::register_runtime_dir(&runtime_dir);
-        let child = Command::new(env!("CARGO_BIN_EXE_herdr"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_herdr"));
+        command
             .arg("server")
             .env("XDG_CONFIG_HOME", &config_home)
             .env("XDG_RUNTIME_DIR", &runtime_dir)
@@ -139,9 +140,9 @@ fn server_restores_while_git_metadata_is_blocked() {
             .env_remove("HERDR_ENV")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
+            .stderr(Stdio::null());
+        support::hc::configure(&mut command, &runtime_dir);
+        let child = command.spawn().unwrap();
         support::register_spawned_herdr_pid(Some(child.id()));
         let mut herdr = RestoredServer { child, base };
         support::wait_for_socket(&socket_path, Duration::from_secs(5));
@@ -170,7 +171,12 @@ fn server_restores_while_git_metadata_is_blocked() {
             ] {
                 let response = restore_request_with_params(&socket_path, method, params);
                 assert_eq!(
-                    response["error"]["code"], "worktree_operation_in_progress",
+                    response["error"]["code"],
+                    if method == "worktree.remove" {
+                        "unsupported_runtime"
+                    } else {
+                        "worktree_operation_in_progress"
+                    },
                     "{method}: {response}"
                 );
             }

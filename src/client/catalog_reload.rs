@@ -166,7 +166,7 @@ mod tests {
                 let now = Instant::now();
                 let mut state = state();
                 let mut catalog = EndpointCatalog::default();
-                let id = catalog.add_ssh("Build", "build", "main").unwrap();
+                let id = catalog.add_ssh("Build", "build", "main", None).unwrap();
                 let remote = ClientEndpointId::Ssh(id.clone());
                 catalog.select_ssh(&id);
                 state

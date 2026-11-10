@@ -375,7 +375,8 @@ impl App {
         let ws = self.state.workspaces.get(ws_idx)?;
         let pane_state = ws.pane_state(pane_id)?;
         let terminal = self.state.terminals.get(&pane_state.attached_terminal_id)?;
-        if !terminal.is_agent_terminal() {
+        // A submitted launch is an intent, not evidence of an hc-reported agent.
+        if !terminal.is_agent_terminal() && !terminal.managed_agent_launch_pending() {
             return None;
         }
         let pane = self.pane_metadata(ws_idx, pane_id)?;
@@ -421,6 +422,9 @@ impl App {
 }
 
 fn available_shell_name(runtime: &crate::terminal::TerminalRuntime) -> Option<String> {
+    if let Some(snapshot) = runtime.hc_snapshot() {
+        return available_hc_shell_name(&snapshot).map(str::to_owned);
+    }
     #[cfg(test)]
     if runtime.child_pid().is_none() {
         return Some("sh".into());
@@ -428,10 +432,66 @@ fn available_shell_name(runtime: &crate::terminal::TerminalRuntime) -> Option<St
     crate::platform::available_pane_shell(runtime.child_pid()?)
 }
 
+fn available_hc_shell_name(snapshot: &crate::hc::state::RuntimeSnapshot) -> Option<&str> {
+    if !snapshot.connected || !snapshot.attached || snapshot.reported_status().is_some() {
+        return None;
+    }
+    let facts = &snapshot.terminal.facts;
+    if facts.get("state")?.as_str()? != "live" {
+        return None;
+    }
+    const SHELLS: &[&str] = &["sh", "bash", "dash", "zsh", "ksh", "fish"];
+    let foreground = facts.get("foreground")?;
+    let pid = facts.get("pid")?.as_u64().filter(|pid| *pid > 0)?;
+    if foreground.get("pid")?.as_u64()? != pid {
+        return None;
+    }
+    let name = foreground.get("name")?.as_str()?;
+    if !SHELLS.contains(&name) {
+        return None;
+    }
+    let (command, args) = foreground.get("argv")?.as_array()?.split_first()?;
+    let command_name = command
+        .as_str()?
+        .rsplit('/')
+        .next()?
+        .trim_start_matches('-');
+    // macOS runs /bin/sh as bash; source argv selects its shell dialect.
+    if command_name != name && !(command_name == "sh" && matches!(name, "bash" | "dash")) {
+        return None;
+    }
+    // A source-owned interactive shell, not a script, command, or foreground child.
+    args.iter()
+        .all(|arg| {
+            matches!(
+                arg.as_str(),
+                Some(
+                    "-l" | "-i"
+                        | "-il"
+                        | "-li"
+                        | "--login"
+                        | "--interactive"
+                        | "--noprofile"
+                        | "--norc"
+                        | "--no-config"
+                )
+            )
+        })
+        .then_some(command_name)
+}
+
 pub(super) fn runtime_hosts_agent(
     runtime: &crate::terminal::TerminalRuntime,
     expected: crate::detect::Agent,
 ) -> bool {
+    if let Some(snapshot) = runtime.hc_snapshot() {
+        return snapshot
+            .reported_status()
+            .and_then(|status| status.get("app"))
+            .and_then(serde_json::Value::as_str)
+            .and_then(crate::detect::parse_agent_label)
+            == Some(expected);
+    }
     #[cfg(test)]
     if runtime.child_pid().is_none() {
         return true;
@@ -479,6 +539,69 @@ pub(super) enum AgentRenameError {
 #[cfg(test)]
 mod tests {
     use super::valid_agent_name;
+
+    #[test]
+    fn hc_agent_start_uses_only_live_source_shell_facts() {
+        use serde_json::json;
+        let snapshot = crate::hc::state::RuntimeSnapshot {
+            binding: crate::hc::state::TerminalBinding { core_id:"source".into(), address:"t1".into() },
+            terminal: serde_json::from_value(json!({"address":"t1","state":"live","pid":4_000_000_000u64,"foreground":{"pid":4_000_000_000u64,"name":"sh","argv":["/bin/sh","-l"]},"status":null,"reported":false})).unwrap(),
+            connected:true, attached:true, error:None,
+        };
+        assert_eq!(super::available_hc_shell_name(&snapshot), Some("sh"));
+        let mut macos_sh = snapshot.clone();
+        macos_sh.terminal.facts.get_mut("foreground").unwrap()["name"] = json!("bash");
+        assert_eq!(super::available_hc_shell_name(&macos_sh), Some("sh"));
+        for (field, value) in [
+            ("state", json!("finished")),
+            ("pid", json!(null)),
+            ("foreground", json!(null)),
+            (
+                "foreground",
+                json!({"pid":2,"name":"sh","argv":["/bin/sh"]}),
+            ),
+            (
+                "foreground",
+                json!({"pid":4_000_000_000u64,"name":"sh","argv":["/bin/sh","script.sh"]}),
+            ),
+            (
+                "foreground",
+                json!({"pid":4_000_000_000u64,"name":"sh","argv":["/bin/sh","-c","task"]}),
+            ),
+            (
+                "foreground",
+                json!({"pid":4_000_000_000u64,"name":"node","argv":["node"]}),
+            ),
+            (
+                "foreground",
+                json!({"pid":4_000_000_000u64,"name":"sh","argv":[]}),
+            ),
+        ] {
+            let mut invalid = snapshot.clone();
+            invalid.terminal.facts.insert(field.into(), value);
+            assert_eq!(
+                super::available_hc_shell_name(&invalid),
+                None,
+                "{invalid:?}"
+            );
+        }
+        let mut unavailable = snapshot.clone();
+        unavailable.connected = false;
+        assert_eq!(super::available_hc_shell_name(&unavailable), None);
+        unavailable = snapshot.clone();
+        unavailable.attached = false;
+        assert_eq!(super::available_hc_shell_name(&unavailable), None);
+        let mut reported = snapshot;
+        reported
+            .terminal
+            .facts
+            .insert("reported".into(), json!(true));
+        reported
+            .terminal
+            .facts
+            .insert("status".into(), json!({"state":"idle","app":"pi"}));
+        assert_eq!(super::available_hc_shell_name(&reported), None);
+    }
 
     #[test]
     fn agent_names_use_a_small_cli_safe_grammar() {

@@ -76,13 +76,32 @@ pub(crate) struct WorktreeReadData {
 /// An event from a background task to the main loop.
 #[derive(Debug)]
 pub enum AppEvent {
+    HcSourceChanged {
+        generation: u64,
+    },
+    HcRecoveryReady,
+    HcTerminalEffects {
+        enabled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        pane_id: crate::layout::PaneId,
+        bells: u16,
+        clipboard_writes: Vec<Vec<u8>>,
+    },
+    /// Source-owned facts; the registry token fences replaced/detached attachments.
+    HcTerminalUpdated {
+        terminal_id: crate::terminal::TerminalId,
+        runtime_token: std::sync::Arc<()>,
+        snapshot: crate::hc::state::RuntimeSnapshot,
+    },
     /// A pane's child process exited.
     PaneDied {
         pane_id: PaneId,
         exit_reason: crate::platform::ChildExitReason,
     },
     /// A worktree-removal runtime could not be restored normally.
-    WorktreeRuntimeRestoreFailed { pane_id: PaneId, operation_id: u64 },
+    WorktreeRuntimeRestoreFailed {
+        pane_id: PaneId,
+        operation_id: u64,
+    },
     /// Process detection identified an agent before its screen state was confirmed.
     AgentProcessDetected {
         pane_id: PaneId,
@@ -90,7 +109,10 @@ pub enum AppEvent {
         observed_at: Instant,
     },
     /// The current Codex input screen is visible during managed startup.
-    CodexPromptObserved { pane_id: PaneId, ready: bool },
+    CodexPromptObserved {
+        pane_id: PaneId,
+        ready: bool,
+    },
     /// Fallback detector state changed in a pane.
     StateChanged {
         pane_id: PaneId,
@@ -175,10 +197,15 @@ pub enum AppEvent {
     },
     /// A pane child emitted one or more executable BEL characters.
     /// The host-facing process forwards them to its outer terminal.
-    TerminalBell { pane_id: PaneId, count: u16 },
+    TerminalBell {
+        pane_id: PaneId,
+        count: u16,
+    },
     /// A pane child emitted a valid OSC 52 clipboard write. The main loop
     /// re-emits it through herdr's own clipboard writer.
-    ClipboardWrite { content: Vec<u8> },
+    ClipboardWrite {
+        content: Vec<u8>,
+    },
     /// A pane child reported its shell current directory through terminal
     /// metadata such as OSC 7.
     TerminalCwdReported {
@@ -217,4 +244,24 @@ pub enum AppEvent {
     WorktreeRemoveFinished(Box<WorktreeRemoveResult>),
     /// Background worktree discovery completed for an API list/open request.
     WorktreeReadFinished(Box<WorktreeReadResult>),
+}
+
+impl AppEvent {
+    pub(crate) fn legacy_runtime_pane(&self) -> Option<PaneId> {
+        match self {
+            Self::PaneDied { pane_id, .. }
+            | Self::AgentProcessDetected { pane_id, .. }
+            | Self::CodexPromptObserved { pane_id, .. }
+            | Self::StateChanged { pane_id, .. }
+            | Self::HookStateReported { pane_id, .. }
+            | Self::AgentSessionReported { pane_id, .. }
+            | Self::AgentResumeReported { pane_id, .. }
+            | Self::ReportedAgentShellReturned { pane_id, .. }
+            | Self::HookMetadataReported { pane_id, .. }
+            | Self::HookAuthorityCleared { pane_id, .. }
+            | Self::HookAgentReleased { pane_id, .. }
+            | Self::TerminalCwdReported { pane_id, .. } => Some(*pane_id),
+            _ => None,
+        }
+    }
 }

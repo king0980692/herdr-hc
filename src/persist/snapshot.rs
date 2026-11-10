@@ -9,7 +9,8 @@ use crate::terminal::TerminalRuntimeRegistry;
 use crate::workspace::Workspace;
 
 /// Current snapshot format version.
-pub(super) const SNAPSHOT_VERSION: u32 = 3;
+// Older Herdr must reject hc-owned sessions instead of spawning duplicate legacy programs.
+pub(super) const SNAPSHOT_VERSION: u32 = 4;
 
 /// Serializable snapshot of the entire herdr session.
 #[derive(Serialize, Deserialize)]
@@ -100,6 +101,8 @@ pub struct TabSnapshot {
 pub struct PaneSnapshot {
     pub cwd: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hc_binding: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_name: Option<String>,
@@ -111,6 +114,8 @@ pub struct PaneSnapshot {
     pub agent_resume: Option<PaneAgentResumeSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch_argv: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub full_zoom: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -329,7 +334,7 @@ fn capture_tab(
     terminal_runtimes: &TerminalRuntimeRegistry,
 ) -> TabSnapshot {
     let mut panes = HashMap::new();
-    for id in tab.panes.keys() {
+    for (id, pane) in &tab.panes {
         let terminal_id = tab.terminal_id(*id);
         let terminal = terminal_id.and_then(|id| terminals.get(id));
         let cwd = terminal_id
@@ -382,12 +387,14 @@ fn capture_tab(
             id.raw(),
             PaneSnapshot {
                 cwd,
+                hc_binding: terminal.and_then(|terminal| terminal.hc_binding.clone()),
                 label,
                 agent_name,
                 managed_agent_kind,
                 agent_session,
                 agent_resume,
                 launch_argv,
+                full_zoom: pane.full_zoom,
             },
         );
     }
@@ -701,6 +708,8 @@ mod tests {
             0,
             PaneSnapshot {
                 cwd: PathBuf::from("/home/can/Projects/herdr"),
+                hc_binding: None,
+                full_zoom: false,
                 label: None,
                 agent_name: None,
                 managed_agent_kind: None,
@@ -713,6 +722,8 @@ mod tests {
             1,
             PaneSnapshot {
                 cwd: PathBuf::from("/home/can/Projects/website"),
+                hc_binding: None,
+                full_zoom: false,
                 label: Some("website".into()),
                 agent_name: None,
                 managed_agent_kind: None,
@@ -1399,6 +1410,8 @@ mod tests {
             0,
             PaneSnapshot {
                 cwd: PathBuf::from("/tmp/this-directory-does-not-exist-for-herdr-test"),
+                hc_binding: None,
+                full_zoom: false,
                 label: None,
                 agent_name: None,
                 managed_agent_kind: None,
@@ -1413,6 +1426,8 @@ mod tests {
                 cwd: std::env::var("HOME")
                     .map(PathBuf::from)
                     .unwrap_or_else(|_| PathBuf::from("/tmp")),
+                hc_binding: None,
+                full_zoom: false,
                 label: None,
                 agent_name: None,
                 managed_agent_kind: None,

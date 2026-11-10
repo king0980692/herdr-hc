@@ -27,7 +27,7 @@ herdr --version               # 打印版本
 
 - 需要命名会话而非默认会话时，添加 `--session <name>`。
 - 远程连接要使用服务器按键绑定而非本地绑定时，添加 `--remote-keybindings server`。
-- 实验性实时交接需要在 `herdr --remote` 或 `herdr update` 中明确添加 `--handoff`，不是正常设置或连接流程；参见[更新](/zh-cn/docs/install/)。
+- 实验性 `--handoff` 是旧版 Herdr 拥有 PTY 的功能，不用于 hc 恢复或迁移。hc 附加通过重连恢复，不转移 PTY，见[会话状态与恢复](/zh-cn/docs/session-state/)。
 
 状态命令:
 
@@ -53,19 +53,20 @@ herdr api schema --output herdr-api.schema.json
 herdr machine list
 herdr machine add workbox
 herdr machine add workbox --label "Build machine"
+herdr machine add workbox --remote-session agents --hc-path /home/user/.local/opt/hc/bin/hc
 herdr machine rename <profile-id> --label "New name"
 herdr machine disable <profile-id>
 herdr machine enable <profile-id>
 herdr machine remove <profile-id>
 ```
 
-在交互式终端中，`machine add` 会发现运行中的会话，并在有多个会话运行时让你选择。没有运行中的会话或未安装 Herdr 时使用 `default`；如果查询已安装的二进制文件失败，则需要明确选择。添加 `--remote-session <name>` 可跳过发现。非交互式命令会使用 `default`，除非提供该选项。`machine list` 支持可选的 `--json` 供脚本使用。完整流程见[连接机器](/zh-cn/docs/connecting-machines/)。
+`machine add` 通过 SSH 验证已安装的 **hc**，并保存目标与源会话。可选的 `--hc-path <源端绝对路径>` 为设置、状态检查、重连与 TUI 指定并存的源端可执行文件；省略时使用远端 PATH，失败时绝不回退到其他文件。之后直接运行正常的 `herdr`，无需专用启动入口。使用 `--remote-session <name>` 选择 hc 会话；未指定时使用 `default`，不发现远程 Herdr 会话。它绝不安装、启动、更新或替换远程 Herdr，也不会创建终端程序。设置失败时不保存配置。`machine list` 支持可选的 `--json` 供脚本使用。设置与恢复详情见[连接机器](/zh-cn/docs/connecting-machines/)。
 
-`machine add` 会检查远程 Herdr 是否具备所需能力，仅在必要时征得批准后安装或更新，并在保存配置前启动指定会话的后台服务器。只要兼容，发行版本不必一致。需要批准安装或重启时，请在交互式终端中运行；设置失败或取消时不会保存配置。替换运行中的服务器需要明确批准，默认回答为 No；停止服务器会结束其窗格进程。`machine add` 不会隐式启用实验性实时交接。
+每份启用的配置使用独立的**本地**呈现主机。Herdr 在本地渲染，hc 拥有源端程序、终端和明确上报的状态。不会自动接管已有程序，只重新附加已保存的绑定。
 
 更改会自动应用到已打开的本地 Herdr 客户端，通常在一秒内生效。新增或启用的机器在后台连接；重命名不会重新连接。移除或禁用只会断开该机器，远程会话仍会继续运行。移除正在查看的机器会返回 Local；如果 Local 不可用，则显示不可用状态，直到重新连接。每份配置在客户端状态文件中保存一个不透明 ID、标签、SSH 目标、明确的远程会话名和启用状态。Herdr 不保存密码、私钥或其他 SSH 凭据。
 
-`herdr machine status [<label-or-id>] [--json]` 可非交互式检查 SSH 和远程 Herdr。`reachable` 表示本次检查成功，不代表 TUI 当前已连接。在终端运行 `herdr machine reconnect <label-or-id>` 可认证并验证连接，不会安装或更新 Herdr。已打开的客户端会在 30 秒内重试。点击 `! auth` 或 `! error` 会重试；失败后会显示最新错误和 CLI 命令；侧边栏折叠时显示 `!`。平台限制请参阅[恢复 SSH 认证](/zh-cn/docs/connecting-machines/#恢复-ssh-认证)。需要远程设置时使用 `herdr --remote workbox`，仅在命名会话时添加 `--session <name>`。
+`herdr machine status [<label-or-id>] [--json]` 可进行新的非交互式 SSH／hc 检查。`reachable` 表示本次探测结果，不代表 TUI 当前的源端连接状态。在终端运行 `herdr machine reconnect <label-or-id>` 可完成受支持的 SSH 认证并验证 hc，不安装或更新任一运行时。后台尝试严格检查主机密钥，绝不提示交互，退避间隔最大 30 秒，与 SSH 传输超时分别计算。参阅[连接问题](/zh-cn/docs/connecting-machines/#连接问题)。明确使用旧版 `--remote` 连接是独立路径，不是此已保存 hc 路径。
 
 工作区、标签页、窗格 ID 和智能体名称仅在所属服务器内有效。UI 中的选择不会改变 CLI 的目标。使用全局**前缀** `--machine <label-or-id>` 将 API 命令发送到已保存的 SSH 机器：
 
@@ -73,16 +74,16 @@ herdr machine remove <profile-id>
 herdr --machine "Build machine" agent list
 herdr --machine <profile-id> pane list
 herdr --machine "Build machine" agent prompt w1:p1 "review this change"
-herdr --machine "Build machine" worktree create --cwd /srv/project --branch review
+herdr --machine "Build machine" workspace list
 ```
 
-选择器必须是已启用的配置 ID 或唯一标签（区分大小写），不能是任意 SSH 主机名。命令使用保存的远程会话，不能与 `--session` 或 `--remote` 混用。省略前缀时，本地行为保持不变。
+选择器必须是已启用的配置 ID 或唯一标签（区分大小写），不能是任意 SSH 主机名。使用保存的 hc 源会话，不能与 `--session` 或 `--remote` 混用。省略前缀时，保留现有本地会话／socket 行为。
 
-支持 `workspace`、`worktree`、`tab`、`pane`、`notification`、`agent`（不含 `attach` 和本地 `explain --file`）、`api snapshot`、`status server`，以及基于 API 的插件操作（`link`、`unlink`、`enable`、`disable`、`list`、`action`、`log`、`pane`）。服务器操作支持 `stop`、`reload-config`、`agent-manifests`、`reload-agent-manifests`。本地安装和配置、插件安装、会话管理及交互式终端连接不会被转发。
+API 路由包含 `workspace`、`tab`、`pane`、`notification`、`agent`（不含 `attach` 和本地 `explain --file`）、`api snapshot`、`status server` 及基于 API 的插件命令。源端 Git 发现和 `worktree` 文件系统操作暂不可用：会失败，不触碰同名客户端本地路径。本地安装和配置、插件安装、会话管理及交互式终端连接不会被转发。插件定义属于本地呈现主机，其终端命令在源端执行。旧版智能体 manifest 重载不会取代 hc 上报的状态。
 
-请求和响应通过非交互式 SSH 传输 JSON API，API 内容不会被拼接到 SSH shell 命令中。不需要打开 TUI，也不会自动安装、启动或重启服务器。请更新本地 CLI 和远程 Herdr，并确保运行中的服务器 API 协议兼容。认证、连接或版本错误不会回退到 Local，连接失败后也不会自动重试请求。
+不要求打开 TUI。CLI 可以启动该配置的本地呈现主机，并发送绑定到该主机实例的 JSON 请求；hc 控制另经 SSH 传输。主机被替换后会拒绝过期请求。请求、结果不确定的程序启动和输入绝不自动重放。运行时缺失或不兼容会失败，不回退到 Local；请按需明确更新本地 Herdr 或源端 hc。停止呈现主机只会分离查看端，不会终止 hc 程序。
 
-远程命令不会继承调用方的本地窗格 ID，请显式指定远程 ID。`--current` 不能引用本地窗格。远程 worktree 路径必须为绝对路径、`~` 或以 `~/` 开头（由服务器展开）；插件 link 路径必须为绝对路径。每次只操作一台机器，不包含合并列表或通过其他 TUI 连接转发的功能。
+指定机器的命令不会继承本地窗格 ID，请使用该呈现主机提供的明确 ID。`--current` 不能引用调用方的本地窗格。终端 cwd／argv 是源端值，不是客户端文件系统路径。每次只操作一台机器，不包含合并列表或通过其他 TUI 连接转发的功能。
 
 ## Shell 补全
 
@@ -170,6 +171,8 @@ herdr workspace create --cwd ~/project --label api --no-focus
 
 ## Worktree
 
+已保存 hc 源端以 `unsupported_runtime` 拒绝 Git／worktree 文件系统操作，绝不触碰同名本地路径。涉及 hc 窗格时也拒绝旧版进程／respawn 删除路径。以下命令不代表提供源端文件系统实现。
+
 ```bash
 herdr worktree list [--workspace ID | --cwd PATH] [--trust-repository]
 herdr worktree create [--workspace ID | --cwd PATH] [--branch NAME] [--base REF] [--path PATH] [--label TEXT] [--focus] [--no-focus] [--trust-repository]
@@ -223,9 +226,11 @@ herdr pane move <pane_id> --new-workspace [--label TEXT] [--tab-label TEXT] [--f
 herdr pane close <pane_id>
 ```
 
+已保存 SSH 源端程序不会自动获得 `HERDR_PANE_ID`，请使用目标呈现主机提供的明确 ID。本地 hc 启动可以携带调用方上下文，但不能假定它跨 SSH 继承。
+
 接受 `--current` 的窗格命令在 Herdr 窗格内运行时使用调用方的 `HERDR_PANE_ID`。对 `pane split` 而言，显式窗格 ID 或 `--pane ID` 拆分指定窗格。省略目标时，若存在 `HERDR_PANE_ID` 则拆分调用方窗格，否则使用当前聚焦的窗格。`--current` 必须有调用方窗格；缺少 `HERDR_PANE_ID` 时会报错。拆分响应中的新窗格 ID 位于 `.result.pane.pane_id`。
 
-执行 `pane move` 后,后续命令应使用 `.result.move_result.pane.pane_id`。跨工作区移动会改变带工作区前缀的窗格 ID;旧值保留在 `.result.move_result.previous_pane_id`。运行中进程的 `HERDR_PANE_ID`、`HERDR_TAB_ID` 和 `HERDR_WORKSPACE_ID` 保持启动时的值,但 Herdr 会把旧窗格 ID 保留为该终端的别名,所以使用 `--current` 的窗格命令仍能解析它。实时智能体名称也会跟随终端。
+执行 `pane move` 后使用 `.result.move_result.pane.pane_id`，旧公共 ID 为 `.result.move_result.previous_pane_id`。hc core／地址绑定不变，不要从旧继承 ID 推断源路由。智能体呈现别名不是永久源端身份。
 
 读取输出:
 
@@ -252,6 +257,8 @@ herdr pane run <pane_id> <command>
 `pane run` 会遵循当前的 bracketed paste 模式,并把文本和 Enter 作为一个原子操作提交。发送命令时优先用它,而不是 `send-text` 加 `send-keys Enter`;单独的发送操作仍是底层操作,不会提交命令。
 
 从自定义钩子上报智能体状态:
+
+下列智能体、会话／resume、release、清除权威和窗格元数据上报**仅适用于旧运行时**。hc 窗格以 `unsupported_runtime` 拒绝这些请求，包括 `pane report-metadata`。事实与状态必须由源端 hc／OSC 7501 上报；`agent rename` 仍是呈现别名。已保存 SSH 源端程序不会自动获得客户端路由变量和公共窗格 ID，本地启动上下文也不赋予状态权威。
 
 ```bash
 herdr pane report-agent <pane_id> \
@@ -283,9 +290,7 @@ herdr pane release-agent <pane_id> \
 
 `--` 之后的参数是服务器重启后 Herdr 为恢复此会话而运行的命令。第一个参数必须是 `PATH` 上的普通命令名,并且任何参数都不能包含撇号。
 
-当官方集成上报了原生会话引用时,`pane get`、`pane list`、`agent get` 和 `agent list` 会包含一个只读的 `agent_session` 对象。没有存储原生会话引用时,该字段被省略。
-
-当 Herdr 能解析控制窗格的前台进程的 cwd 时,这些命令会包含 `foreground_cwd`。已有的 `cwd` 字段仍然是用于标签和 follow-cwd 行为的窗格/工作区 cwd。
+旧版官方集成可以填充只读的 `agent_session` 字段，但它不是 hc 恢复或就绪信号。hc 窗格的 cwd 和前台事实来自源端快照，不查询客户端本地进程。`cwd` 仍用于窗格／工作区标签和 follow-cwd；路径属于源端文件系统。
 
 上报仅用于展示的窗格元数据,而不接管语义状态:
 
@@ -335,15 +340,17 @@ herdr agent explain --file PATH --agent LABEL [--json|--verbose]
 
 `agent start` 会在现有可用 shell 窗格中启动智能体:交互式 shell 必须占用前台,不能有正在前台运行的命令、编辑器或智能体。拓扑必须单独创建。名称在实时智能体中必须唯一,并匹配 `[a-z][a-z0-9_-]{0,31}`。支持的 kind 是 `pi`、`claude`、`codex`、`gemini`、`cursor`、`devin`、`agy`、`cline`、`omp`、`mastracode`、`opencode`、`copilot`、`kimi`、`kiro`、`droid`、`amp`、`grok`、`hermes`、`kilo`、`qodercli`、`qwen`、`letta`、`maki` 和 `muse`。名称属于当前窗格占用者,在该智能体退出、release 或被替换时清除;短暂的检测不确定不会清除它。
 
+hc 的 shell 准入需要明确的源端事实：源端根进程就是前台交互 shell。请求的 kind、保留的名称或已提交命令只是启动意图，不是智能体身份或就绪证据。明确且可用的源端报告到达前，状态保持 `unknown`。只有提交前的 `agent_pane_busy` 可以重试；提交后超时或断线绝不自动重放启动或输入。
+
 成功的 start 只有在预期智能体占用同一终端并可接受交互输入后才返回。如果启动期间检测到 `blocked`,命令会立即返回 `agent_not_ready`。该名称仍可用于 `agent read` 和 `agent send-keys`,检测变为 `idle` 后即可用于发送提示。默认启动超时是 30000 毫秒;显式值必须大于 3000 且不超过 300000。
 
 `agent prompt` 遵循当前的 bracketed paste 模式，即使智能体处于 working，也会将文本和延迟的 Enter 作为一次有序提交写入。不带 `--wait` 时，成功只确认写入完成，不代表轮次已经开始。在 Windows 上，Codex 在 Enter 前会收到粘贴边界，因此提交不依赖提示大小；调用方的超时包含提交时间。如果智能体已经是 `blocked`,它不会发送输入,而是返回 `agent_blocked`。使用 `--wait` 时,从其他非 working 状态接受的提示必须在提交后的最多五秒内产生可观察的 `working` 或 `blocked` 状态，否则 Herdr 返回 `agent_prompt_stalled`；如果调用方的超时先到期，则返回普通的 `timeout` 错误。这可防止无关的 `idle`、`done` 或会话变化错误地完成等待。观察到活动后，它会等待请求的第一个稳定状态。它不会跟踪单独的轮次。如果智能体已经处于 working，当前轮次的完成可能满足等待。`--until` 用于缩小匹配状态，不带 `--wait` 时会被拒绝。独立的 `agent wait` 在当前状态匹配时立即返回。两者默认匹配 `idle`、`done` 或 `blocked`；需要 `unknown` 时请明确使用 `--until unknown`。
 
-`idle` 和 `done` 都表示可以接受输入。CLI/API 使用服务器的已查看状态：`done` 表示尚未标记为已查看的 idle；显式 `pane focus` / `agent focus` 会标记目标，读取不会。每个 TUI 客户端独立记录它已显示的完成状态，因此其 Done 标记可能与 CLI 或其他客户端不同。`blocked` 表示 Herdr 识别到审批或提问界面。`unknown` 表示智能体存在但无法可靠分类,不代表工作成功。
+hc 的 `idle` 和 `done` 来自源端明确报告；聚焦或读取绝不把源端 `done` 改为 `idle`。源端 `blocked` 或 `error` 映射为 blocked；缺失、断线或无法识别的状态为 `unknown`，不表示完成。客户端关注标记不改变权威来源。只有实时上报的状态转换触发通知，重连快照不重放通知。旧版已查看状态和屏幕分类规则仅适用于旧 Herdr 拥有的 PTY。
 
 `agent send-keys` 发送 `enter`、`up`、`esc`、`ctrl+c` 等逻辑按键。Herdr 会在写入任何字节前验证所有按键。`agent read` 读取解析出的终端流,`agent rename` 为已检测到的智能体命名。
 
-`agent explain` 请求运行中的服务器对屏幕检测所用的同一份底部缓冲区检测快照进行分类,因此实时输出反映服务器生效的清单缓存。因为它使用 `agent.explain` socket 方法,升级 Herdr 后,请先重启或交接到更新后的服务器,再使用实时 explain。用 `--file PATH --agent LABEL` 可以改为在本地解释一份保存的样本。默认输出显示智能体、最终状态、清单来源和版本、匹配的规则及其区域证据,以及任何回退、跳过或警告原因。加 `--verbose` 可以看到可见证据标志、缓存的远程版本、本地覆盖的遮蔽情况、远程更新状态,以及带匹配器和区域证据的完整已评估规则列表。提交问题报告或写测试时加 `--json`。
+`agent explain` 是使用服务器检测快照与生效清单缓存的旧版诊断，不对 hc 的权威上报状态进行分类或覆盖。不要为了改变 hc 状态而重启源端或请求 handoff。用 `--file PATH --agent LABEL` 可以改为在本地解释一份保存的样本。默认输出显示智能体、最终状态、清单来源和版本、匹配的规则及其区域证据,以及任何回退、跳过或警告原因。加 `--verbose` 可以看到可见证据标志、缓存的远程版本、本地覆盖的遮蔽情况、远程更新状态,以及带匹配器和区域证据的完整已评估规则列表。提交问题报告或写测试时加 `--json`。
 
 普通终端、服务器、测试、shell 或底层终端控制,请使用 `pane send-text`、`pane send-keys`、`pane run` 和 `terminal attach`。想带回车提交命令时用 `pane run`。
 
@@ -477,9 +484,9 @@ herdr plugin pane close <pane_id>
 
 `plugin pane open` 要求插件已链接、已启用并与当前平台兼容。它把清单声明的 `[[panes]]` 命令作为 Herdr 管理的终端窗格启动。清单的默认值是 `overlay`,在活动窗格上方打开一个临时的缩放覆盖层。它也可以作为分割、新标签页、缩放窗格,或不改变标签页布局的会话级模态 `popup` 打开。`--width` 和 `--height` 以终端单元格数或 `80%` 这样的百分比设置弹窗外层尺寸;省略时默认为终端大小的一半,过小的值会限制为弹窗最小尺寸。弹窗不是 Herdr 窗格,不会收到 `HERDR_PANE_ID`,也不参与 pane 或智能体 API。非终端的原生插件窗格是之后的能力面。
 
-新窗格使用 `TERM_PROGRAM=herdr` 标识自身，并将 `TERM_PROGRAM_VERSION` 设为 Herdr 的版本。它们保留 `TERM=xterm-256color` 和 `COLORTERM=truecolor`。由于 Herdr 会在调整大小时重排文本,新窗格还会获得 `fish_handle_reflow=0`;继承或显式指定的 `fish_handle_reflow` 值会保留。应用显式的启动环境值之前，Herdr 会移除继承的外层终端会话标记（iTerm2、WezTerm、Kitty、Windows Terminal、tmux、screen 和 Zellij）、iTerm2 的 `LC_TERMINAL` 身份，以及已知的 Claude Code、Codex 和 OMP 会话标记。这可防止新窗格冒充最初启动服务器的终端或智能体会话。API 密钥和显示设置等普通环境变量仍会继承，而不会被连接客户端的环境替换。SSH 智能体转发有自己的重连处理。现有窗格进程不受此清理影响。
+程序通过 hc 执行，已保存 SSH 启动使用源端默认值，本地启动使用本地配置。已保存 SSH 启动不批量复制连接客户端的环境、API 凭据、可执行路径、公共 ID 或 API socket。源端凭据和自身 SSH-agent 环境仍归源端所有。终端插件命令也在源端执行，不复制客户端插件可执行文件或配置；源端缺失命令会失败，不本地回退。
 
-`--env KEY=VALUE` 可以在启动进程的命令上重复使用,只作用于新启动的进程。当与调用方提供的环境变量冲突时,`HERDR_SOCKET_PATH`、`HERDR_BIN_PATH`、`HERDR_ENV`、`HERDR_WORKSPACE_ID`、`HERDR_TAB_ID`、`HERDR_PANE_ID`、`HERDR_PLUGIN_ID`、`HERDR_PLUGIN_ROOT`、`HERDR_PLUGIN_CONFIG_DIR`、`HERDR_PLUGIN_STATE_DIR`、`HERDR_PLUGIN_ENTRYPOINT_ID` 和 `HERDR_PLUGIN_CONTEXT_JSON` 等 Herdr 管理的变量保持权威。
+可重复 `--env KEY=VALUE` 为新启动明确指定值。它们是源端覆盖，不是客户端路径发现；发送密钥前请确认目标。本地 hc 可以携带 Herdr 窗格／插件上下文，已保存 SSH 启动不自动导出这些客户端上下文。任一上下文都不赋予状态权威。
 
 ## 读取来源
 
@@ -493,6 +500,8 @@ herdr plugin pane close <pane_id>
 此表描述读取时的含义。仅对 `pane wait-output` 而言,`recent` 和 `recent-unwrapped` 都搜索 recent 的未折行快照,默认写法仍是 `recent`。
 
 ## 环境变量
+
+此表描述 Herdr／客户端配置和本地启动上下文，不承诺向已保存 SSH 程序注入这些值。特别是 `HERDR_PROCESS_DETECTION` 不启用 hc 状态推测。
 
 | 变量 | 用途 |
 | --- | --- |

@@ -125,8 +125,47 @@ impl TileLayout {
     /// Compute rects for all panes given the available area.
     pub fn panes(&self, area: Rect) -> Vec<PaneInfo> {
         let mut result = Vec::new();
-        collect_panes(&self.root, area, self.focus, &mut result);
+        collect_panes(&self.root, area, self.focus, None, &mut result);
         result
+    }
+
+    /// Collapse top/bottom splits on the focus path, retaining sibling columns.
+    pub fn zoomed_panes(&self, area: Rect) -> Vec<PaneInfo> {
+        let path = self.focus_path();
+        let mut result = Vec::new();
+        collect_panes(&self.root, area, self.focus, Some(&path), &mut result);
+        result
+    }
+
+    pub fn zoomed_splits(&self, area: Rect) -> Vec<SplitBorder> {
+        let focus_path = self.focus_path();
+        let mut result = Vec::new();
+        collect_splits(
+            &self.root,
+            area,
+            &mut Vec::new(),
+            Some(&focus_path),
+            &mut result,
+        );
+        result
+    }
+
+    /// Allocation-free visibility query for output routing and hidden-pane early exits.
+    pub fn zoomed_pane_visible(&self, pane: PaneId) -> bool {
+        zoom_visibility(&self.root, self.focus, pane).1
+    }
+
+    pub fn zoomed_pane_ids(&self) -> Vec<PaneId> {
+        let path = self.focus_path();
+        let mut ids = Vec::new();
+        collect_ids(&self.root, Some(&path), &mut ids);
+        ids
+    }
+
+    fn focus_path(&self) -> Vec<bool> {
+        let mut path = Vec::new();
+        find_pane_path(&self.root, self.focus, &mut path);
+        path
     }
 
     /// Compute pane rects as they will be after splitting `target`, without
@@ -155,7 +194,7 @@ impl TileLayout {
     /// Collect all split boundaries for mouse drag resize.
     pub fn splits(&self, area: Rect) -> Vec<SplitBorder> {
         let mut result = Vec::new();
-        collect_splits(&self.root, area, &mut Vec::new(), &mut result);
+        collect_splits(&self.root, area, &mut Vec::new(), None, &mut result);
         result
     }
 
@@ -343,7 +382,7 @@ impl TileLayout {
 
     pub fn pane_ids(&self) -> Vec<PaneId> {
         let mut ids = Vec::new();
-        collect_ids(&self.root, &mut ids);
+        collect_ids(&self.root, None, &mut ids);
         ids
     }
 
@@ -499,7 +538,13 @@ fn count_panes(node: &Node) -> usize {
     }
 }
 
-fn collect_panes(node: &Node, area: Rect, focus: PaneId, result: &mut Vec<PaneInfo>) {
+fn collect_panes(
+    node: &Node,
+    area: Rect,
+    focus: PaneId,
+    zoom_path: Option<&[bool]>,
+    result: &mut Vec<PaneInfo>,
+) {
     match node {
         Node::Pane(id) => {
             result.push(PaneInfo {
@@ -518,14 +563,27 @@ fn collect_panes(node: &Node, area: Rect, focus: PaneId, result: &mut Vec<PaneIn
             first,
             second,
         } => {
+            if *direction == Direction::Vertical {
+                if let Some((&second_child, rest)) = zoom_path.and_then(|path| path.split_first()) {
+                    let child = if second_child { second } else { first };
+                    collect_panes(child, area, focus, Some(rest), result);
+                    return;
+                }
+            }
             let (a, b) = split_rect(area, *direction, *ratio);
-            collect_panes(first, a, focus, result);
-            collect_panes(second, b, focus, result);
+            collect_panes(first, a, focus, child_zoom_path(zoom_path, false), result);
+            collect_panes(second, b, focus, child_zoom_path(zoom_path, true), result);
         }
     }
 }
 
-fn collect_splits(node: &Node, area: Rect, path: &mut Vec<bool>, result: &mut Vec<SplitBorder>) {
+fn collect_splits(
+    node: &Node,
+    area: Rect,
+    path: &mut Vec<bool>,
+    zoom_path: Option<&[bool]>,
+    result: &mut Vec<SplitBorder>,
+) {
     if let Node::Split {
         direction,
         ratio,
@@ -533,6 +591,15 @@ fn collect_splits(node: &Node, area: Rect, path: &mut Vec<bool>, result: &mut Ve
         second,
     } = node
     {
+        if *direction == Direction::Vertical {
+            if let Some((&second_child, rest)) = zoom_path.and_then(|path| path.split_first()) {
+                path.push(second_child);
+                let child = if second_child { second } else { first };
+                collect_splits(child, area, path, Some(rest), result);
+                path.pop();
+                return;
+            }
+        }
         let (a, b) = split_rect(area, *direction, *ratio);
         let pos = match direction {
             Direction::Horizontal => a.x + a.width,
@@ -546,20 +613,81 @@ fn collect_splits(node: &Node, area: Rect, path: &mut Vec<bool>, result: &mut Ve
             path: path.clone(),
         });
         path.push(false);
-        collect_splits(first, a, path, result);
+        collect_splits(first, a, path, child_zoom_path(zoom_path, false), result);
         path.pop();
         path.push(true);
-        collect_splits(second, b, path, result);
+        collect_splits(second, b, path, child_zoom_path(zoom_path, true), result);
         path.pop();
     }
 }
 
-fn collect_ids(node: &Node, ids: &mut Vec<PaneId>) {
+fn child_zoom_path(path: Option<&[bool]>, second: bool) -> Option<&[bool]> {
+    let (&child, rest) = path?.split_first()?;
+    (child == second).then_some(rest)
+}
+
+fn find_pane_path(node: &Node, pane: PaneId, path: &mut Vec<bool>) -> bool {
+    match node {
+        Node::Pane(id) => *id == pane,
+        Node::Split { first, second, .. } => {
+            path.push(false);
+            if find_pane_path(first, pane, path) {
+                return true;
+            }
+            if let Some(last) = path.last_mut() {
+                *last = true;
+            }
+            if find_pane_path(second, pane, path) {
+                return true;
+            }
+            path.pop();
+            false
+        }
+    }
+}
+
+// Returns (contains focus, target remains visible) without geometry or allocation.
+fn zoom_visibility(node: &Node, focus: PaneId, target: PaneId) -> (bool, bool) {
+    match node {
+        Node::Pane(id) => (*id == focus, *id == target),
+        Node::Split {
+            direction,
+            first,
+            second,
+            ..
+        } => {
+            let (first_focus, first_visible) = zoom_visibility(first, focus, target);
+            let (second_focus, second_visible) = zoom_visibility(second, focus, target);
+            let visible = if *direction == Direction::Vertical && first_focus {
+                first_visible
+            } else if *direction == Direction::Vertical && second_focus {
+                second_visible
+            } else {
+                first_visible || second_visible
+            };
+            (first_focus || second_focus, visible)
+        }
+    }
+}
+
+fn collect_ids(node: &Node, zoom_path: Option<&[bool]>, ids: &mut Vec<PaneId>) {
     match node {
         Node::Pane(id) => ids.push(*id),
-        Node::Split { first, second, .. } => {
-            collect_ids(first, ids);
-            collect_ids(second, ids);
+        Node::Split {
+            direction,
+            first,
+            second,
+            ..
+        } => {
+            if *direction == Direction::Vertical {
+                if let Some((&second_child, rest)) = zoom_path.and_then(|path| path.split_first()) {
+                    let child = if second_child { second } else { first };
+                    collect_ids(child, Some(rest), ids);
+                    return;
+                }
+            }
+            collect_ids(first, child_zoom_path(zoom_path, false), ids);
+            collect_ids(second, child_zoom_path(zoom_path, true), ids);
         }
     }
 }
@@ -766,6 +894,101 @@ mod tests {
         let resized = layout.splits(area);
         assert_eq!(resized[1].pos, splits[1].pos);
         assert_eq!(resized[2].pos, 47);
+    }
+
+    #[test]
+    fn vertical_zoom_preserves_columns_and_unfocused_subtrees() {
+        let area = Rect::new(3, 7, 120, 80);
+        let (mut layout, top) = TileLayout::new();
+        let sidebar = layout.split_pane(top, Direction::Horizontal, 0.75).unwrap();
+        let bottom = layout.split_pane(top, Direction::Vertical, 0.4).unwrap();
+        let sidebar_bottom = layout
+            .split_pane(sidebar, Direction::Vertical, 0.25)
+            .unwrap();
+        let original = layout
+            .panes(area)
+            .iter()
+            .map(|p| (p.id, p.rect))
+            .collect::<Vec<_>>();
+        for (focused, hidden) in [(top, bottom), (bottom, top)] {
+            layout.focus_pane(focused);
+            let panes = layout.zoomed_panes(area);
+            assert_eq!(
+                panes.iter().map(|p| (p.id, p.rect)).collect::<Vec<_>>(),
+                [
+                    (focused, Rect::new(3, 7, 90, 80)),
+                    (sidebar, Rect::new(93, 7, 30, 20)),
+                    (sidebar_bottom, Rect::new(93, 27, 30, 60)),
+                ]
+            );
+            assert_eq!(layout.zoomed_pane_ids(), [focused, sidebar, sidebar_bottom]);
+            for pane in [top, bottom, sidebar, sidebar_bottom, PaneId::alloc()] {
+                assert_eq!(
+                    layout.zoomed_pane_visible(pane),
+                    panes.iter().any(|p| p.id == pane)
+                );
+            }
+            assert!(!layout.zoomed_pane_visible(hidden));
+            let splits = layout.zoomed_splits(area);
+            assert_eq!(splits.len(), 2);
+            assert_eq!(splits[0].path, Vec::<bool>::new());
+            assert_eq!(splits[1].path, [true]);
+            assert_eq!(splits[1].area, Rect::new(93, 7, 30, 80));
+            assert_eq!(
+                layout
+                    .panes(area)
+                    .iter()
+                    .map(|p| (p.id, p.rect))
+                    .collect::<Vec<_>>(),
+                original
+            );
+        }
+        layout.focus_pane(sidebar);
+        assert_eq!(layout.zoomed_pane_ids(), [top, bottom, sidebar]);
+        assert_eq!(layout.zoomed_panes(area)[2].rect, Rect::new(93, 7, 30, 80));
+    }
+
+    #[test]
+    fn vertical_zoom_keeps_original_divider_paths_below_collapsed_ancestors() {
+        let area = Rect::new(0, 0, 100, 40);
+        let (mut layout, top) = TileLayout::new();
+        let bottom = layout.split_pane(top, Direction::Vertical, 0.5).unwrap();
+        let right = layout
+            .split_pane(bottom, Direction::Horizontal, 0.6)
+            .unwrap();
+        let nested = layout.split_pane(bottom, Direction::Vertical, 0.5).unwrap();
+        layout.focus_pane(nested);
+        assert_eq!(layout.zoomed_pane_ids(), [nested, right]);
+        let splits = layout.zoomed_splits(area);
+        assert_eq!(splits.len(), 1);
+        assert_eq!(splits[0].path, [true]);
+        assert_eq!(splits[0].area, area);
+        assert_eq!(splits[0].pos, 60);
+        assert!(layout.set_ratio_at(&splits[0].path, 0.7));
+        assert_eq!(layout.zoomed_panes(area)[0].rect, Rect::new(0, 0, 70, 40));
+        assert_eq!(layout.splits(area).len(), 3);
+    }
+
+    #[test]
+    fn vertical_zoom_single_pane_and_horizontal_only_are_unchanged() {
+        let area = Rect::new(1, 2, 80, 24);
+        let (mut layout, root) = TileLayout::new();
+        assert_eq!(layout.zoomed_pane_ids(), [root]);
+        assert!(layout.zoomed_splits(area).is_empty());
+        let right = layout.split_pane(root, Direction::Horizontal, 0.7).unwrap();
+        assert_eq!(layout.zoomed_pane_ids(), [root, right]);
+        assert_eq!(
+            layout
+                .zoomed_panes(area)
+                .iter()
+                .map(|p| p.rect)
+                .collect::<Vec<_>>(),
+            layout
+                .panes(area)
+                .iter()
+                .map(|p| p.rect)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
