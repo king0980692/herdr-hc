@@ -5,6 +5,8 @@ on:
     types: [opened, synchronize, reopened]
   push:
     branches: [master, windows]
+  # The private-fork herdr-hc release runs this suite before building.
+  workflow_call:
 
 permissions:
   contents: read
