@@ -158,6 +158,8 @@ CLI 的 `herdr api snapshot` 会把当前 `session.snapshot` 响应输出为 JSO
 
 `pane.process_info` 返回窗格的 shell pid、可用时的前台进程组 id,以及平台暴露时带有 pid、名称、argv/cmdline 和 cwd 的前台进程。
 
+对于 hc 拥有的窗格,这些是来源 core 自己报告的事实,而不是本地进程检查:`shell_pid` 是 hc 启动的程序,`foreground_processes` 只包含前台进程组的组长。hc 大约每秒读取两次前台程序,因此新程序会短暂地只有 `shell_pid` 而没有前台信息。只有 Local 来源会报告这些信息;已保存或共享来源的 PID 指向另一台机器上的进程,所以只返回 `pane_id`。
+
 `layout.export` 返回可移植的标签页布局树。省略 `tab_id` 和 `pane_id` 导出活动标签页,传 `tab_id` 导出该标签页,或传 `pane_id` 导出包含该窗格的标签页。
 
 ```json

@@ -86,6 +86,26 @@ fn wait_for_path(path: &Path, timeout: Duration) {
     panic!("path did not appear at {}", path.display());
 }
 
+#[cfg(not(target_os = "macos"))]
+/// Waits until the source reports the pane's own shell as its foreground program.
+/// The socket API does not retry a busy `agent.start`; its callers wait like this.
+fn wait_for_pane_shell(socket_path: &Path, pane_id: &str) {
+    let mut last = serde_json::Value::Null;
+    assert!(
+        support::wait_until(Duration::from_secs(5), Duration::from_millis(25), || {
+            last = support::hc::request(
+                socket_path,
+                "pane.process_info",
+                serde_json::json!({ "pane_id": pane_id }),
+            );
+            let info = &last["result"]["process_info"];
+            info["shell_pid"].is_number()
+                && info["foreground_process_group_id"] == info["shell_pid"]
+        }),
+        "pane shell never became the foreground program: {last}"
+    );
+}
+
 fn spawn_herdr(config_home: &Path, runtime_dir: &Path, socket_path: &Path) -> SpawnedHerdr {
     spawn_herdr_with_options(config_home, runtime_dir, socket_path, None, "/bin/sh")
 }
@@ -401,7 +421,7 @@ contains = ["server-reload-marker"]
 
 #[cfg(target_os = "linux")]
 #[test]
-fn shutdown_preserves_session_after_shell_is_signaled() {
+fn shutdown_clears_session_after_the_only_program_is_signaled() {
     let _lock = test_lock();
     let base = unique_test_dir();
     let config_home = base.join("config");
@@ -421,15 +441,10 @@ fn shutdown_preserves_session_after_shell_is_signaled() {
     let pane_id = created["result"]["root_pane"]["pane_id"]
         .as_str()
         .expect("root pane id");
-    let process_info = send_request(
-        &socket_path,
-        &format!(
-            r#"{{"id":"process","method":"pane.process_info","params":{{"pane_id":"{pane_id}"}}}}"#
-        ),
-    );
-    let shell_pid = process_info["result"]["process_info"]["shell_pid"]
-        .as_u64()
-        .expect("shell pid") as libc::pid_t;
+    // The source core owns the program, so its record is the authority for the PID.
+    let terminals = support::hc::terminals(&runtime_dir);
+    assert_eq!(terminals.len(), 1, "{pane_id}: {terminals:?}");
+    let shell_pid = terminals[0]["pid"].as_u64().expect("shell pid") as libc::pid_t;
 
     assert_eq!(unsafe { libc::kill(shell_pid, libc::SIGHUP) }, 0);
 
@@ -449,6 +464,19 @@ fn shutdown_preserves_session_after_shell_is_signaled() {
         thread::sleep(Duration::from_millis(20));
     }
 
+    // An hc program that ends is gone: its pane and workspace close, and nothing
+    // is launched in its place.
+    let workspaces = send_request(
+        &socket_path,
+        r#"{"id":"workspaces","method":"workspace.list","params":{}}"#,
+    );
+    assert_eq!(workspaces["result"]["workspaces"], serde_json::json!([]));
+    let terminals = support::hc::terminals(&runtime_dir);
+    assert!(
+        terminals.iter().all(|terminal| terminal["state"] != "live"),
+        "no replacement program may be started: {terminals:?}"
+    );
+
     let stopped = send_request(
         &socket_path,
         r#"{"id":"stop","method":"server.stop","params":{}}"#,
@@ -456,17 +484,9 @@ fn shutdown_preserves_session_after_shell_is_signaled() {
     assert_eq!(stopped["result"]["type"], "ok");
     child.child.wait().expect("server should stop cleanly");
 
-    let session: serde_json::Value = serde_json::from_slice(
-        &fs::read(config_home.join("herdr-dev/session.json")).expect("saved session"),
-    )
-    .expect("valid session json");
-    assert_eq!(session["workspaces"].as_array().map(Vec::len), Some(1));
-    assert_eq!(
-        session["workspaces"][0]["tabs"][0]["panes"]
-            .as_object()
-            .map(serde_json::Map::len),
-        Some(1)
-    );
+    // With no layout left, shutdown clears the session instead of saving a pane
+    // that a later start could only restore as unavailable.
+    assert!(!config_home.join("herdr-dev/session.json").exists());
 
     cleanup_spawned_herdr(child, base);
 }
@@ -858,7 +878,7 @@ fn pane_info_reports_foreground_cwd_without_changing_pane_cwd() {
         .unwrap()
         .to_string();
     let command = format!(
-        "/bin/sh -c 'cd {} && printf %s $$ > {} && touch {} && sleep 30; :'",
+        "/bin/sh -c 'cd {} && printf %s $$ > {} && printf \"\\033]7501;state=working:app=probe\\007\" && touch {} && sleep 30; :'",
         foreground.display(),
         pid_file.display(),
         marker.display()
@@ -892,12 +912,20 @@ fn pane_info_reports_foreground_cwd_without_changing_pane_cwd() {
         foreground
     );
 
-    let pane = send_request(
-        &socket_path,
-        &format!(
-            r#"{{"id":"fg_pane","method":"pane.get","params":{{"pane_id":"{}"}}}}"#,
-            pane_id
-        ),
+    // The source reads the foreground program about twice a second.
+    let mut pane = serde_json::Value::Null;
+    assert!(
+        support::wait_until(Duration::from_secs(5), Duration::from_millis(25), || {
+            pane = send_request(
+                &socket_path,
+                &format!(
+                    r#"{{"id":"fg_pane","method":"pane.get","params":{{"pane_id":"{}"}}}}"#,
+                    pane_id
+                ),
+            );
+            pane["result"]["pane"]["foreground_cwd"] == foreground.display().to_string()
+        }),
+        "source foreground cwd was not reported: {pane}"
     );
     assert_eq!(pane["result"]["pane"]["cwd"], base.display().to_string());
     assert_eq!(
@@ -939,11 +967,8 @@ fn pane_info_reports_foreground_cwd_without_changing_pane_cwd() {
     assert!(foreground_shell.get("argv0").is_none());
     assert!(foreground_shell["argv"].is_array());
     assert!(foreground_shell["cmdline"].is_string());
-    let foreground_sleep = foreground_processes
-        .iter()
-        .find(|process| process["name"] == "sleep" && process["pid"] != foreground_pid)
-        .expect("foreground sleep child should be reported separately");
-    assert_eq!(foreground_sleep["cwd"], foreground.display().to_string());
+    // The source reports the foreground group's leader, not its children.
+    assert_eq!(foreground_processes.len(), 1);
 
     let reported = send_request(
         &socket_path,
@@ -952,7 +977,7 @@ fn pane_info_reports_foreground_cwd_without_changing_pane_cwd() {
             pane_id
         ),
     );
-    assert_eq!(reported["result"]["type"], "ok");
+    assert_eq!(reported["error"]["code"], "unsupported_runtime");
 
     let agents = send_request(
         &socket_path,
@@ -1078,12 +1103,20 @@ fn new_terminal_cwd_follow_ignores_nonleader_group_member_cwd() {
         helper_cwd
     );
 
-    let pane = send_request(
-        &socket_path,
-        &format!(
-            r#"{{"id":"member_pane","method":"pane.get","params":{{"pane_id":"{}"}}}}"#,
-            pane_id
-        ),
+    // The source reports its foreground program asynchronously.
+    let mut pane = serde_json::Value::Null;
+    assert!(
+        support::wait_until(Duration::from_secs(5), Duration::from_millis(25), || {
+            pane = send_request(
+                &socket_path,
+                &format!(
+                    r#"{{"id":"member_pane","method":"pane.get","params":{{"pane_id":"{}"}}}}"#,
+                    pane_id
+                ),
+            );
+            pane["result"]["pane"]["foreground_cwd"].is_string()
+        }),
+        "source foreground cwd was not reported: {pane}"
     );
     assert_eq!(pane["result"]["pane"]["cwd"], base.display().to_string());
     // Regression for issue #3270: the foreground group leader's cwd is
@@ -1163,6 +1196,7 @@ fn agent_start_targets_existing_pane_over_socket() {
         .as_str()
         .unwrap()
         .to_string();
+    wait_for_pane_shell(&socket_path, &pane_id);
 
     let started = send_request(
         &socket_path,
@@ -1447,7 +1481,7 @@ fn events_subscribe_streams_workspace_tab_and_agent_events() {
     let fake_pi = bin_dir.join("pi");
     fs::write(
         &fake_pi,
-        "#!/bin/sh\nprintf 'Working...\\n'\nsleep 1\nprintf '\\033[2J\\033[Hdone\\n'\n",
+        "#!/bin/sh\nprintf '\\033]7501;state=working:app=pi\\007Working...\\n'\nsleep 1\nprintf '\\033]7501;state=idle:app=pi\\007\\033[2J\\033[Hdone\\n'\nread -r hold\n",
     )
     .unwrap();
     #[cfg(unix)]
@@ -1745,41 +1779,21 @@ fn events_subscribe_streams_tab_and_workspace_close_events() {
 }
 
 #[cfg(not(target_os = "macos"))]
-#[cfg(not(target_os = "macos"))]
-#[test]
-fn pane_report_agent_updates_effective_state() {
+/// On an hc-owned pane the source's own report stays in force: every legacy
+/// reporting method is rejected and leaves the projected status untouched.
+fn assert_hc_pane_rejects_legacy_methods(calls: Vec<(&str, serde_json::Value)>) {
     let _lock = test_lock();
     let base = unique_test_dir();
     let config_home = base.join("config");
     let runtime_dir = base.join("runtime");
     let socket_path = runtime_dir.join("herdr.sock");
-    let bin_dir = base.join("bin");
 
-    fs::create_dir_all(&bin_dir).unwrap();
-    let fake_pi = bin_dir.join("pi");
-    fs::write(&fake_pi, "#!/bin/sh\nprintf 'Working...\\n'\nsleep 3\n").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&fake_pi).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&fake_pi, perms).unwrap();
-    }
-
-    let inherited_path = std::env::var("PATH").unwrap_or_default();
-    let path_override = format!("{}:{}", bin_dir.display(), inherited_path);
-    let child = spawn_herdr_with_path(
-        &config_home,
-        &runtime_dir,
-        &socket_path,
-        Some(Path::new(&path_override)),
-    );
+    let child = spawn_herdr(&config_home, &runtime_dir, &socket_path);
     wait_for_socket(&socket_path, Duration::from_secs(5));
-
     let created = send_request(
         &socket_path,
         &format!(
-            r#"{{"id":"req_hook_1","method":"workspace.create","params":{{"cwd":"{}","focus":true}}}}"#,
+            r#"{{"id":"legacy_ws","method":"workspace.create","params":{{"cwd":"{}","focus":true}}}}"#,
             base.display()
         ),
     );
@@ -1787,180 +1801,48 @@ fn pane_report_agent_updates_effective_state() {
         .as_str()
         .unwrap()
         .to_string();
+    support::hc::report_agent(&socket_path, &pane_id, "pi", "working");
 
-    let send_pi = send_request(
-        &socket_path,
-        &format!(
-            r#"{{"id":"req_hook_2","method":"pane.send_text","params":{{"pane_id":"{}","text":"pi"}}}}"#,
-            pane_id
-        ),
-    );
-    assert_eq!(send_pi["result"]["type"], "ok");
-    let send_enter = send_request(
-        &socket_path,
-        &format!(
-            r#"{{"id":"req_hook_3","method":"pane.send_keys","params":{{"pane_id":"{}","keys":["Enter"]}}}}"#,
-            pane_id
-        ),
-    );
-    assert_eq!(send_enter["result"]["type"], "ok");
-
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        let pane = send_request(
-            &socket_path,
-            &format!(
-                r#"{{"id":"req_hook_detect","method":"pane.get","params":{{"pane_id":"{}"}}}}"#,
-                pane_id
-            ),
+    for (method, mut params) in calls {
+        params["pane_id"] = pane_id.clone().into();
+        let rejected = support::hc::request(&socket_path, method, params);
+        assert_eq!(
+            rejected["error"]["code"], "unsupported_runtime",
+            "{method}: {rejected}"
         );
-        if pane["result"]["pane"]["agent"] == "pi" {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "pi agent was never detected: {pane}"
-        );
-        thread::sleep(Duration::from_millis(100));
     }
-
-    let session_path = base.join("pi-session.jsonl");
-    let session = send_request(
+    let pane = support::hc::request(
         &socket_path,
-        &format!(
-            r#"{{"id":"req_hook_session","method":"pane.report_agent_session","params":{{"pane_id":"{}","source":"herdr:pi","agent":"pi","agent_session_path":"{}","session_start_source":"startup","seq":1}}}}"#,
-            pane_id,
-            session_path.display()
-        ),
-    );
-    assert_eq!(session["result"]["type"], "ok");
-    let hook = send_request(
-        &socket_path,
-        &format!(
-            r#"{{"id":"req_hook_5","method":"pane.report_agent","params":{{"pane_id":"{}","source":"herdr:pi","agent":"pi","state":"working","message":"thinking","agent_session_path":"{}","seq":2}}}}"#,
-            pane_id,
-            session_path.display()
-        ),
-    );
-    assert_eq!(hook["result"]["type"], "ok");
-
-    let pane = send_request(
-        &socket_path,
-        &format!(
-            r#"{{"id":"req_hook_6","method":"pane.get","params":{{"pane_id":"{}"}}}}"#,
-            pane_id
-        ),
+        "pane.get",
+        serde_json::json!({ "pane_id": pane_id }),
     );
     assert_eq!(pane["result"]["pane"]["agent"], "pi");
     assert_eq!(pane["result"]["pane"]["agent_status"], "working");
-    assert_eq!(
-        pane["result"]["pane"]["agent_session"]["source"],
-        "herdr:pi"
-    );
-    assert_eq!(pane["result"]["pane"]["agent_session"]["agent"], "pi");
-    assert_eq!(pane["result"]["pane"]["agent_session"]["kind"], "path");
-    assert_eq!(
-        pane["result"]["pane"]["agent_session"]["value"],
-        session_path.display().to_string()
-    );
-
-    let metadata = send_request(
-        &socket_path,
-        &format!(
-            r#"{{"id":"req_hook_metadata","method":"pane.report_metadata","params":{{"pane_id":"{}","source":"user:pi-display","agent":"pi","applies_to_source":"herdr:pi","title":"Refactor auth","display_agent":"Pi auth","state_labels":{{"working":"deep in the mines"}},"tokens":{{"summary":"reviewing auth","model":"opus"}}}}}}"#,
-            pane_id
-        ),
-    );
-    assert_eq!(metadata["result"]["type"], "ok");
-
-    let pane = send_request(
-        &socket_path,
-        &format!(
-            r#"{{"id":"req_hook_metadata_get","method":"pane.get","params":{{"pane_id":"{}"}}}}"#,
-            pane_id
-        ),
-    );
-    assert_eq!(pane["result"]["pane"]["agent"], "pi");
-    assert_eq!(pane["result"]["pane"]["agent_status"], "working");
-    assert_eq!(pane["result"]["pane"]["title"], "Refactor auth");
-    assert_eq!(pane["result"]["pane"]["display_agent"], "Pi auth");
-    assert_eq!(
-        pane["result"]["pane"]["state_labels"]["working"],
-        "deep in the mines"
-    );
-    assert_eq!(
-        pane["result"]["pane"]["tokens"]["summary"],
-        "reviewing auth"
-    );
-    assert_eq!(pane["result"]["pane"]["tokens"]["model"], "opus");
-
-    let agent = send_request(
-        &socket_path,
-        &format!(
-            r#"{{"id":"req_hook_metadata_agent","method":"agent.get","params":{{"target":"{}"}}}}"#,
-            pane_id
-        ),
-    );
-    assert_eq!(agent["result"]["agent"]["agent"], "pi");
-    assert_eq!(
-        agent["result"]["agent"]["agent_session"]["source"],
-        "herdr:pi"
-    );
-    assert_eq!(agent["result"]["agent"]["agent_session"]["agent"], "pi");
-    assert_eq!(agent["result"]["agent"]["agent_session"]["kind"], "path");
-    assert_eq!(
-        agent["result"]["agent"]["agent_session"]["value"],
-        session_path.display().to_string()
-    );
-    assert_eq!(agent["result"]["agent"]["title"], "Refactor auth");
-    assert_eq!(agent["result"]["agent"]["display_agent"], "Pi auth");
-    assert_eq!(
-        agent["result"]["agent"]["state_labels"]["working"],
-        "deep in the mines"
-    );
-    assert_eq!(
-        agent["result"]["agent"]["tokens"]["summary"],
-        "reviewing auth"
-    );
-    assert_eq!(agent["result"]["agent"]["tokens"]["model"], "opus");
-
-    let blank_source_metadata = send_request(
-        &socket_path,
-        &format!(
-            r#"{{"id":"req_hook_metadata_blank_source","method":"pane.report_metadata","params":{{"pane_id":"{}","source":"   ","title":"x"}}}}"#,
-            pane_id
-        ),
-    );
-    assert_eq!(
-        blank_source_metadata["error"]["code"],
-        "invalid_metadata_source"
-    );
-
-    let blank_title_clear_metadata = send_request(
-        &socket_path,
-        &format!(
-            r#"{{"id":"req_hook_metadata_blank_title_clear","method":"pane.report_metadata","params":{{"pane_id":"{}","source":"user:pi-display","title":"   ","clear_title":true}}}}"#,
-            pane_id
-        ),
-    );
-    assert_eq!(
-        blank_title_clear_metadata["error"]["code"],
-        "invalid_metadata_request"
-    );
-
-    let blank_authority_source_metadata = send_request(
-        &socket_path,
-        &format!(
-            r#"{{"id":"req_hook_metadata_blank_authority_source","method":"pane.report_metadata","params":{{"pane_id":"{}","source":"user:pi-display","applies_to_source":"   ","title":"x"}}}}"#,
-            pane_id
-        ),
-    );
-    assert_eq!(
-        blank_authority_source_metadata["error"]["code"],
-        "invalid_metadata_source"
-    );
+    assert!(pane["result"]["pane"]["title"].is_null());
 
     cleanup_spawned_herdr(child, base);
+}
+
+#[cfg(not(target_os = "macos"))]
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn hc_pane_rejects_legacy_agent_and_metadata_reports() {
+    // hc owns status: a hook report can neither override the source's state nor
+    // attach a session or display metadata to it.
+    assert_hc_pane_rejects_legacy_methods(vec![
+        (
+            "pane.report_agent",
+            serde_json::json!({"source":"herdr:pi","agent":"pi","state":"idle","message":"thinking","seq":2}),
+        ),
+        (
+            "pane.report_agent_session",
+            serde_json::json!({"source":"herdr:pi","agent":"pi","agent_session_path":"/tmp/pi-session.jsonl","session_start_source":"startup","seq":1}),
+        ),
+        (
+            "pane.report_metadata",
+            serde_json::json!({"source":"user:pi-display","agent":"pi","applies_to_source":"herdr:pi","title":"Refactor auth","display_agent":"Pi auth"}),
+        ),
+    ]);
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1993,7 +1875,9 @@ fn pane_report_agent_accepts_unknown_agent_labels() {
             pane_id
         ),
     );
-    assert_eq!(hook["result"]["type"], "ok");
+    assert_eq!(hook["error"]["code"], "unsupported_runtime");
+    // The source's own report carries the label; Herdr needs no manifest for it.
+    support::hc::report_agent(&socket_path, &pane_id, "hermes", "working");
 
     let pane = send_request(
         &socket_path,
@@ -2010,283 +1894,24 @@ fn pane_report_agent_accepts_unknown_agent_labels() {
 
 #[cfg(not(target_os = "macos"))]
 #[test]
-fn official_release_waits_for_confirmed_process_exit() {
-    let _lock = test_lock();
-    let base = unique_test_dir();
-    let config_home = base.join("config");
-    let runtime_dir = base.join("runtime");
-    let socket_path = runtime_dir.join("herdr.sock");
-    let bin_dir = base.join("bin");
-
-    fs::create_dir_all(&bin_dir).unwrap();
-    let fake_pi = bin_dir.join("pi");
-    let stop_file = base.join("pi-stop");
-    fs::write(
-        &fake_pi,
-        format!(
-            "#!/bin/sh\nprintf 'Working...\\n'\nwhile [ ! -f '{}' ]; do sleep 0.05; done\n",
-            stop_file.display()
-        ),
-    )
-    .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&fake_pi).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&fake_pi, perms).unwrap();
-    }
-
-    let inherited_path = std::env::var("PATH").unwrap_or_default();
-    let path_override = format!("{}:{}", bin_dir.display(), inherited_path);
-    let child = spawn_herdr_with_path(
-        &config_home,
-        &runtime_dir,
-        &socket_path,
-        Some(Path::new(&path_override)),
-    );
-    wait_for_socket(&socket_path, Duration::from_secs(5));
-
-    let created = send_request(
-        &socket_path,
-        &format!(
-            r#"{{"id":"req_release_1","method":"workspace.create","params":{{"cwd":"{}","focus":true}}}}"#,
-            base.display()
-        ),
-    );
-    let pane_id = created["result"]["root_pane"]["pane_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-
-    let send_pi = send_request(
-        &socket_path,
-        &format!(
-            r#"{{"id":"req_release_2","method":"pane.send_text","params":{{"pane_id":"{}","text":"pi"}}}}"#,
-            pane_id
-        ),
-    );
-    assert_eq!(send_pi["result"]["type"], "ok");
-    let send_enter = send_request(
-        &socket_path,
-        &format!(
-            r#"{{"id":"req_release_3","method":"pane.send_keys","params":{{"pane_id":"{}","keys":["Enter"]}}}}"#,
-            pane_id
-        ),
-    );
-    assert_eq!(send_enter["result"]["type"], "ok");
-
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        let pane = send_request(
-            &socket_path,
-            &format!(
-                r#"{{"id":"req_release_detect","method":"pane.get","params":{{"pane_id":"{}"}}}}"#,
-                pane_id
-            ),
-        );
-        if pane["result"]["pane"]["agent"] == "pi" {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "pi agent was never detected: {pane}"
-        );
-        thread::sleep(Duration::from_millis(100));
-    }
-
-    let session_path = base.join("release-session.jsonl");
-    let session = send_request(
-        &socket_path,
-        &format!(
-            r#"{{"id":"req_release_session","method":"pane.report_agent_session","params":{{"pane_id":"{}","source":"herdr:pi","agent":"pi","agent_session_path":"{}","session_start_source":"startup","seq":1}}}}"#,
-            pane_id,
-            session_path.display()
-        ),
-    );
-    assert_eq!(session["result"]["type"], "ok");
-    let hook = send_request(
-        &socket_path,
-        &format!(
-            r#"{{"id":"req_release_4","method":"pane.report_agent","params":{{"pane_id":"{}","source":"herdr:pi","agent":"pi","state":"working","agent_session_path":"{}","seq":2}}}}"#,
-            pane_id,
-            session_path.display()
-        ),
-    );
-    assert_eq!(hook["result"]["type"], "ok");
-
-    let released = send_request(
-        &socket_path,
-        &format!(
-            r#"{{"id":"req_release_5","method":"pane.release_agent","params":{{"pane_id":"{}","source":"herdr:pi","agent":"pi"}}}}"#,
-            pane_id
-        ),
-    );
-    assert_eq!(released["result"]["type"], "ok");
-
-    let release_observation_deadline = Instant::now() + Duration::from_millis(300);
-    while Instant::now() < release_observation_deadline {
-        let pane = send_request(
-            &socket_path,
-            &format!(
-                r#"{{"id":"req_release_6","method":"pane.get","params":{{"pane_id":"{}"}}}}"#,
-                pane_id
-            ),
-        );
-        assert_eq!(
-            pane["result"]["pane"]["agent"], "pi",
-            "official release hid the live Pi process: {pane}"
-        );
-        assert_eq!(pane["result"]["pane"]["agent_status"], "working");
-        thread::sleep(Duration::from_millis(50));
-    }
-
-    fs::write(&stop_file, "stop").unwrap();
-
-    let cleared_deadline = Instant::now() + Duration::from_secs(1);
-    loop {
-        let pane = send_request(
-            &socket_path,
-            &format!(
-                r#"{{"id":"req_release_7","method":"pane.get","params":{{"pane_id":"{}"}}}}"#,
-                pane_id
-            ),
-        );
-        if pane["result"]["pane"]["agent"].is_null()
-            && pane["result"]["pane"]["agent_status"] == "unknown"
-        {
-            break;
-        }
-        assert!(
-            Instant::now() < cleared_deadline,
-            "pi agent was not cleared promptly after process exit: {pane}"
-        );
-        thread::sleep(Duration::from_millis(50));
-    }
-
-    cleanup_spawned_herdr(child, base);
+fn hc_pane_rejects_legacy_agent_release() {
+    // An agent leaves an hc pane only when its program withdraws its own status
+    // or exits; a hook cannot release it.
+    assert_hc_pane_rejects_legacy_methods(vec![(
+        "pane.release_agent",
+        serde_json::json!({"source":"herdr:pi","agent":"pi"}),
+    )]);
 }
 
 #[cfg(not(target_os = "macos"))]
 #[test]
-fn pane_clear_agent_authority_restores_fallback_state() {
-    let _lock = test_lock();
-    let base = unique_test_dir();
-    let config_home = base.join("config");
-    let runtime_dir = base.join("runtime");
-    let socket_path = runtime_dir.join("herdr.sock");
-    let bin_dir = base.join("bin");
-
-    fs::create_dir_all(&bin_dir).unwrap();
-    let fake_pi = bin_dir.join("pi");
-    fs::write(&fake_pi, "#!/bin/sh\nprintf 'Working...\\n'\nsleep 3\n").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&fake_pi).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&fake_pi, perms).unwrap();
-    }
-
-    let inherited_path = std::env::var("PATH").unwrap_or_default();
-    let path_override = format!("{}:{}", bin_dir.display(), inherited_path);
-    let child = spawn_herdr_with_path(
-        &config_home,
-        &runtime_dir,
-        &socket_path,
-        Some(Path::new(&path_override)),
-    );
-    wait_for_socket(&socket_path, Duration::from_secs(5));
-
-    let created = send_request(
-        &socket_path,
-        &format!(
-            r#"{{"id":"req_clear_1","method":"workspace.create","params":{{"cwd":"{}","focus":true}}}}"#,
-            base.display()
-        ),
-    );
-    let pane_id = created["result"]["root_pane"]["pane_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-
-    let send_pi = send_request(
-        &socket_path,
-        &format!(
-            r#"{{"id":"req_clear_2","method":"pane.send_text","params":{{"pane_id":"{}","text":"pi"}}}}"#,
-            pane_id
-        ),
-    );
-    assert_eq!(send_pi["result"]["type"], "ok");
-    let send_enter = send_request(
-        &socket_path,
-        &format!(
-            r#"{{"id":"req_clear_3","method":"pane.send_keys","params":{{"pane_id":"{}","keys":["Enter"]}}}}"#,
-            pane_id
-        ),
-    );
-    assert_eq!(send_enter["result"]["type"], "ok");
-
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        let pane = send_request(
-            &socket_path,
-            &format!(
-                r#"{{"id":"req_clear_detect","method":"pane.get","params":{{"pane_id":"{}"}}}}"#,
-                pane_id
-            ),
-        );
-        if pane["result"]["pane"]["agent"] == "pi" {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "pi agent was never detected: {pane}"
-        );
-        thread::sleep(Duration::from_millis(100));
-    }
-
-    let fallback_before_hook = send_request(
-        &socket_path,
-        &format!(
-            r#"{{"id":"req_clear_fallback","method":"pane.get","params":{{"pane_id":"{}"}}}}"#,
-            pane_id
-        ),
-    );
-    let fallback_status = fallback_before_hook["result"]["pane"]["agent_status"]
-        .as_str()
-        .unwrap()
-        .to_string();
-
-    let hook = send_request(
-        &socket_path,
-        &format!(
-            r#"{{"id":"req_clear_4","method":"pane.report_agent","params":{{"pane_id":"{}","source":"herdr:pi","agent":"pi","state":"idle"}}}}"#,
-            pane_id
-        ),
-    );
-    assert_eq!(hook["result"]["type"], "ok");
-
-    let cleared = send_request(
-        &socket_path,
-        &format!(
-            r#"{{"id":"req_clear_5","method":"pane.clear_agent_authority","params":{{"pane_id":"{}","source":"herdr:pi"}}}}"#,
-            pane_id
-        ),
-    );
-    assert_eq!(cleared["result"]["type"], "ok");
-
-    let pane = send_request(
-        &socket_path,
-        &format!(
-            r#"{{"id":"req_clear_6","method":"pane.get","params":{{"pane_id":"{}"}}}}"#,
-            pane_id
-        ),
-    );
-    assert_eq!(pane["result"]["pane"]["agent"], "pi");
-    assert_eq!(pane["result"]["pane"]["agent_status"], fallback_status);
-
-    cleanup_spawned_herdr(child, base);
+fn hc_pane_rejects_legacy_authority_clear() {
+    // There is no hook authority to clear and no screen-detected fallback to
+    // restore: the source's report stays in force.
+    assert_hc_pane_rejects_legacy_methods(vec![(
+        "pane.clear_agent_authority",
+        serde_json::json!({"source":"herdr:pi"}),
+    )]);
 }
 
 #[test]

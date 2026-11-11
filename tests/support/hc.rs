@@ -227,6 +227,27 @@ pub fn report_agent(socket: &Path, pane: &str, agent: &str, state: &str) {
     );
 }
 
+/// Withdraws the pane program's root status record, as a program does on exit.
+pub fn clear_agent(socket: &Path, pane: &str) {
+    let response = request(
+        socket,
+        "pane.send_text",
+        serde_json::json!({"pane_id":pane,"text":"printf '\\033]7501;state=clear\\007'\n"}),
+    );
+    assert!(
+        response.get("error").is_none(),
+        "clear source status: {response}"
+    );
+    let mut last = serde_json::Value::Null;
+    assert!(
+        super::wait_until(Duration::from_secs(5), Duration::from_millis(25), || {
+            last = request(socket, "pane.get", serde_json::json!({"pane_id":pane}));
+            last["result"]["pane"]["agent_status"] == "unknown"
+        }),
+        "source status clear not projected: {last}"
+    );
+}
+
 pub fn cleanup(runtime: &Path) -> io::Result<()> {
     let Some(cores) = CORES.get() else {
         return Ok(());

@@ -798,35 +798,30 @@ fn server_start_restores_legacy_session_through_api_identity() {
             && pane["focused"] == true
     }));
 
-    let reported = run_cli(
+    // A legacy layout has no hc binding: its identity is restored, but the pane
+    // stays unavailable rather than launching a replacement program or accepting
+    // a legacy report.
+    let pane = run_cli_json(&socket_path, &["pane", "get", &focused_pane_id]);
+    assert!(
+        pane["result"]["pane"]["restore_error"]
+            .as_str()
+            .is_some_and(|error| error.contains("no hc binding")),
+        "{pane}"
+    );
+    let sent = send_request(
         &socket_path,
-        &[
-            "pane",
-            "report-agent",
-            &focused_pane_id,
-            "--source",
-            "test",
-            "--agent",
-            "pi",
-            "--state",
-            "working",
-        ],
+        &serde_json::json!({"id":"unbound","method":"pane.send_text","params":{
+            "pane_id": focused_pane_id, "text": "printf unbound\n"
+        }})
+        .to_string(),
     );
     assert!(
-        reported.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&reported.stderr)
+        sent.get("error").is_some(),
+        "unbound legacy pane must stay unavailable, not launch: {sent}"
     );
-
+    assert!(crate::support::hc::terminals(&runtime_dir).is_empty());
     let agents = run_cli_json(&socket_path, &["agent", "list"]);
-    let agents = agents["result"]["agents"]
-        .as_array()
-        .expect("agent.list should return agents");
-    assert_eq!(agents.len(), 1);
-    assert_eq!(agents[0]["pane_id"], focused_pane_id);
-    assert_eq!(agents[0]["workspace_id"], workspace_id);
-    assert_eq!(agents[0]["agent"], "pi");
-    assert_eq!(agents[0]["agent_status"], "working");
+    assert_eq!(agents["result"]["agents"], serde_json::json!([]));
 
     cleanup_spawned_herdr(herdr, base);
 }

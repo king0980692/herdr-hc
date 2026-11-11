@@ -524,25 +524,33 @@ impl App {
         let Some(public_pane_id) = self.public_pane_id(ws_idx, pane_id) else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
-        let shell_pid = runtime.child_pid();
-        let foreground_job = shell_pid.and_then(crate::detect::foreground_job);
-        let foreground_process_group_id = foreground_job.as_ref().map(|job| job.process_group_id);
-        let foreground_processes = foreground_job
-            .map(|job| {
-                job.processes
-                    .into_iter()
-                    .map(|process| PaneProcessInfoProcess {
-                        pid: process.pid,
-                        name: process.name,
-                        argv0: process.argv0,
-                        argv: process.argv,
-                        cmdline: process.cmdline,
-                        cwd: crate::platform::process_cwd(process.pid)
-                            .map(|cwd| cwd.display().to_string()),
+        let (shell_pid, foreground_process_group_id, foreground_processes) = match runtime
+            .hc_snapshot()
+        {
+            Some(snapshot) => hc_process_facts(&snapshot, self.terminal_factory.is_saved_source()),
+            None => {
+                let shell_pid = runtime.child_pid();
+                let foreground_job = shell_pid.and_then(crate::detect::foreground_job);
+                let group = foreground_job.as_ref().map(|job| job.process_group_id);
+                let processes = foreground_job
+                    .map(|job| {
+                        job.processes
+                            .into_iter()
+                            .map(|process| PaneProcessInfoProcess {
+                                pid: process.pid,
+                                name: process.name,
+                                argv0: process.argv0,
+                                argv: process.argv,
+                                cmdline: process.cmdline,
+                                cwd: crate::platform::process_cwd(process.pid)
+                                    .map(|cwd| cwd.display().to_string()),
+                            })
+                            .collect()
                     })
-                    .collect()
-            })
-            .unwrap_or_default();
+                    .unwrap_or_default();
+                (shell_pid, group, processes)
+            }
+        };
 
         encode_success(
             id,
@@ -2314,6 +2322,57 @@ fn invalid_agent(id: String) -> String {
 
 fn validate_optional_resume_argv(argv: Option<&[String]>) -> Result<(), String> {
     argv.map_or(Ok(()), crate::agent_resume::validate_resume_argv)
+}
+
+/// Process facts as the source core reports them: its program PID and the
+/// foreground process group's leader. Nothing is inspected on this machine, and
+/// a remote source's PIDs are withheld because they name processes elsewhere.
+fn hc_process_facts(
+    snapshot: &crate::hc::state::RuntimeSnapshot,
+    remote: bool,
+) -> (Option<u32>, Option<u32>, Vec<PaneProcessInfoProcess>) {
+    let facts = &snapshot.terminal.facts;
+    if remote
+        || !snapshot.connected
+        || facts.get("state").and_then(|state| state.as_str()) != Some("live")
+    {
+        return Default::default();
+    }
+    let pid = |value: Option<&serde_json::Value>| {
+        value?
+            .as_u64()
+            .and_then(|pid| u32::try_from(pid).ok())
+            .filter(|pid| *pid > 0)
+    };
+    let Some(shell_pid) = pid(facts.get("pid")) else {
+        return Default::default();
+    };
+    let leader = facts.get("foreground").and_then(|foreground| {
+        let argv = foreground
+            .get("argv")
+            .and_then(|argv| argv.as_array())
+            .and_then(|argv| {
+                argv.iter()
+                    .map(|arg| arg.as_str().map(str::to_owned))
+                    .collect::<Option<Vec<_>>>()
+            });
+        Some(PaneProcessInfoProcess {
+            pid: pid(foreground.get("pid"))?,
+            name: foreground.get("name")?.as_str()?.to_owned(),
+            argv0: None,
+            cmdline: argv.as_ref().map(|argv| argv.join(" ")),
+            argv,
+            cwd: foreground
+                .get("cwd")
+                .and_then(|cwd| cwd.as_str())
+                .map(str::to_owned),
+        })
+    });
+    (
+        Some(shell_pid),
+        leader.as_ref().map(|leader| leader.pid),
+        leader.into_iter().collect(),
+    )
 }
 
 #[cfg(test)]
@@ -4681,6 +4740,64 @@ mod tests {
             let response = app.handle_pane_report_metadata("req".into(), params);
 
             assert_eq!(metadata_error_code(&response), "invalid_metadata_ttl");
+        }
+    }
+}
+
+#[cfg(test)]
+mod hc_process_facts_tests {
+    use serde_json::json;
+
+    fn snapshot(terminal: serde_json::Value) -> crate::hc::state::RuntimeSnapshot {
+        crate::hc::state::RuntimeSnapshot {
+            binding: crate::hc::state::TerminalBinding {
+                core_id: "source".into(),
+                address: "t1".into(),
+            },
+            terminal: serde_json::from_value(terminal).unwrap(),
+            connected: true,
+            attached: true,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn hc_process_facts_report_the_source_program_and_foreground_leader() {
+        let live = snapshot(json!({"address":"t1","state":"live","pid":41,"foreground":{
+            "pid":57,"name":"sleep","argv":["/bin/sleep","30"],"cwd":"/work"
+        }}));
+        // A saved or shared source's PIDs must never look like local processes.
+        assert_eq!(super::hc_process_facts(&live, true), Default::default());
+        let (shell, group, processes) = super::hc_process_facts(&live, false);
+        assert_eq!((shell, group), (Some(41), Some(57)));
+        assert_eq!(processes.len(), 1);
+        assert_eq!(processes[0].pid, 57);
+        assert_eq!(processes[0].name, "sleep");
+        assert_eq!(processes[0].argv0, None);
+        assert_eq!(processes[0].cmdline.as_deref(), Some("/bin/sleep 30"));
+        assert_eq!(processes[0].cwd.as_deref(), Some("/work"));
+
+        // hc reads the foreground about twice a second; a new program has none yet.
+        let starting = snapshot(json!({"address":"t1","state":"live","pid":41}));
+        assert_eq!(
+            super::hc_process_facts(&starting, false),
+            (Some(41), None, Vec::new())
+        );
+    }
+
+    #[test]
+    fn hc_process_facts_are_withheld_without_a_live_connected_program() {
+        let mut lost = snapshot(json!({"address":"t1","state":"live","pid":41,"foreground":{
+            "pid":41,"name":"sh","argv":["/bin/sh"],"cwd":"/work"
+        }}));
+        lost.connected = false;
+        for stale in [
+            lost,
+            snapshot(json!({"address":"t1","state":"finished","pid":41})),
+            snapshot(json!({"address":"t1","state":"live","pid":null})),
+            snapshot(json!({"address":"t1","state":"live","pid":0})),
+        ] {
+            assert_eq!(super::hc_process_facts(&stale, false), Default::default());
         }
     }
 }

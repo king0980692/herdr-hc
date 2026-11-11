@@ -414,6 +414,20 @@ pub(super) fn wait_until(
     false
 }
 
+/// Waits until the source reports the pane's own shell as its foreground program.
+pub(super) fn wait_for_pane_shell(socket_path: &Path, pane_id: &str) {
+    let mut last = serde_json::Value::Null;
+    assert!(
+        wait_until(Duration::from_secs(5), Duration::from_millis(25), || {
+            last = run_cli_json(socket_path, &["pane", "process-info", "--pane", pane_id]);
+            let info = &last["result"]["process_info"];
+            info["shell_pid"].is_number()
+                && info["foreground_process_group_id"] == info["shell_pid"]
+        }),
+        "pane shell never became the foreground program: {last}"
+    );
+}
+
 pub(super) fn pane_read_recent_contains(socket_path: &Path, pane_id: &str, expected: &str) -> bool {
     let output = run_cli(
         socket_path,

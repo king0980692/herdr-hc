@@ -601,14 +601,11 @@ fn pane_agent_reports_accept_options_before_pane() {
             &pane_id,
         ],
     );
-    assert!(
-        state_report.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&state_report.stderr)
-    );
-    assert!(state_report.stdout.is_empty());
-    assert!(state_report.stderr.is_empty());
+    // The options parse and reach the server; an hc-owned pane then rejects the
+    // legacy report instead of the CLI failing with a usage error (exit 2).
+    assert_legacy_report_rejected(&state_report);
 
+    crate::support::hc::report_agent(&socket_path, &pane_id, "cli-test", "working");
     let agent = run_cli_json(&socket_path, &["agent", "get", &pane_id]);
     assert_eq!(agent["result"]["agent"]["agent"], "cli-test");
     assert_eq!(agent["result"]["agent"]["agent_status"], "working");
@@ -626,15 +623,17 @@ fn pane_agent_reports_accept_options_before_pane() {
             &pane_id,
         ],
     );
-    assert!(
-        session_report.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&session_report.stderr)
-    );
-    assert!(session_report.stdout.is_empty());
-    assert!(session_report.stderr.is_empty());
+    assert_legacy_report_rejected(&session_report);
 
     cleanup_spawned_herdr(herdr, base);
+}
+
+fn assert_legacy_report_rejected(output: &std::process::Output) {
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let error: serde_json::Value = serde_json::from_slice(&output.stderr)
+        .unwrap_or_else(|error| panic!("{error}: {}", String::from_utf8_lossy(&output.stderr)));
+    assert_eq!(error["error"]["code"], "unsupported_runtime");
 }
 
 #[test]

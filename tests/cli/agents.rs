@@ -48,9 +48,8 @@ fn write_delayed_shell_and_fake_pi(
     fs::write(
         &fake_pi,
         format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\nexport HERDR_AGENT=pi\n'{}' pane report-agent \"$HERDR_PANE_ID\" --source custom:delayed-shell-pi --agent pi --state idle >/dev/null\nwhile IFS= read -r _prompt; do :; done\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\nprintf '\\033]7501;state=idle:app=pi\\007'\nwhile IFS= read -r _prompt; do :; done\n",
             invocations.display(),
-            env!("CARGO_BIN_EXE_herdr"),
         ),
     )
     .unwrap();
@@ -220,14 +219,51 @@ fn agent_start_command_works() {
     let captured_prompts = base.join("pi-prompts");
     fs::create_dir_all(&bin).unwrap();
     let fake_pi = bin.join("pi");
+    // The fake agent reports its own state on its terminal, as a real one does.
+    // States the test dictates arrive through a control file it polls. The pane's
+    // PATH holds only this directory, so external tools are named absolutely.
+    let status_control = base.join("pi-status");
     fs::write(
         &fake_pi,
-        format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{0}'\nexport HERDR_AGENT=pi\n'{1}' pane report-agent \"$HERDR_PANE_ID\" --source custom:fake-pi --agent pi --state idle >/dev/null\nwhile IFS= read -r prompt; do\n  case \"$prompt\" in\n    \"do not transition\") continue ;;\n    \"done churn\")\n      '{1}' pane report-agent \"$HERDR_PANE_ID\" --source custom:fake-pi --agent pi --state done >/dev/null\n      '{1}' pane report-agent \"$HERDR_PANE_ID\" --source custom:fake-pi --agent pi --state idle >/dev/null\n      continue\n      ;;\n    \"session churn\")\n      '{1}' pane report-agent-session \"$HERDR_PANE_ID\" --source custom:fake-pi --agent pi --agent-session-id replacement >/dev/null\n      continue\n      ;;\n    \"block after submit\")\n      '{1}' pane report-agent \"$HERDR_PANE_ID\" --source custom:fake-pi --agent pi --state blocked >/dev/null\n      continue\n      ;;\n  esac\n  '{1}' pane report-agent \"$HERDR_PANE_ID\" --source custom:fake-pi --agent pi --state working >/dev/null\n  '{1}' pane report-agent \"$HERDR_PANE_ID\" --source custom:fake-pi --agent pi --state idle >/dev/null\n  printf '%s\\n' \"$prompt\" >> '{2}'\ndone\n",
-            captured_args.display(),
-            env!("CARGO_BIN_EXE_herdr"),
-            captured_prompts.display(),
-        ),
+        r#"#!/bin/sh
+printf '%s\n' "$@" > 'ARGS'
+report() { printf '\033]7501;state=%s:app=pi\007' "$1"; }
+(
+  while :; do
+    if [ -f 'CONTROL' ]; then
+      IFS= read -r state < 'CONTROL'
+      /bin/rm -f 'CONTROL'
+      report "$state"
+    fi
+    /bin/sleep 0.02
+  done
+) &
+report idle
+while IFS= read -r prompt; do
+  case "$prompt" in
+    "do not transition") continue ;;
+    "done churn")
+      report done
+      report idle
+      continue
+      ;;
+    "block after submit")
+      report blocked
+      continue
+      ;;
+  esac
+  report working
+  # hc publishes a back-to-back working/idle pair, but Herdr's projection keeps
+  # only the latest state, so `agent prompt --wait` misses an instantaneous
+  # working phase. Hold it briefly; whether Herdr should observe it is open.
+  /bin/sleep 0.2
+  report idle
+  printf '%s\n' "$prompt" >> 'PROMPTS'
+done
+"#
+        .replace("ARGS", captured_args.to_str().unwrap())
+        .replace("CONTROL", status_control.to_str().unwrap())
+        .replace("PROMPTS", captured_prompts.to_str().unwrap()),
     )
     .unwrap();
     fs::set_permissions(&fake_pi, fs::Permissions::from_mode(0o755)).unwrap();
@@ -280,6 +316,8 @@ fn agent_start_command_works() {
         assert_eq!(error["error"]["code"], "invalid_agent_argument");
     }
 
+    // An invalid timeout is never retried, so the shell must already be available.
+    wait_for_pane_shell(&socket_path, &pane_id);
     for invalid_timeout in ["3000", "300001", "18446744073709551615"] {
         let rejected = run_cli(
             &socket_path,
@@ -354,21 +392,16 @@ fn agent_start_command_works() {
     assert_eq!(pane_topology_snapshot(&after), before_topology);
 
     let prompts_before_blocked = fs::read(&captured_prompts).unwrap();
-    let blocked_report = run_cli(
-        &socket_path,
-        &[
-            "pane",
-            "report-agent",
-            &pane_id,
-            "--source",
-            "custom:fake-pi",
-            "--agent",
-            "pi",
-            "--state",
-            "blocked",
-        ],
-    );
-    assert!(blocked_report.status.success());
+    let report_agent = |state: &str| {
+        let pending = status_control.with_extension("next");
+        fs::write(&pending, format!("{state}\n")).unwrap();
+        fs::rename(&pending, &status_control).unwrap();
+        wait_until(Duration::from_secs(5), Duration::from_millis(25), || {
+            run_cli_json(&socket_path, &["agent", "get", "main"])["result"]["agent"]["agent_status"]
+                == state
+        })
+    };
+    assert!(report_agent("blocked"));
     assert_eq!(
         run_cli_json(&socket_path, &["agent", "get", "main"])["result"]["agent"]["agent_status"],
         "blocked"
@@ -392,24 +425,6 @@ fn agent_start_command_works() {
     thread::sleep(Duration::from_millis(400));
     assert_eq!(fs::read(&captured_prompts).unwrap(), prompts_before_blocked);
 
-    let report_agent = |state| {
-        run_cli(
-            &socket_path,
-            &[
-                "pane",
-                "report-agent",
-                &pane_id,
-                "--source",
-                "custom:fake-pi",
-                "--agent",
-                "pi",
-                "--state",
-                state,
-            ],
-        )
-        .status
-        .success()
-    };
     let prompt_wait = |prompt, timeout| {
         run_cli(
             &socket_path,
@@ -439,12 +454,10 @@ fn agent_start_command_works() {
         .as_str()
         .is_some_and(|message| message.contains("no observed working or blocked state")));
 
-    for prompt in ["done churn", "session churn"] {
-        let settled_only = prompt_wait(prompt, "500");
-        assert_eq!(settled_only.status.code(), Some(1));
-        let settled_only: serde_json::Value = serde_json::from_slice(&settled_only.stderr).unwrap();
-        assert_eq!(settled_only["error"]["code"], "timeout");
-    }
+    let settled_only = prompt_wait("done churn", "500");
+    assert_eq!(settled_only.status.code(), Some(1));
+    let settled_only: serde_json::Value = serde_json::from_slice(&settled_only.stderr).unwrap();
+    assert_eq!(settled_only["error"]["code"], "timeout");
 
     let blocked_after_submit = prompt_wait("block after submit", "2000");
     assert!(blocked_after_submit.status.success());
@@ -575,22 +588,7 @@ fn agent_start_timeout_releases_the_name_for_reuse() {
         .unwrap()
         .to_string();
 
-    assert!(run_cli(
-        &socket_path,
-        &[
-            "pane",
-            "report-agent",
-            &reuse_pane_id,
-            "--source",
-            "custom:reuse",
-            "--agent",
-            "pi",
-            "--state",
-            "idle",
-        ],
-    )
-    .status
-    .success());
+    crate::support::hc::report_agent(&socket_path, &reuse_pane_id, "pi", "idle");
 
     let started = run_cli(
         &socket_path,
@@ -633,7 +631,7 @@ fn agent_start_reports_detected_kind_mismatch_before_released_name() {
     let fake_pi = bin.join("pi");
     fs::write(
         &fake_pi,
-        "#!/bin/sh\nHERDR_AGENT=codex exec /bin/sleep 10\n",
+        "#!/bin/sh\nprintf '\\033]7501;state=idle:app=codex\\007'\nexec /bin/sleep 10\n",
     )
     .unwrap();
     fs::set_permissions(&fake_pi, fs::Permissions::from_mode(0o755)).unwrap();
@@ -675,22 +673,7 @@ fn agent_start_reports_detected_kind_mismatch_before_released_name() {
     let error: serde_json::Value = serde_json::from_slice(&started.stderr).unwrap();
     assert_eq!(error["error"]["code"], "agent_kind_mismatch");
 
-    assert!(run_cli(
-        &socket_path,
-        &[
-            "pane",
-            "report-agent",
-            &reuse_pane_id,
-            "--source",
-            "custom:reuse",
-            "--agent",
-            "pi",
-            "--state",
-            "idle",
-        ],
-    )
-    .status
-    .success());
+    crate::support::hc::report_agent(&socket_path, &reuse_pane_id, "pi", "idle");
     let reused = run_cli(&socket_path, &["agent", "rename", &reuse_pane_id, "worker"]);
     assert!(reused.status.success());
 
@@ -708,7 +691,11 @@ fn agent_start_follows_its_named_terminal_when_the_pane_moves() {
     let bin = base.join("bin");
     fs::create_dir_all(&bin).unwrap();
     let fake_pi = bin.join("pi");
-    fs::write(&fake_pi, "#!/bin/sh\nHERDR_AGENT=pi exec /bin/sleep 10\n").unwrap();
+    fs::write(
+        &fake_pi,
+        "#!/bin/sh\nprintf '\\033]7501;state=idle:app=pi\\007'\nexec /bin/sleep 10\n",
+    )
+    .unwrap();
     fs::set_permissions(&fake_pi, fs::Permissions::from_mode(0o755)).unwrap();
 
     let herdr = spawn_herdr_with_path(&config_home, &runtime_dir, &socket_path, Some(&bin));
@@ -812,22 +799,7 @@ fn agent_start_and_rename_reject_invalid_names() {
     assert_eq!(error["error"]["code"], "invalid_agent_name");
     assert_eq!(error["error"]["message"], expected_message);
 
-    assert!(run_cli(
-        &socket_path,
-        &[
-            "pane",
-            "report-agent",
-            &pane_id,
-            "--source",
-            "custom:name",
-            "--agent",
-            "pi",
-            "--state",
-            "idle",
-        ],
-    )
-    .status
-    .success());
+    crate::support::hc::report_agent(&socket_path, &pane_id, "pi", "idle");
     let renamed = run_cli(&socket_path, &["agent", "rename", &pane_id, "reviewer one"]);
     assert_eq!(renamed.status.code(), Some(1));
     let error: serde_json::Value = serde_json::from_slice(&renamed.stderr).unwrap();
@@ -862,21 +834,7 @@ fn agent_commands_work() {
         .unwrap()
         .to_string();
 
-    let reported = run_cli(
-        &socket_path,
-        &[
-            "pane",
-            "report-agent",
-            &root_pane_id,
-            "--source",
-            "custom:test",
-            "--agent",
-            "pi",
-            "--state",
-            "idle",
-        ],
-    );
-    assert!(reported.status.success());
+    crate::support::hc::report_agent(&socket_path, &root_pane_id, "pi", "idle");
     let renamed = run_cli(&socket_path, &["agent", "rename", &root_pane_id, "worker"]);
     assert!(renamed.status.success());
 
@@ -893,49 +851,20 @@ fn agent_commands_work() {
     );
     assert_eq!(waited["result"]["agent"]["pane_id"], root_pane_id);
 
-    // A stale semantic report must not allow prompt text into the resumed shell.
-    let prompted = run_cli(
-        &socket_path,
-        &["agent", "prompt", "worker", "echo prompt-must-not-run"],
+    // The source's own idle report is authoritative, so the agent accepts input.
+    let prompted = run_cli(&socket_path, &["agent", "prompt", "worker", ":"]);
+    assert!(
+        prompted.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&prompted.stderr)
     );
-    assert_eq!(prompted.status.code(), Some(1));
-    let prompted_json: serde_json::Value = serde_json::from_slice(&prompted.stderr).unwrap();
-    assert_eq!(prompted_json["error"]["code"], "agent_not_ready");
 
-    let working = run_cli(
-        &socket_path,
-        &[
-            "pane",
-            "report-agent",
-            &root_pane_id,
-            "--source",
-            "custom:wait",
-            "--agent",
-            "pi",
-            "--state",
-            "working",
-        ],
-    );
-    assert!(working.status.success());
+    crate::support::hc::report_agent(&socket_path, &root_pane_id, "pi", "working");
     let blocked_socket = socket_path.clone();
     let blocked_pane = root_pane_id.clone();
     let blocked_transition = thread::spawn(move || {
         thread::sleep(Duration::from_millis(100));
-        let blocked = run_cli(
-            &blocked_socket,
-            &[
-                "pane",
-                "report-agent",
-                &blocked_pane,
-                "--source",
-                "custom:wait",
-                "--agent",
-                "pi",
-                "--state",
-                "blocked",
-            ],
-        );
-        assert!(blocked.status.success());
+        crate::support::hc::report_agent(&blocked_socket, &blocked_pane, "pi", "blocked");
     });
     let waited = run_cli_json(
         &socket_path,
@@ -950,42 +879,12 @@ fn agent_commands_work() {
         "blocked"
     );
 
-    assert!(run_cli(
-        &socket_path,
-        &[
-            "pane",
-            "report-agent",
-            &root_pane_id,
-            "--source",
-            "custom:wait",
-            "--agent",
-            "pi",
-            "--state",
-            "working",
-        ],
-    )
-    .status
-    .success());
+    crate::support::hc::report_agent(&socket_path, &root_pane_id, "pi", "working");
     let idle_socket = socket_path.clone();
     let idle_pane = root_pane_id.clone();
     let idle_transition = thread::spawn(move || {
         thread::sleep(Duration::from_millis(100));
-        assert!(run_cli(
-            &idle_socket,
-            &[
-                "pane",
-                "report-agent",
-                &idle_pane,
-                "--source",
-                "custom:wait",
-                "--agent",
-                "pi",
-                "--state",
-                "idle",
-            ],
-        )
-        .status
-        .success());
+        crate::support::hc::report_agent(&idle_socket, &idle_pane, "pi", "idle");
     });
     let idle_wait = run_cli_json(
         &socket_path,
@@ -997,22 +896,7 @@ fn agent_commands_work() {
         Some("idle" | "done")
     ));
 
-    assert!(run_cli(
-        &socket_path,
-        &[
-            "pane",
-            "report-agent",
-            &root_pane_id,
-            "--source",
-            "custom:wait",
-            "--agent",
-            "pi",
-            "--state",
-            "working",
-        ],
-    )
-    .status
-    .success());
+    crate::support::hc::report_agent(&socket_path, &root_pane_id, "pi", "working");
     let timed_out = run_cli(
         &socket_path,
         &["agent", "wait", "worker", "--timeout", "100"],
@@ -1020,36 +904,6 @@ fn agent_commands_work() {
     assert_eq!(timed_out.status.code(), Some(1));
     let timeout: serde_json::Value = serde_json::from_slice(&timed_out.stderr).unwrap();
     assert_eq!(timeout["error"]["code"], "timeout");
-
-    assert!(run_cli(
-        &socket_path,
-        &[
-            "pane",
-            "report-agent",
-            &root_pane_id,
-            "--source",
-            "custom:wait",
-            "--agent",
-            "pi",
-            "--state",
-            "unknown",
-        ],
-    )
-    .status
-    .success());
-    let unknown = run_cli_json(
-        &socket_path,
-        &[
-            "agent",
-            "wait",
-            "worker",
-            "--until",
-            "unknown",
-            "--timeout",
-            "1000",
-        ],
-    );
-    assert_eq!(unknown["result"]["agent"]["agent_status"], "unknown");
 
     let pane_read = run_cli(
         &socket_path,
@@ -1068,16 +922,37 @@ fn agent_commands_work() {
     let missing_read: serde_json::Value = serde_json::from_slice(&missing_read.stderr).unwrap();
     assert_eq!(missing_read["error"]["code"], "agent_not_found");
 
+    // The source still reports a running agent, so it accepts keys.
     let sent = run_cli(&socket_path, &["agent", "send-keys", "worker", "enter"]);
-    assert_eq!(sent.status.code(), Some(1));
-    let sent: serde_json::Value = serde_json::from_slice(&sent.stderr).unwrap();
-    assert_eq!(sent["error"]["code"], "agent_not_ready");
+    assert!(
+        sent.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&sent.stderr)
+    );
 
     let agent_renamed = run_cli_json(&socket_path, &["agent", "rename", "worker", "reviewer"]);
     assert_eq!(agent_renamed["result"]["agent"]["name"], "reviewer");
 
     let focused = run_cli_json(&socket_path, &["agent", "focus", "reviewer"]);
     assert_eq!(focused["result"]["agent"]["focused"], true);
+
+    // Withdrawing the source's status record ends the agent; nothing is left to wait on.
+    crate::support::hc::clear_agent(&socket_path, &root_pane_id);
+    let released = run_cli(
+        &socket_path,
+        &[
+            "agent",
+            "wait",
+            "reviewer",
+            "--until",
+            "unknown",
+            "--timeout",
+            "1000",
+        ],
+    );
+    assert_eq!(released.status.code(), Some(1));
+    let released: serde_json::Value = serde_json::from_slice(&released.stderr).unwrap();
+    assert_eq!(released["error"]["code"], "agent_not_found");
 
     cleanup_spawned_herdr(herdr, base);
 }
@@ -1111,43 +986,14 @@ fn agent_wait_returns_immediately_for_unseen_done_agent() {
     assert!(run_cli(&socket_path, &["tab", "focus", second_tab_id])
         .status
         .success());
-    assert!(run_cli(
-        &socket_path,
-        &[
-            "pane",
-            "report-agent",
-            &first,
-            "--source",
-            "custom:done",
-            "--agent",
-            "pi",
-            "--state",
-            "working",
-        ],
-    )
-    .status
-    .success());
+    crate::support::hc::report_agent(&socket_path, &first, "pi", "working");
     assert!(
         run_cli(&socket_path, &["agent", "rename", &first, "worker"])
             .status
             .success()
     );
-    assert!(run_cli(
-        &socket_path,
-        &[
-            "pane",
-            "report-agent",
-            &first,
-            "--source",
-            "custom:done",
-            "--agent",
-            "pi",
-            "--state",
-            "idle",
-        ],
-    )
-    .status
-    .success());
+    // The source owns completion: Herdr no longer derives done from an unseen idle.
+    crate::support::hc::report_agent(&socket_path, &first, "pi", "done");
 
     let waited = run_cli_json(&socket_path, &["agent", "wait", "worker", "--timeout", "1"]);
     assert_eq!(waited["result"]["agent"]["agent_status"], "done");
@@ -1171,22 +1017,7 @@ fn agent_wait_tolerates_detection_uncertainty_and_pane_target_rename() {
         .as_str()
         .unwrap()
         .to_string();
-    assert!(run_cli(
-        &socket_path,
-        &[
-            "pane",
-            "report-agent",
-            &pane_id,
-            "--source",
-            "custom:uncertain",
-            "--agent",
-            "pi",
-            "--state",
-            "working",
-        ],
-    )
-    .status
-    .success());
+    crate::support::hc::report_agent(&socket_path, &pane_id, "pi", "working");
     assert!(
         run_cli(&socket_path, &["agent", "rename", &pane_id, "worker"])
             .status
@@ -1216,33 +1047,16 @@ fn agent_wait_tolerates_detection_uncertainty_and_pane_target_rename() {
             pane_id
         ),
     );
-    assert_eq!(cleared["result"]["type"], "ok");
+    assert_eq!(cleared["error"]["code"], "unsupported_runtime");
+    crate::support::hc::clear_agent(&socket_path, &pane_id);
+    // hc has no "uncertain" state to wait through: withdrawing the source's
+    // status record ends the agent, and a pending wait reports that.
     let waited = waiter.join().unwrap();
-    assert!(
-        waited.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&waited.stderr)
-    );
-    let waited: serde_json::Value = serde_json::from_slice(&waited.stdout).unwrap();
-    assert_eq!(waited["result"]["agent"]["agent_status"], "unknown");
-    assert_eq!(waited["result"]["agent"]["name"], "worker");
+    assert_eq!(waited.status.code(), Some(1));
+    let waited: serde_json::Value = serde_json::from_slice(&waited.stderr).unwrap();
+    assert_eq!(waited["error"]["code"], "agent_not_running");
 
-    assert!(run_cli(
-        &socket_path,
-        &[
-            "pane",
-            "report-agent",
-            &pane_id,
-            "--source",
-            "custom:return",
-            "--agent",
-            "pi",
-            "--state",
-            "working",
-        ],
-    )
-    .status
-    .success());
+    crate::support::hc::report_agent(&socket_path, &pane_id, "pi", "working");
     let wait_socket = socket_path.clone();
     let wait_pane = pane_id.clone();
     let waiter = thread::spawn(move || {
@@ -1265,22 +1079,7 @@ fn agent_wait_tolerates_detection_uncertainty_and_pane_target_rename() {
             .status
             .success()
     );
-    assert!(run_cli(
-        &socket_path,
-        &[
-            "pane",
-            "report-agent",
-            &pane_id,
-            "--source",
-            "custom:return",
-            "--agent",
-            "pi",
-            "--state",
-            "idle",
-        ],
-    )
-    .status
-    .success());
+    crate::support::hc::report_agent(&socket_path, &pane_id, "pi", "idle");
     let waited = waiter.join().unwrap();
     assert!(
         waited.status.success(),
@@ -1319,22 +1118,7 @@ fn agent_wait_pins_the_original_terminal_when_name_is_reused() {
         .as_str()
         .unwrap()
         .to_string();
-    assert!(run_cli(
-        &socket_path,
-        &[
-            "pane",
-            "report-agent",
-            &first,
-            "--source",
-            "custom:race",
-            "--agent",
-            "pi",
-            "--state",
-            "working",
-        ],
-    )
-    .status
-    .success());
+    crate::support::hc::report_agent(&socket_path, &first, "pi", "working");
     assert!(
         run_cli(&socket_path, &["agent", "rename", &first, "worker"])
             .status
@@ -1354,22 +1138,7 @@ fn agent_wait_pins_the_original_terminal_when_name_is_reused() {
             .status
             .success()
     );
-    assert!(run_cli(
-        &socket_path,
-        &[
-            "pane",
-            "report-agent",
-            &second,
-            "--source",
-            "custom:race",
-            "--agent",
-            "pi",
-            "--state",
-            "idle",
-        ],
-    )
-    .status
-    .success());
+    crate::support::hc::report_agent(&socket_path, &second, "pi", "idle");
     assert!(
         run_cli(&socket_path, &["agent", "rename", &second, "worker"])
             .status
@@ -1409,22 +1178,7 @@ fn agent_wait_ignores_other_panes_and_errors_when_its_pane_closes() {
         .as_str()
         .unwrap()
         .to_string();
-    assert!(run_cli(
-        &socket_path,
-        &[
-            "pane",
-            "report-agent",
-            &first,
-            "--source",
-            "custom:close",
-            "--agent",
-            "pi",
-            "--state",
-            "working",
-        ],
-    )
-    .status
-    .success());
+    crate::support::hc::report_agent(&socket_path, &first, "pi", "working");
     assert!(
         run_cli(&socket_path, &["agent", "rename", &first, "worker"])
             .status
@@ -1440,22 +1194,7 @@ fn agent_wait_ignores_other_panes_and_errors_when_its_pane_closes() {
         ));
     });
     thread::sleep(Duration::from_millis(150));
-    assert!(run_cli(
-        &socket_path,
-        &[
-            "pane",
-            "report-agent",
-            &second,
-            "--source",
-            "custom:close",
-            "--agent",
-            "pi",
-            "--state",
-            "idle",
-        ],
-    )
-    .status
-    .success());
+    crate::support::hc::report_agent(&socket_path, &second, "pi", "idle");
     thread::sleep(Duration::from_millis(150));
     assert!(matches!(
         done_rx.try_recv(),

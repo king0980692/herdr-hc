@@ -497,6 +497,11 @@ fn process_info_shows_shell_initialization(process_info: &serde_json::Value) -> 
     let Some(shell_pid) = process_info["shell_pid"].as_u64() else {
         return false;
     };
+    // An hc source reads a new program's foreground about twice a second; until
+    // its first report the shell cannot yet be shown to be available.
+    if process_info["foreground_process_group_id"].is_null() {
+        return true;
+    }
     if process_info["foreground_process_group_id"].as_u64() != Some(shell_pid) {
         return false;
     }
@@ -613,4 +618,33 @@ fn agent_read(params: AgentReadParams) -> std::io::Result<i32> {
         method: Method::AgentRead(params),
     })?;
     super::print_read_response(&response)
+}
+
+#[cfg(all(test, unix))]
+mod shell_initialization_tests {
+    use super::process_info_shows_shell_initialization as initializing;
+    use serde_json::json;
+
+    #[test]
+    fn agent_start_retries_only_while_the_pane_shell_is_still_starting() {
+        // No process facts at all: a remote source, or a pane without a program.
+        assert!(!initializing(&json!({"pane_id":"w1:p1"})));
+        // The source has not read the new program's foreground yet.
+        assert!(initializing(&json!({"pane_id":"w1:p1","shell_pid":41})));
+        // A wrapper script that will exec the shell still leads the foreground.
+        assert!(initializing(&json!({
+            "pane_id":"w1:p1","shell_pid":41,"foreground_process_group_id":41,
+            "foreground_processes":[{"pid":41,"name":"delayed","argv":["/bin/sh","/opt/delayed"]}]
+        })));
+        // The shell handed the foreground to a child program: genuinely busy.
+        assert!(!initializing(&json!({
+            "pane_id":"w1:p1","shell_pid":41,"foreground_process_group_id":57,
+            "foreground_processes":[{"pid":57,"name":"sleep","argv":["/bin/sleep","30"]}]
+        })));
+        // The pane's own program is not a shell.
+        assert!(!initializing(&json!({
+            "pane_id":"w1:p1","shell_pid":41,"foreground_process_group_id":41,
+            "foreground_processes":[{"pid":41,"name":"vim","argv":["/usr/bin/vim"]}]
+        })));
+    }
 }

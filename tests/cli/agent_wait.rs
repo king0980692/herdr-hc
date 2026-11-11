@@ -23,14 +23,7 @@ fn agent_wait_exits_immediately_when_status_already_matches() {
         .to_string();
     let pane_id = format!("{workspace_id}:p1");
 
-    let reported = send_request(
-        &socket_path,
-        &format!(
-            r#"{{"id":"req_cli_immediate_2","method":"pane.report_agent","params":{{"pane_id":"{}","source":"custom:test","agent":"pi","state":"idle"}}}}"#,
-            pane_id
-        ),
-    );
-    assert_eq!(reported["result"]["type"], "ok");
+    crate::support::hc::report_agent(&socket_path, &pane_id, "pi", "idle");
 
     let waited = run_cli(
         &socket_path,
@@ -75,14 +68,7 @@ fn agent_wait_times_out_when_status_does_not_match() {
     );
     assert_eq!(created["result"]["type"], "workspace_created");
     let pane_id = created["result"]["root_pane"]["pane_id"].as_str().unwrap();
-    let reported = send_request(
-        &socket_path,
-        &format!(
-            r#"{{"id":"req_cli_timeout_2","method":"pane.report_agent","params":{{"pane_id":"{}","source":"custom:test","agent":"pi","state":"working"}}}}"#,
-            pane_id
-        ),
-    );
-    assert_eq!(reported["result"]["type"], "ok");
+    crate::support::hc::report_agent(&socket_path, pane_id, "pi", "working");
 
     let waited = run_cli(
         &socket_path,
@@ -118,7 +104,7 @@ fn agent_wait_exits_when_done_status_matches() {
     let fake_pi = bin_dir.join("pi");
     fs::write(
         &fake_pi,
-        "#!/bin/sh\nprintf 'starting\\n'\nsleep 4\nprintf 'Working...\\n'\nsleep 1\nprintf '\\033[2J\\033[Hdone\\n'\n",
+        "#!/bin/sh\nprintf '\\033]7501;state=working:app=pi\\007starting\\n'\nsleep 4\nprintf 'Working...\\n'\nsleep 1\nprintf '\\033]7501;state=done:app=pi\\007\\033[2J\\033[Hdone\\n'\nread -r hold\n",
     )
     .unwrap();
     #[cfg(unix)]

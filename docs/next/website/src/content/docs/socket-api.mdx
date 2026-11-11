@@ -197,6 +197,13 @@ can make the next decision without private layout state.
 when available, and foreground processes with pid, name, argv/cmdline, and cwd
 when the platform exposes them.
 
+For hc-owned panes these are the source core's own facts, not a local process
+inspection: `shell_pid` is the program hc started, and `foreground_processes`
+holds only the foreground process group's leader. hc reads the foreground about
+twice a second, so a new program briefly has a `shell_pid` and no foreground.
+Only the Local source reports them; a saved or shared source returns just
+`pane_id`, because its PIDs name processes on another machine.
+
 `layout.export` returns a portable tab layout tree. Omit `tab_id` and `pane_id`
 to export the active tab, pass `tab_id` to export that tab, or pass `pane_id` to
 export the tab containing that pane.

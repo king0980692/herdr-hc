@@ -12,7 +12,7 @@ fn agent_wait_accepts_repeated_until_and_exits_when_one_status_matches() {
     let fake_pi = bin_dir.join("pi");
     fs::write(
         &fake_pi,
-        "#!/bin/sh\nprintf 'starting\\n'\nsleep 4\nprintf 'Working...\\n'\nsleep 1\nprintf '\\033[2J\\033[Hdone\\n'\n",
+        "#!/bin/sh\nprintf '\\033]7501;state=working:app=pi\\007starting\\n'\nsleep 4\nprintf 'Working...\\n'\nsleep 1\nprintf '\\033]7501;state=idle:app=pi\\007\\033[2J\\033[Hdone\\n'\nread -r hold\n",
     )
     .unwrap();
     #[cfg(unix)]
