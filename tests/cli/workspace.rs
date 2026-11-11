@@ -90,6 +90,16 @@ fn workspace_and_pane_management_commands_work() {
     cleanup_spawned_herdr(herdr, base);
 }
 
+/// Known gap: hc-owned panes cannot be ended through the legacy process path,
+/// so `worktree remove` is refused for any workspace that holds one.
+fn assert_worktree_remove_unsupported(output: &std::process::Output) {
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let error: serde_json::Value = serde_json::from_slice(&output.stderr)
+        .unwrap_or_else(|error| panic!("{error}: {}", String::from_utf8_lossy(&output.stderr)));
+    assert_eq!(error["error"]["code"], "unsupported_runtime");
+}
+
 #[test]
 fn worktree_management_commands_work() {
     let base = unique_test_dir();
@@ -190,15 +200,12 @@ fn worktree_management_commands_work() {
             "--json",
         ],
     );
-    assert_eq!(safe_remove.status.code(), Some(1));
-    let safe_remove_json: serde_json::Value = serde_json::from_slice(&safe_remove.stderr).unwrap();
-    assert_eq!(
-        safe_remove_json["error"]["code"],
-        "dirty_worktree_requires_force"
-    );
+    // Removal would have to end the workspace's hc programs through the legacy
+    // process path, so it is refused before the dirty check, forced or not.
+    assert_worktree_remove_unsupported(&safe_remove);
     assert!(checkout.exists());
 
-    let force_removed = run_cli_json(
+    let force_remove = run_cli(
         &socket_path,
         &[
             "worktree",
@@ -209,9 +216,8 @@ fn worktree_management_commands_work() {
             "--json",
         ],
     );
-    assert_eq!(force_removed["result"]["type"], "worktree_removed");
-    assert_eq!(force_removed["result"]["forced"], true);
-    assert!(!checkout.exists());
+    assert_worktree_remove_unsupported(&force_remove);
+    assert!(checkout.exists());
 
     cleanup_spawned_herdr(herdr, base);
 }
@@ -294,7 +300,7 @@ fn workspace_close_requires_explicit_worktree_group_intent() {
 }
 
 #[test]
-fn forced_worktree_remove_terminates_processes_inside_checkout() {
+fn forced_worktree_remove_leaves_hc_programs_and_checkout_untouched() {
     let base = unique_test_dir();
     let config_home = base.join("config");
     let runtime_dir = base.join("runtime");
@@ -344,7 +350,7 @@ fn forced_worktree_remove_terminates_processes_inside_checkout() {
     });
     assert!(process_exists(pid), "child process was not running");
 
-    let removed = run_cli_json(
+    let removed = run_cli(
         &socket_path,
         &[
             "worktree",
@@ -355,9 +361,13 @@ fn forced_worktree_remove_terminates_processes_inside_checkout() {
             "--json",
         ],
     );
-    assert_eq!(removed["result"]["type"], "worktree_removed");
-    assert!(wait_for_pid_exit(pid, Duration::from_secs(3)));
-    assert!(!checkout.exists());
+    // A refused removal must not have ended the program or touched the checkout.
+    assert_worktree_remove_unsupported(&removed);
+    assert!(
+        process_exists(pid),
+        "refused removal ended the pane program"
+    );
+    assert!(checkout.exists());
 
     cleanup_spawned_herdr(herdr, base);
 }
@@ -462,7 +472,7 @@ fn worktree_open_existing_checkout_by_path_and_branch() {
         Some(child_workspace_id.as_str())
     );
 
-    let removed = run_cli_json(
+    let removed = run_cli(
         &socket_path,
         &[
             "worktree",
@@ -473,7 +483,7 @@ fn worktree_open_existing_checkout_by_path_and_branch() {
             "--json",
         ],
     );
-    assert_eq!(removed["result"]["type"], "worktree_removed");
+    assert_worktree_remove_unsupported(&removed);
 
     cleanup_spawned_herdr(herdr, base);
 }

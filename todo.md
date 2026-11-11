@@ -101,6 +101,17 @@
 - [ ] 驗證 explicit pane close 只終止精確 binding；TUI quit / presenter loss 只 detach，不會 replacement shell。
 - [ ] 驗證原有自訂快捷鍵，含 source-scoped `HERDR_ACTIVE_PANE_ID`、水平／垂直移動；sidebar/plugin migration 另需使用者核准，不可順便安裝或改 shared shell/ble。
 
+### P1：Linux 驗收後的已知缺口（2026-11-11，WSL2 / Rust 1.96.1 / pinned hc 0.1.18）
+
+macOS 會排除 `tests/cli.rs`、`tests/machine_api.rs` 與部分 `tests/api_ping.rs`，所以 hc 遷移後這些測試從未執行；Linux 首次完整執行為 48 個失敗。目前剩 18 個，另有下列未解項目：
+
+- [ ] **`worktree remove` 在 Native 無法使用**：workspace 內只要有 hc pane 就回 `unsupported_runtime`（`src/app/api.rs`、`src/app/api/worktrees/deferred.rs`），而 Native 的 pane 全是 hc pane。三個 CLI 測試目前斷言「被拒且 program／checkout 未被動到」。要恢復功能需實作以 `terminal.kill` 終止精確 binding 的 hc 版移除。
+- [ ] **`tests/machine_api.rs` 17 個仍失敗**：測試的是遷移前的 SSH API bridge；`--machine` 目前在非忽略測試中沒有其他覆蓋。需重寫為 hc 架構（假 `ssh` 轉接私有 hc core）。附帶政策問題：PATH 沒有 `hc` 時，以標籤選 legacy SSH 機器會 fail closed，只有完整 profile ID 可用。
+- [ ] **saved／shared 來源仍有 `agent start` 啟動競態**：`pane.process_info` 只對 Local 來源回報 hc 事實（遠端 PID 不外露），所以 CLI 對遠端來源不會在 shell 初始化期間重試。
+- [ ] **`agent prompt --wait` 會漏掉瞬間的 working**：hc 事件串流有發出連續的 working→idle，但 Herdr 的投影只保留最新狀態。`tests/cli/agents.rs` 的假 agent 以 0.2s 停留避開。
+- [ ] `client_mode::sigwinch_refreshes_host_palette_without_resizing` 在遷移前的 `ee5bfb50` 於此環境即失敗，與 hc 無關，原因未查。
+- [ ] `cli::sessions::named_sessions_use_separate_servers_and_workspace_state` 曾在完整併發執行中失敗一次（beta session 多出標籤 `~` 的 workspace），之後多輪未重現；可能與 first-open bootstrap 有關，未查。
+
 ### P1：驗證與發布前 gate
 
 - [ ] 重跑接手後修改涉及的測試，以及 `just ci` / docs contracts；確認 frozen generation-1 codecs、wire-tag / digest / method-shape fixtures 未變。
