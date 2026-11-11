@@ -83,6 +83,10 @@ pub(crate) struct EndpointCatalog {
     version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) selected_profile: Option<ProfileId>,
+    #[serde(skip)]
+    pub(crate) selected_shared: Option<super::SharedCoreKey>,
+    #[serde(skip)]
+    pub(crate) shared: Vec<super::SharedEndpoint>,
     #[serde(default)]
     pub(crate) ssh: Vec<SavedSshEndpoint>,
 }
@@ -92,6 +96,8 @@ pub(crate) struct EndpointCatalog {
 struct EndpointSelection {
     version: u32,
     selected_profile: Option<ProfileId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    selected_shared: Option<super::SharedCoreKey>,
 }
 
 impl Default for EndpointCatalog {
@@ -99,6 +105,8 @@ impl Default for EndpointCatalog {
         Self {
             version: CATALOG_VERSION,
             selected_profile: None,
+            selected_shared: None,
+            shared: Vec::new(),
             ssh: Vec::new(),
         }
     }
@@ -126,6 +134,7 @@ impl EndpointCatalog {
                 });
                 if valid {
                     catalog.selected_profile = selection.selected_profile;
+                    catalog.selected_shared = selection.selected_shared;
                 } else {
                     tracing::warn!(
                         path = %selection_path.display(),
@@ -158,6 +167,7 @@ impl EndpointCatalog {
         let content = serde_json::to_vec_pretty(&EndpointSelection {
             version: SELECTION_VERSION,
             selected_profile: self.selected_profile.clone(),
+            selected_shared: self.selected_shared.clone(),
         })
         .map_err(|error| format!("failed to encode endpoint selection: {error}"))?;
         store_private_json(path, &content, "endpoint selection")
@@ -207,6 +217,19 @@ impl EndpointCatalog {
 
     pub(crate) fn select_local(&mut self) {
         self.selected_profile = None;
+        self.selected_shared = None;
+    }
+
+    pub(crate) fn selected_endpoint(&self) -> super::ClientEndpointId {
+        if let Some(key) = &self.selected_shared {
+            super::ClientEndpointId::Hc(key.clone())
+        } else {
+            self.selected_profile
+                .as_ref()
+                .map_or(super::ClientEndpointId::Local, |id| {
+                    super::ClientEndpointId::Ssh(id.clone())
+                })
+        }
     }
 
     pub(crate) fn select_endpoint(&mut self, endpoint_id: &super::ClientEndpointId) -> bool {
@@ -216,6 +239,14 @@ impl EndpointCatalog {
                 true
             }
             super::ClientEndpointId::Ssh(profile_id) => self.select_ssh(profile_id),
+            super::ClientEndpointId::Hc(key) => {
+                if !self.shared.iter().any(|source| &source.key == key) {
+                    return false;
+                }
+                self.selected_profile = None;
+                self.selected_shared = Some(key.clone());
+                true
+            }
         }
     }
 
@@ -228,6 +259,7 @@ impl EndpointCatalog {
             return false;
         }
         self.selected_profile = Some(id.clone());
+        self.selected_shared = None;
         true
     }
 
@@ -590,6 +622,7 @@ mod tests {
             &serde_json::to_vec(&EndpointSelection {
                 version: SELECTION_VERSION,
                 selected_profile: Some(missing),
+                selected_shared: None,
             })
             .unwrap(),
             "endpoint selection",

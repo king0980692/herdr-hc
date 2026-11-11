@@ -59,11 +59,7 @@ pub(super) fn parse(bytes: &[u8], now_ms: u64) -> Result<JumpRequest, String> {
     if stored.ts.saturating_sub(now_ms) > MAX_FUTURE_MS {
         return Err("jump request is stamped in the future".into());
     }
-    let endpoint_id = if stored.endpoint == "local" {
-        endpoint::ClientEndpointId::Local
-    } else {
-        endpoint::ClientEndpointId::Ssh(endpoint::ProfileId::parse(stored.endpoint)?)
-    };
+    let endpoint_id = endpoint::ClientEndpointId::parse_storage_key(&stored.endpoint)?;
     let non_empty = |value: Option<String>| value.filter(|value| !value.is_empty());
     let target = match (non_empty(stored.pane_id), non_empty(stored.workspace_id)) {
         (Some(pane_id), _) => shell::ClientEndpointFocusTarget::Pane(pane_id),

@@ -100,7 +100,7 @@ Raw socket method names use dot notation:
 | Notification | `notification.show` |
 | Client | `client.window_title.set`, `client.window_title.clear` |
 | Session | `session.snapshot` |
-| Runtime | `runtime.source`, `runtime.request` |
+| Runtime | `runtime.source`, `runtime.request`, `runtime.machines` |
 | Workspace | `workspace.create`, `workspace.list`, `workspace.get`, `workspace.focus`, `workspace.rename`, `workspace.move`, `workspace.move_block`, `workspace.report_metadata`, `workspace.close` |
 | Worktree | `worktree.list`, `worktree.create`, `worktree.open`, `worktree.remove` |
 | Tab | `tab.create`, `tab.list`, `tab.get`, `tab.focus`, `tab.rename`, `tab.move`, `tab.close` |
@@ -658,13 +658,21 @@ platform-native local socket form.
 
 ## Runtime source routing
 
+On Local, `runtime.machines` reads the shared hc machine registry, not Herdr's saved SSH profiles:
+
+```json
+{"id":"machines","method":"runtime.machines","params":{}}
+```
+
+The `runtime_machines` result contains `core` (`id`, `name`) for the local owner and a `machines` array with each remote's permanent `id`, display `name`, transport `target`/`via`, optional `session`, `host`, `version`, `temporary`, and connection `state` (plus optional `since_ms`/`why`). Names and transport hints are not terminal identity. This read-only method uses a background-refreshed cache; it does not start, attach, or stop programs. An unavailable, malformed, stale-owner, or not-yet-loaded registry returns `unavailable_runtime`, not an empty list. Clients must retain their previous inventory on failure and must not interpret unknown future states as connected. Saved remote presentation hosts reject this Local-only discovery method. Check advertised method support before calling it.
+
 For an hc presentation host, discover the pinned source with `runtime.source`:
 
 ```json
 {"id":"discover","method":"runtime.source","params":{}}
 ```
 
-The result includes `host_instance`, source `generation`, `connected`, `core_id`, `error`, `retired`, and saved-profile routing fields where applicable. `host_instance` identifies this presentation host, not the permanent hc core or a terminal binding. Offline discovery is not permission to choose another source.
+The result includes `host_instance`, source `generation`, `connected`, `core_id`, `error`, `retired`, and saved-profile routing fields where applicable. `host_instance` identifies this presentation host, not the permanent hc core or a terminal binding. Offline discovery is not permission to choose another source. A validated shared source also reports optional `owner_core_id` and `registry_core_id`, distinguishing the program owner from the local registry authority. These may remain present while disconnected; they do not grant permission to send input or change sources. Terminal bindings use the owner ID, never the registry ID.
 
 Pin subsequent requests to the returned host instance:
 

@@ -1120,6 +1120,25 @@ impl App {
                     "nested runtime request",
                 )
             }
+            Method::RuntimeMachines(_) => {
+                let graph = match self.terminal_factory.shared_machine_graph() {
+                    Ok(graph) => graph,
+                    Err(error) => {
+                        return responses::encode_error(
+                            request.id,
+                            "unavailable_runtime",
+                            error.to_string(),
+                        )
+                    }
+                };
+                SuccessResponse {
+                    id: request.id,
+                    result: ResponseResult::RuntimeMachines {
+                        core: graph.core,
+                        machines: graph.machines,
+                    },
+                }
+            }
             Method::RuntimeSource(_) => {
                 let Some(source) = self.terminal_factory.source_state() else {
                     return responses::encode_error(
@@ -1134,10 +1153,22 @@ impl App {
                     id: request.id,
                     result: ResponseResult::RuntimeSource {
                         host_instance: source.host_instance,
-                        profile_id: locator.as_ref().map(|l| l.profile_id.clone()),
-                        target: locator.as_ref().map(|l| l.target.clone()),
-                        hc_path: locator.as_ref().and_then(|l| l.hc_path.clone()),
-                        session: locator.map(|l| l.session),
+                        owner_core_id: locator
+                            .as_ref()
+                            .and_then(|locator| locator.owner_core_id().map(str::to_owned)),
+                        registry_core_id: locator
+                            .as_ref()
+                            .and_then(|locator| locator.registry_core_id().map(str::to_owned)),
+                        profile_id: locator
+                            .as_ref()
+                            .and_then(|locator| locator.profile_id().map(str::to_owned)),
+                        target: locator.as_ref().map(|locator| locator.target().to_owned()),
+                        hc_path: locator
+                            .as_ref()
+                            .and_then(|locator| locator.hc_path().map(str::to_owned)),
+                        session: locator
+                            .as_ref()
+                            .and_then(|locator| locator.session().map(str::to_owned)),
                         generation: source.generation,
                         connected: source.client.is_some(),
                         core_id: source.client.map(|c| c.hello.core.id.clone()),

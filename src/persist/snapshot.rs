@@ -10,7 +10,7 @@ use crate::workspace::Workspace;
 
 /// Current snapshot format version.
 // Older Herdr must reject hc-owned sessions instead of spawning duplicate legacy programs.
-pub(super) const SNAPSHOT_VERSION: u32 = 4;
+pub(crate) const SNAPSHOT_VERSION: u32 = 4;
 
 /// Serializable snapshot of the entire herdr session.
 #[derive(Serialize, Deserialize)]

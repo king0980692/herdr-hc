@@ -278,8 +278,16 @@ pub enum ResponseResult {
         projection_revision: u64,
     },
     Ok {},
+    RuntimeMachines {
+        core: crate::hc::CoreInfo,
+        machines: Vec<crate::hc::machines::Machine>,
+    },
     RuntimeSource {
         host_instance: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        owner_core_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        registry_core_id: Option<String>,
         profile_id: Option<String>,
         target: Option<String>,
         session: Option<String>,

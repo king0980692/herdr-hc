@@ -418,6 +418,21 @@ impl PaneRuntime {
         let mut projection = api::state::Projection::default();
         projection.begin(client.hello.core.id.clone(), 1);
         let record = snapshot.terminals[0].clone();
+        // Attaching a view must not resize an existing program before its viewport is active.
+        let rows = record
+            .facts
+            .get("rows")
+            .and_then(Value::as_u64)
+            .and_then(|value| u16::try_from(value).ok())
+            .filter(|value| *value >= MIN_PANE_ROWS)
+            .unwrap_or(rows);
+        let cols = record
+            .facts
+            .get("cols")
+            .and_then(Value::as_u64)
+            .and_then(|value| u16::try_from(value).ok())
+            .filter(|value| *value >= MIN_PANE_COLS)
+            .unwrap_or(cols);
         let binding = TerminalBinding {
             core_id: client.hello.core.id.clone(),
             address: record.address.clone(),

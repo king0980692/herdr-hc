@@ -96,7 +96,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | 通知 | `notification.show` |
 | クライアント | `client.window_title.set`、`client.window_title.clear` |
 | セッション | `session.snapshot` |
-| ランタイム | `runtime.source`、`runtime.request` |
+| ランタイム | `runtime.source`、`runtime.request`、`runtime.machines` |
 | ワークスペース | `workspace.create`、`workspace.list`、`workspace.get`、`workspace.focus`、`workspace.rename`、`workspace.move`、`workspace.move_block`、`workspace.report_metadata`、`workspace.close` |
 | Worktree | `worktree.list`、`worktree.create`、`worktree.open`、`worktree.remove` |
 | タブ | `tab.create`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.close` |
@@ -519,13 +519,21 @@ JSON のデコードまで到達したリクエスト行では、メソッドや
 
 ## ランタイム接続先の経路
 
+Local の `runtime.machines` は Herdr 独自の保存済み SSH 設定ではなく、共有 hc のマシン登録簿を読み取ります:
+
+```json
+{"id":"machines","method":"runtime.machines","params":{}}
+```
+
+`runtime_machines` の結果はローカル所有者の `core`（`id`、`name`）とリモートの `machines` 配列を含みます。各レコードには永続 `id`、表示 `name`、接続 `target`/`via`、任意の `session`、`host`、`version`、`temporary`、接続 `state`、任意の `since_ms`/`why` があります。名前や接続情報は terminal の識別子ではありません。読み取り専用の本メソッドはバックグラウンド更新キャッシュを使い、プログラムの起動・attach・停止を行いません。登録簿が未取得、利用不可、不正、または旧ローカル core の場合、空の一覧ではなく `unavailable_runtime` を返します。失敗時は直前の一覧を保持し、未知の状態を接続済みと扱わないでください。保存済みリモート表示ホストは Local 専用の本メソッドを拒否します。呼び出し前に広告されたメソッド対応を確認してください。
+
 hc 表示ホストの固定した接続先を `runtime.source` で検出します:
 
 ```json
 {"id":"discover","method":"runtime.source","params":{}}
 ```
 
-結果には `host_instance`、接続先の `generation`、`connected`、`core_id`、`error`、`retired`、該当時の保存プロファイル経路が含まれます。`host_instance` はこの表示ホストであり、恒久 hc core やターミナルバインディングではありません。オフラインでも別の接続先を選ぶ許可にはなりません。
+結果には `host_instance`、接続先の `generation`、`connected`、`core_id`、`error`、`retired`、該当時の保存プロファイル経路が含まれます。`host_instance` はこの表示ホストであり、恒久 hc core やターミナルバインディングではありません。オフラインでも別の接続先を選ぶ許可にはなりません。検証済み共有接続先には任意の `owner_core_id` と `registry_core_id` も含まれ、プログラム所有者とローカル登録簿の権威 core を区別します。切断中も保持できますが、入力送信や接続先変更を許可する情報ではありません。ターミナルバインディングには登録簿 ID ではなく所有者 ID を使います。
 
 後続の要求を返されたホストインスタンスに固定します:
 

@@ -241,7 +241,8 @@ fn run_client_with_mode(
     } else {
         endpoint::EndpointCatalog::default()
     };
-    let federated = endpoint_catalog.has_enabled_ssh();
+    let federated =
+        endpoint_catalog.has_enabled_ssh() || endpoint_catalog.selected_shared.is_some();
 
     let initial_stream = match crate::ipc::connect_local_stream(&socket_path) {
         Ok(stream) => Some(stream),
@@ -295,7 +296,7 @@ fn run_client_with_mode(
                 shell_surface_size,
                 endpoint_keybindings,
                 loop_config.mouse_capture_active,
-                true,
+                endpoint_catalog.selected_shared.is_none(),
                 !is_remote_client_process(),
                 &AtomicBool::new(false),
             )
@@ -494,7 +495,8 @@ async fn run_client_loop(
         detached_process_children: Vec::new(),
         shell: config.shell_config.map(shell::ClientShellState::new),
     };
-    let mut federated = endpoint_catalog.has_enabled_ssh();
+    let mut federated =
+        endpoint_catalog.has_enabled_ssh() || endpoint_catalog.selected_shared.is_some();
     if let Some(shell) = state.shell.as_mut() {
         shell.set_host_reports_key_releases(config.host_escape_disambiguation_active);
         shell.set_host_erase_byte(crate::platform::terminal_erase_byte());
@@ -634,13 +636,14 @@ async fn run_client_loop(
             surface_decoder,
         )?;
         let mut registry = endpoint::EndpointRegistry::new(transport, 1, negotiation);
-        if state.shell.is_some() {
+        if state.shell.is_some() && endpoint_catalog.selected_shared.is_none() {
             registry.send(&ClientMessage::ClientShellFocus { focused: true });
         }
         registry
     } else {
         endpoint::EndpointRegistry::empty()
     };
+    restore_catalog_selection(&mut state, &mut write_stream, &endpoint_catalog);
     let mut supervisors =
         endpoint::EndpointSupervisors::new(&endpoint_catalog.ssh, std::time::Instant::now());
     if federated {
@@ -665,6 +668,7 @@ async fn run_client_loop(
     let mut pending_activation: Option<endpoint::PendingEndpointActivation> = None;
     let mut scheduled_activation = None;
     let mut pending_catalog: Option<Result<Vec<endpoint::SavedSshEndpoint>, String>> = None;
+    let mut pending_shared = None;
     if state.shell.is_some() && !is_remote_client && state.attach_escape.is_none() {
         catalog_reload::watch_profiles(event_tx.clone(), should_quit.clone());
         jump_request::watch(event_tx.clone(), should_quit.clone());
@@ -683,7 +687,55 @@ async fn run_client_loop(
     let mut stdin_open = true;
     while !should_quit.load(Ordering::Acquire) {
         if pending_activation.is_none() {
+            let mut catalog_changed = false;
+            if let Some(sources) = pending_shared.take() {
+                catalog_changed |= endpoint_catalog.shared != sources;
+                let sources: Vec<endpoint::SharedEndpoint> = sources;
+                let now = std::time::Instant::now();
+                if !federated && !sources.is_empty() {
+                    federated = true;
+                    supervisors.add_local(
+                        client_socket_path(),
+                        write_stream
+                            .connection(&endpoint::ClientEndpointId::Local)
+                            .map(|connection| connection.generation),
+                        now,
+                    );
+                }
+                let removed = catalog_reload::apply_shared(
+                    &mut state,
+                    &mut write_stream,
+                    &mut endpoint_commands,
+                    &mut supervisors,
+                    &mut endpoint_catalog,
+                    sources,
+                    now,
+                );
+                catalog_changed |= removed;
+                if removed {
+                    clear_endpoint_host_effects(
+                        &mut state,
+                        &host_mouse_capture_active,
+                        &host_sgr_pixels_active,
+                    );
+                    scheduled_activation = catalog_retirement_activation(&mut state, &write_stream);
+                } else if let Some(key) = endpoint_catalog.selected_shared.as_ref().filter(|key| {
+                    endpoint_catalog
+                        .shared
+                        .iter()
+                        .any(|source| &source.key == *key)
+                }) {
+                    if write_stream.active_id().is_local() {
+                        scheduled_activation = Some(ClientLoopEvent::ActivateEndpoint {
+                            endpoint_id: endpoint::ClientEndpointId::Hc(key.clone()),
+                            target: None,
+                            force: true,
+                        });
+                    }
+                }
+            }
             if let Some(reload) = pending_catalog.take() {
+                catalog_changed = true;
                 match reload {
                     Ok(profiles) => {
                         let now = std::time::Instant::now();
@@ -726,27 +778,8 @@ async fn run_client_loop(
                                 &host_mouse_capture_active,
                                 &host_sgr_pixels_active,
                             );
-                            scheduled_activation = None;
-                            if state.shell.as_ref().is_some_and(|shell| {
-                                shell.endpoint_projection_available(
-                                    &endpoint::ClientEndpointId::Local,
-                                )
-                            }) && write_stream
-                                .connection(&endpoint::ClientEndpointId::Local)
-                                .is_some()
-                            {
-                                scheduled_activation = Some(ClientLoopEvent::ActivateEndpoint {
-                                    endpoint_id: endpoint::ClientEndpointId::Local,
-                                    target: None,
-                                    force: true,
-                                });
-                            } else {
-                                present_handoff_unavailable(
-                                    &mut state,
-                                    "Local is unavailable; reconnecting".into(),
-                                    None,
-                                );
-                            }
+                            scheduled_activation =
+                                catalog_retirement_activation(&mut state, &write_stream);
                         }
                     }
                     Err(error) => {
@@ -758,6 +791,8 @@ async fn run_client_loop(
                         }
                     }
                 }
+            }
+            if catalog_changed {
                 apply_client_shell_input_source_changes(&mut state, &mut prefix_input_source);
                 if let Some(shell) = state.shell.as_mut() {
                     let cleanup = shell.take_pending_graphics_cleanup();
@@ -850,6 +885,7 @@ async fn run_client_loop(
                 }
             }
             ClientLoopEvent::EndpointCatalog(reload) => pending_catalog = Some(reload),
+            ClientLoopEvent::SharedMachines(sources) => pending_shared = Some(sources),
             #[cfg(unix)]
             ClientLoopEvent::StdinInput(data) => {
                 let image_bridge_active = endpoint_accepts_local_images(
@@ -2235,32 +2271,14 @@ async fn run_client_loop(
                                 continue;
                             }
                         }
-                        let selected_endpoint = endpoint_catalog
-                            .selected_profile
-                            .as_ref()
-                            .map_or(endpoint::ClientEndpointId::Local, |profile_id| {
-                                endpoint::ClientEndpointId::Ssh(profile_id.clone())
-                            });
-                        let activation_ready = state.shell.as_ref().is_some_and(|shell| {
-                            shell.endpoint_has_snapshot(&selected_endpoint)
-                                && (!write_stream
-                                    .connection(write_stream.active_id())
-                                    .is_some_and(|connection| connection.surface_active)
-                                    || shell.endpoint_boot_id(write_stream.active_id()).is_some())
-                        });
-                        let needs_surface = write_stream
-                            .connection(&selected_endpoint)
-                            .is_some_and(|connection| !connection.surface_active);
-                        if activation_ready
-                            && needs_surface
-                            && pending_activation.is_none()
-                            && state.deferred_local_activation.is_none()
-                        {
-                            scheduled_activation = Some(ClientLoopEvent::ActivateEndpoint {
-                                endpoint_id: selected_endpoint,
-                                target: None,
-                                force: false,
-                            });
+                        if pending_activation.is_none() {
+                            if let Some(event) = ready_selected_endpoint_activation(
+                                &state,
+                                &write_stream,
+                                &endpoint_catalog,
+                            ) {
+                                scheduled_activation = Some(event);
+                            }
                         }
                     }
                     ServerMessage::Welcome { .. } => {

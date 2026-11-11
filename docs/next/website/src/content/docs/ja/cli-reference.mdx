@@ -68,7 +68,7 @@ herdr machine remove <profile-id>
 
 `herdr machine status [<label-or-id>] [--json]` は SSH と hc を新たに非対話式で確認します。`reachable` はその確認結果で、TUI と接続先の現在の接続状態ではありません。ターミナルで `herdr machine reconnect <label-or-id>` を実行すると、対応する SSH 認証と hc の確認を行いますが、どちらの実行環境もインストール・更新しません。バックグラウンド試行は厳密にホスト鍵を検証し、プロンプトを表示せず、最大 30 秒のバックオフを使います。SSH の通信タイムアウトとは別の制限です。[接続の問題](/ja/docs/connecting-machines/#接続の問題)を参照してください。明示的な従来の `--remote` アタッチは、この保存済み hc 接続とは別の経路です。
 
-ワークスペース、タブ、ペインの ID とエージェント名はサーバーごとに独立しています。UI での選択は CLI の接続先を変えません。保存済み SSH マシンへ API コマンドを送るには、グローバルな**プレフィックス** `--machine <label-or-id>` を指定します。
+ワークスペース、タブ、ペインの ID とエージェント名はサーバーごとに独立しています。UI での選択は CLI の接続先を変えません。共有 hc マシンまたは明示的な旧式 SSH プロファイルへ API コマンドを送るには、グローバルな**プレフィックス** `--machine <label-or-id>` を指定します。
 
 ```bash
 herdr --machine "Build machine" agent list
@@ -77,7 +77,7 @@ herdr --machine "Build machine" agent prompt w1:p1 "review this change"
 herdr --machine "Build machine" workspace list
 ```
 
-有効なプロファイル ID または一意のラベル（大文字・小文字を区別）を指定します。任意の SSH ホスト名は使えません。保存済みの hc ソースセッションを使うため、`--session` や `--remote` との併用はエラーです。省略時は既存のローカルセッション・ソケットの動作を維持します。
+共有接続先は hc のデフォルト登録簿から core ID または大文字・小文字を区別するマシン名で都度解決します。`hc:<registry-core-id>/<owner-core-id>` は両方の識別情報を固定し、旧式プロファイルへフォールバックしません。既存の有効な旧式プロファイル ID は従来の意味を維持し、共有マシンが一致しない場合は旧式ラベルも使えます。登録簿の取得に失敗した場合は別名によるルーティングを中止し、旧式ラベルへフォールバックしません。任意の SSH ホスト名は接続先セレクターではありません。接続先の hc セッションを使い、`--session` や `--remote` との併用はエラーです。省略時は既存のローカルセッション・ソケットの動作を維持します。
 
 API 経由の操作には `workspace`、`tab`、`pane`、`notification`、`agent`（`attach` とローカルの `explain --file` 以外）、`api snapshot`、`status server`、API ベースのプラグインコマンドが含まれます。接続先の Git 検出と `worktree` ファイルシステム操作は未対応で、同名のクライアント側パスに触れずに失敗します。ローカルのインストール・設定、プラグインのインストール、セッション管理、対話的な端末接続は転送しません。プラグイン定義はローカル表示ホストに属し、ターミナルコマンドは接続先で実行します。従来のエージェント manifest の再読み込みで hc の報告状態を置き換えることはありません。
 

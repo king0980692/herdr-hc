@@ -207,6 +207,14 @@ fn manual_client_chrome_preferences_round_trip_per_endpoint() {
     state
         .remote_collapsed_groups
         .insert(remote_id.clone(), HashSet::from(["/repo".to_owned()]));
+    let shared_id = ClientEndpointId::Hc(crate::client::endpoint::SharedCoreKey {
+        registry_core_id: "registry".into(),
+        core_id: "owner".into(),
+    });
+    state.remote_collapsed_groups.insert(
+        shared_id.clone(),
+        HashSet::from(["/source/repo".to_owned()]),
+    );
     state.persist_chrome_preferences(&mut ClientShellInput::default());
     let stored = std::fs::read_to_string(&path).expect("stored client chrome preferences");
     assert!(stored.contains(profile.id.as_str()));
@@ -230,6 +238,10 @@ fn manual_client_chrome_preferences_round_trip_per_endpoint() {
     assert_eq!(
         reloaded.remote_collapsed_groups.get(&remote_id),
         Some(&HashSet::from(["/repo".to_owned()]))
+    );
+    assert_eq!(
+        reloaded.remote_collapsed_groups.get(&shared_id),
+        Some(&HashSet::from(["/source/repo".to_owned()]))
     );
     let mut reloaded = reloaded;
     reloaded.persist_chrome_preferences(&mut ClientShellInput::default());

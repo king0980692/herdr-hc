@@ -3,6 +3,8 @@
 //! Connection/attachment lifetime never owns core's programs. Only an explicit
 //! terminal.kill request may end one. No Python bridge, PTY, or hc source dependency.
 
+pub mod machines;
+pub(crate) mod shared;
 pub(crate) mod source;
 pub mod state;
 pub mod wire;
@@ -32,7 +34,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const QUEUE: usize = 32;
 const MAX_PENDING: usize = 64;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CoreInfo {
     pub id: String,
     pub name: String,

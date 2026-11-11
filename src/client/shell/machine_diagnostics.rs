@@ -46,8 +46,11 @@ fn machine_retryable(endpoint: &ClientShellEndpoint) -> bool {
         )
 }
 
-fn machine_diagnostic_code(profile_id: &impl std::fmt::Display) -> String {
-    format!("machine-diagnostic:{profile_id}")
+fn machine_diagnostic_code(id: &ClientEndpointId) -> String {
+    match id {
+        ClientEndpointId::Ssh(profile) => format!("machine-diagnostic:{profile}"),
+        _ => format!("machine-diagnostic:{}", id.storage_key()),
+    }
 }
 
 impl ClientShellState {
@@ -85,9 +88,9 @@ impl ClientShellState {
     /// Asks for an immediate connection attempt instead of waiting out the backoff.
     /// Returns false when the machine has no pending reconnect to bring forward.
     pub(super) fn retry_machine(&mut self, id: &ClientEndpointId) -> bool {
-        let ClientEndpointId::Ssh(profile_id) = id else {
+        if id.is_local() {
             return false;
-        };
+        }
         if !self
             .endpoints
             .iter()
@@ -96,7 +99,7 @@ impl ClientShellState {
             return false;
         }
         // Clear the selected machine's diagnostic or active disconnect notice.
-        let code = machine_diagnostic_code(profile_id);
+        let code = machine_diagnostic_code(id);
         let unavailable = format!("machine-unavailable:{}:", id.storage_key());
         if self.visible_endpoint_notice.as_ref().is_some_and(|notice| {
             notice.key.code == code || notice.key.code.starts_with(&unavailable)
@@ -171,17 +174,21 @@ impl ClientShellState {
     }
 
     fn show_machine_diagnostic(&mut self, id: &ClientEndpointId) {
-        let ClientEndpointId::Ssh(profile_id) = id else {
+        if id.is_local() {
             return;
-        };
+        }
         let Some(error) = self.machine_diagnostics.errors.get(id) else {
             return;
         };
-        let code = machine_diagnostic_code(profile_id);
-        let command = if crate::remote::ssh_error_requires_authentication(error) {
-            format!("herdr machine reconnect {profile_id}")
-        } else {
-            format!("herdr machine status {profile_id}")
+        let code = machine_diagnostic_code(id);
+        let command = match id {
+            ClientEndpointId::Ssh(profile_id)
+                if crate::remote::ssh_error_requires_authentication(error) =>
+            {
+                format!("herdr machine reconnect {profile_id}")
+            }
+            ClientEndpointId::Ssh(profile_id) => format!("herdr machine status {profile_id}"),
+            _ => "managed by hc; check `hc machine ls` and retry".into(),
         };
         // A requested retry can report its diagnostic, but must not replace another notice.
         if self

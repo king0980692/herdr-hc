@@ -74,6 +74,50 @@ pub(super) async fn attach(
     (runtime.unwrap(), notify, event_rx)
 }
 
+#[tokio::test]
+async fn hc_existing_program_attach_preserves_source_size_until_explicit_view_resize() {
+    let (client, mut server) = test_client();
+    let (events, _receive) = mpsc::channel(8);
+    let attach = TerminalRuntime::attach_hc(
+        PaneId::from_raw(1),
+        8,
+        40,
+        client,
+        "t1",
+        0,
+        1024,
+        crate::terminal_theme::TerminalTheme::default(),
+        None,
+        events,
+        Arc::new(tokio::sync::Notify::new()),
+        Arc::new(RenderSignal::default()),
+        true,
+    );
+    let serve = async {
+        let request: Value =
+            serde_json::from_slice(&read_frame(&mut server).await.payload).unwrap();
+        assert_eq!(request["method"], "events.subscribe");
+        reply(&mut server, request["id"].clone(), json!({"channel":2,"seq":1,"terminals":[{"address":"t1","state":"live","rows":43,"cols":132}]})).await;
+        let request: Value =
+            serde_json::from_slice(&read_frame(&mut server).await.payload).unwrap();
+        assert_eq!(request["method"], "terminal.attach");
+        assert_eq!(request["params"]["rows"], 43);
+        assert_eq!(request["params"]["cols"], 132);
+        reply(
+            &mut server,
+            request["id"].clone(),
+            json!({"channel":3,"automatic_input":true}),
+        )
+        .await;
+    };
+    let (runtime, _) = tokio::join!(attach, serve);
+    let runtime = runtime.unwrap();
+    assert_eq!(runtime.current_size(), (43, 132));
+    runtime.resize(10, 60, 0, 0);
+    let frame = until_kind(&mut server, wire::RESIZE).await;
+    assert_eq!(frame.payload.as_ref(), &[60, 0, 10, 0]);
+}
+
 async fn until_kind(server: &mut DuplexStream, kind: u8) -> Frame {
     timeout(Duration::from_secs(2), async {
         loop {

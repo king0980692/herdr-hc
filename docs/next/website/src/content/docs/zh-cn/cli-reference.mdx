@@ -68,7 +68,7 @@ herdr machine remove <profile-id>
 
 `herdr machine status [<label-or-id>] [--json]` 可进行新的非交互式 SSH／hc 检查。`reachable` 表示本次探测结果，不代表 TUI 当前的源端连接状态。在终端运行 `herdr machine reconnect <label-or-id>` 可完成受支持的 SSH 认证并验证 hc，不安装或更新任一运行时。后台尝试严格检查主机密钥，绝不提示交互，退避间隔最大 30 秒，与 SSH 传输超时分别计算。参阅[连接问题](/zh-cn/docs/connecting-machines/#连接问题)。明确使用旧版 `--remote` 连接是独立路径，不是此已保存 hc 路径。
 
-工作区、标签页、窗格 ID 和智能体名称仅在所属服务器内有效。UI 中的选择不会改变 CLI 的目标。使用全局**前缀** `--machine <label-or-id>` 将 API 命令发送到已保存的 SSH 机器：
+工作区、标签页、窗格 ID 和智能体名称仅在所属服务器内有效。UI 中的选择不会改变 CLI 的目标。使用全局**前缀** `--machine <label-or-id>` 将 API 命令发送到共用 hc 机器或明确指定的旧版 SSH 配置：
 
 ```bash
 herdr --machine "Build machine" agent list
@@ -77,7 +77,7 @@ herdr --machine "Build machine" agent prompt w1:p1 "review this change"
 herdr --machine "Build machine" workspace list
 ```
 
-选择器必须是已启用的配置 ID 或唯一标签（区分大小写），不能是任意 SSH 主机名。使用保存的 hc 源会话，不能与 `--session` 或 `--remote` 混用。省略前缀时，保留现有本地会话／socket 行为。
+共用选择器会即时从 hc 默认注册表按 core ID 或区分大小写的机器名解析。使用 `hc:<registry-core-id>/<owner-core-id>` 可同时固定两种身份；该格式绝不回退到旧版配置。已有已启用旧版配置 ID 保持原意；没有共用机器匹配时仍支持旧版标签。注册表发现失败时停止按别名路由，绝不因此回退到旧版标签。任意 SSH 主机名不是源端选择器。使用源端的 hc 会话，不能与 `--session` 或 `--remote` 混用。省略前缀时，保留现有本地会话／socket 行为。
 
 API 路由包含 `workspace`、`tab`、`pane`、`notification`、`agent`（不含 `attach` 和本地 `explain --file`）、`api snapshot`、`status server` 及基于 API 的插件命令。源端 Git 发现和 `worktree` 文件系统操作暂不可用：会失败，不触碰同名客户端本地路径。本地安装和配置、插件安装、会话管理及交互式终端连接不会被转发。插件定义属于本地呈现主机，其终端命令在源端执行。旧版智能体 manifest 重载不会取代 hc 上报的状态。
 

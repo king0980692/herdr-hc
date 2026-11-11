@@ -30,6 +30,8 @@ fn presenter_command(exe: &Path, profile_id: &str) -> io::Result<std::process::C
     command
         .args(["--session", &name, "server"])
         .env(crate::hc::source::PROFILE_ENV, profile_id)
+        .env_remove(crate::hc::shared::CORE_ENV)
+        .env_remove(crate::hc::shared::REGISTRY_ENV)
         .env_remove(crate::api::SOCKET_PATH_ENV_VAR)
         .env_remove("HERDR_CLIENT_SOCKET_PATH")
         .env_remove(crate::server::autodetect::STARTUP_CWD_ENV_VAR)
@@ -78,7 +80,7 @@ fn ensure_source(
             id: "hc-source-preflight".into(),
             method: Method::RuntimeSource(EmptyParams {}),
         };
-        match client.request_value_with_timeout(&request, Duration::from_millis(500)) {
+        match client.request_value_cancellable(&request, Duration::from_millis(500), cancelled) {
             Ok(value) => {
                 if value["result"]["profile_id"].as_str() == Some(profile_id)
                     && value["result"]["target"].as_str() == Some(target)

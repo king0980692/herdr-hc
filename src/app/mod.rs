@@ -727,6 +727,14 @@ impl App {
         };
         app.configure_tab_bar_status(&config.ui.tab_bar_right, &config.ui.tab_bar_right_separator);
         app.configure_window_title(&config.ui.window_title);
+        if policy.restore_session
+            && app.state.workspaces.is_empty()
+            && app.terminal_factory.discovers_existing_programs()
+        {
+            let now = Instant::now();
+            app.hc_recovery.initial_inventory_due = Some(now);
+            app.bootstrap_existing_hc_terminals(now);
+        }
         app.refresh_restored_workspace_git_metadata();
         Ok(app)
     }
@@ -818,7 +826,10 @@ impl App {
             self.default_workspace_initialized = true;
             return false;
         }
-        if self.terminal_factory.is_hc() && self.default_workspace_initialized {
+        if self.terminal_factory.is_hc()
+            && (self.default_workspace_initialized
+                || self.hc_recovery.initial_inventory_due.is_some())
+        {
             return false;
         }
         // An ambiguous run must not be retried by the event loop, nor a closed program respawned.

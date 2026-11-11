@@ -2299,6 +2299,7 @@ impl HeadlessServer {
                     client.outer_terminal_focus = Some(focused);
                 }
                 if focused {
+                    self.app.refresh_initial_hc_inventory_on_focus();
                     self.promote_client_to_foreground(client_id);
                     self.claim_shell_tab_geometry(client_id, false);
                     if !another_focused_viewer {

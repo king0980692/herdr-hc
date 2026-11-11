@@ -3,6 +3,59 @@ use super::*;
 use crate::terminal::TerminalFactory;
 
 #[tokio::test]
+async fn hc_border_titles_preserve_original_metadata_and_label_precedence() {
+    let (client, mut server) = tests::test_client();
+    let (runtime, _, _) = runtime_tests::attach(client, &mut server).await;
+    let mut snapshot = runtime.hc_snapshot().unwrap();
+    snapshot
+        .terminal
+        .facts
+        .insert("title".into(), json!("shell host: ~"));
+    let mut terminal =
+        crate::terminal::TerminalState::new(crate::terminal::TerminalId::alloc(), "/tmp".into());
+    terminal.apply_hc_snapshot(snapshot.clone());
+    assert_eq!(
+        terminal.terminal_title_stripped().as_deref(),
+        Some("shell host: ~")
+    );
+    assert_eq!(terminal.effective_title(), None);
+    assert_eq!(terminal.border_label(false), None);
+    assert_eq!(terminal.border_label(true), None);
+
+    snapshot
+        .terminal
+        .facts
+        .insert("reported".into(), json!(true));
+    for title in [None, Some(""), Some("Reviewing patch")] {
+        let mut status = json!({"state":"working", "app":"pi"});
+        if let Some(title) = title {
+            status["title"] = json!(title);
+        }
+        snapshot.terminal.facts.insert("status".into(), status);
+        terminal.apply_hc_snapshot(snapshot.clone());
+        let explicit_title = title.filter(|value| !value.is_empty());
+        assert_eq!(terminal.effective_title().as_deref(), explicit_title);
+        assert_eq!(terminal.border_label(false).as_deref(), explicit_title);
+        assert_eq!(
+            terminal.border_label(true).as_deref(),
+            explicit_title.or(Some("pi"))
+        );
+        terminal.set_manual_label("reviewer".into());
+        for show_agent in [false, true] {
+            assert_eq!(
+                terminal.border_label(show_agent).as_deref(),
+                explicit_title.or(Some("reviewer"))
+            );
+        }
+        terminal.set_manual_label(String::new());
+        assert_eq!(
+            terminal.terminal_title_stripped().as_deref(),
+            Some("shell host: ~")
+        );
+    }
+}
+
+#[tokio::test]
 async fn hc_status_events_match_queries_and_notify_only_live_explicit_transitions() {
     use crate::api::schema::{AgentStatus, EventData};
     let (client, mut server) = tests::test_client();

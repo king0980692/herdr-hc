@@ -221,6 +221,68 @@ pub(super) fn take_ready_local_activation(
         })
 }
 
+pub(super) fn restore_catalog_selection(
+    state: &mut ClientState,
+    endpoints: &mut endpoint::EndpointRegistry,
+    catalog: &endpoint::EndpointCatalog,
+) {
+    if catalog.selected_shared.is_some() {
+        endpoints.set_surface_active(&endpoint::ClientEndpointId::Local, false);
+        endpoints.freeze_input();
+        state.freeze_presentation();
+        present_handoff_unavailable(
+            state,
+            "Selected machine is unavailable; reconnecting".into(),
+            None,
+        );
+    }
+}
+
+pub(super) fn ready_selected_endpoint_activation(
+    state: &ClientState,
+    endpoints: &endpoint::EndpointRegistry,
+    catalog: &endpoint::EndpointCatalog,
+) -> Option<ClientLoopEvent> {
+    let selected = catalog.selected_endpoint();
+    let shell = state.shell.as_ref()?;
+    let ready = shell.endpoint_has_snapshot(&selected)
+        && (!endpoints
+            .connection(endpoints.active_id())
+            .is_some_and(|connection| connection.surface_active)
+            || shell.endpoint_boot_id(endpoints.active_id()).is_some());
+    (ready
+        && state.deferred_local_activation.is_none()
+        && endpoints
+            .connection(&selected)
+            .is_some_and(|connection| !connection.surface_active))
+    .then_some(ClientLoopEvent::ActivateEndpoint {
+        endpoint_id: selected,
+        target: None,
+        force: false,
+    })
+}
+
+pub(super) fn catalog_retirement_activation(
+    state: &mut ClientState,
+    endpoints: &endpoint::EndpointRegistry,
+) -> Option<ClientLoopEvent> {
+    if state.shell.as_ref().is_some_and(|shell| {
+        shell.endpoint_projection_available(&endpoint::ClientEndpointId::Local)
+    }) && endpoints
+        .connection(&endpoint::ClientEndpointId::Local)
+        .is_some()
+    {
+        Some(ClientLoopEvent::ActivateEndpoint {
+            endpoint_id: endpoint::ClientEndpointId::Local,
+            target: None,
+            force: true,
+        })
+    } else {
+        present_handoff_unavailable(state, "Local is unavailable; reconnecting".into(), None);
+        None
+    }
+}
+
 pub(super) fn begin_endpoint_activation(
     state: &mut ClientState,
     endpoints: &mut endpoint::EndpointRegistry,

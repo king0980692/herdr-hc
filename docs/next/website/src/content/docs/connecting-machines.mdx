@@ -3,9 +3,19 @@ title: Connecting machines
 description: Keep Herdr presentation local while hc owns programs and terminals on saved SSH machines.
 ---
 
-Save an SSH machine, then switch between its workspaces and Local in one Herdr window. **Herdr renders locally; hc owns the remote programs, terminal state, and reported agent status.** Saved-machine setup does not install, start, replace, or render through remote Herdr.
+The hc-backed build reads the **shared default hc machine registry**; it does not copy those machines into a second SSH catalog. Switch between their workspaces and Local in one Herdr window. **Herdr renders locally; hc owns the remote programs, terminal state, and reported agent status.** Saved-machine setup does not install, start, replace, or render through remote Herdr.
 
 There are two independent connections: the client connects to a local presentation host, and that host connects to hc over SSH. A working presentation connection does not by itself mean hc is reachable. Unavailable panes keep their saved identity and layout; they do not become replacement shells.
+
+## Shared hc machines
+
+Inspect and manage the common inventory with hc (`hc machine ls --json`). Herdr refreshes it in the background, outside pane rendering. Names are display labels; a source is identified by its permanent owner core ID and the registry core ID. Renaming a machine does not change bindings, while a replaced owner, registry, or route cannot silently take over an old layout.
+
+For a machine with no saved native layout, its existing **live, owner-local programs each become a tab**. This attaches views, not new shells, and does not import another application's PTYs or layouts. Saved native layouts are restored unchanged; finished history is not imported as live. An empty remote source stays empty until you explicitly create a workspace. Explicit pane close terminates that exact shared program; quitting or losing Herdr only detaches.
+
+Direct SSH machines are supported. Provider-command (`via`) transports fail closed rather than being reinterpreted as SSH. Source status, input leadership, and resize behavior must be compatible with the installed hc; a connection alone does not qualify multi-viewer behavior.
+
+The saved-profile commands below remain for **explicit legacy/custom sources**, including a side-by-side `--hc-path`. They are not required for machines already in the common registry and do not edit that registry.
 
 ## Before you connect
 

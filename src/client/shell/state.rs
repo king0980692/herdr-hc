@@ -1021,11 +1021,14 @@ impl ClientShellState {
         }
         let mut remote_collapsed_groups = HashMap::<ClientEndpointId, HashSet<String>>::new();
         for saved in preferences.remote_collapsed_groups {
-            let Ok(profile_id) = crate::client::endpoint::ProfileId::parse(saved.profile_id) else {
+            let Ok(endpoint_id) = ClientEndpointId::parse_storage_key(&saved.profile_id) else {
                 continue;
             };
+            if endpoint_id.is_local() {
+                continue;
+            }
             remote_collapsed_groups
-                .entry(ClientEndpointId::Ssh(profile_id))
+                .entry(endpoint_id)
                 .or_default()
                 .extend(saved.collapsed_groups);
         }

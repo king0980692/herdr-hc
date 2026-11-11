@@ -70,7 +70,7 @@ Changes apply automatically to open local Herdr clients, normally within a secon
 
 Use `herdr machine status [<label-or-id>] [--json]` for a fresh, noninteractive SSH/hc check. `reachable` describes that probe, not the TUI's current source connection. Use `herdr machine reconnect <label-or-id>` in a terminal for supported SSH authentication and hc verification; it does not install or update either runtime. Background attempts use strict host-key checks, never prompt, and have backoff capped at 30 seconds, separate from SSH transport timeouts. See [Connection problems](/docs/connecting-machines/#connection-problems). Explicit legacy `--remote` attachment is separate from this saved hc path.
 
-Workspace, tab, pane IDs, and agent names belong to a single server. Selecting a machine in the UI does not retarget CLI commands. Use the global **prefix** `--machine <label-or-id>` to route API commands to a saved SSH machine:
+Workspace, tab, pane IDs, and agent names belong to a single server. Selecting a machine in the UI does not retarget CLI commands. Use the global **prefix** `--machine <label-or-id>` to route API commands to a shared hc machine or an explicit legacy SSH profile:
 
 ```bash
 herdr --machine "Build machine" agent list
@@ -79,7 +79,7 @@ herdr --machine "Build machine" agent prompt w1:p1 "review this change"
 herdr --machine "Build machine" workspace list
 ```
 
-The selector must match an enabled saved profile ID or a unique, case-sensitive label, not an arbitrary SSH hostname. The saved hc source session is used; combining `--machine` with `--session` or `--remote` is an error. Without the prefix, commands retain their existing local session/socket behavior.
+Shared selectors resolve freshly from hc's default registry by core ID or case-sensitive machine name. Use `hc:<registry-core-id>/<owner-core-id>` to pin both identities; this form never falls back to a legacy profile. Existing enabled legacy profile IDs retain their meaning, and legacy labels remain supported when no common machine matches. Failed registry discovery stops alias-based routing; it never authorizes a legacy-label fallback. An arbitrary SSH hostname is not a source selector. The source's hc session is used; combining `--machine` with `--session` or `--remote` is an error. Without the prefix, commands retain their existing local session/socket behavior.
 
 API routing includes `workspace`, `tab`, `pane`, `notification`, `agent` (except `attach` and local `explain --file`), `api snapshot`, `status server`, and API-backed plugin commands. Source Git discovery and `worktree` filesystem operations are currently unavailable: they fail without touching a similarly named client-local path. Local installation/configuration commands, plugin installation, session management, and interactive terminal attachment are not forwarded. Plugin definitions belong to the local presentation host; their terminal commands execute on the source. Legacy agent-manifest reloads do not replace hc-reported status.
 

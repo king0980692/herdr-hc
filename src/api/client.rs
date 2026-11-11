@@ -1,6 +1,7 @@
 use std::fmt;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use interprocess::local_socket::traits::Stream as _;
@@ -74,13 +75,26 @@ impl ApiClient {
         request: &Request,
         timeout: Duration,
     ) -> Result<serde_json::Value, ApiClientError> {
-        let mut stream = self.connect()?;
-        set_timeout_best_effort(&stream, TimeoutKind::Send, timeout)?;
-        set_timeout_best_effort(&stream, TimeoutKind::Recv, timeout)?;
-        write_request(&mut stream, request, self.source_instance.as_deref())?;
+        self.request_value_cancellable(request, timeout, &AtomicBool::new(false))
+    }
 
-        let mut reader = BufReader::new(stream);
-        read_json_line(&mut reader)
+    pub(crate) fn request_value_cancellable(
+        &self,
+        request: &Request,
+        timeout: Duration,
+        cancelled: &AtomicBool,
+    ) -> Result<serde_json::Value, ApiClientError> {
+        let deadline = Instant::now() + timeout;
+        let mut stream =
+            crate::ipc::connect_local_stream_cancellable(&self.socket_path(), cancelled, deadline)?;
+        stream.set_nonblocking(true)?;
+        let mut stream = DeadlineStream {
+            stream: &mut stream,
+            deadline,
+            cancelled,
+        };
+        write_request(&mut stream, request, self.source_instance.as_deref())?;
+        read_json_line(&mut BufReader::new(stream))
     }
 
     pub fn status(&self) -> Result<crate::api::RuntimeStatus, ApiClientError> {
@@ -104,14 +118,7 @@ impl ApiClient {
         };
         let response = match timeout {
             Some(timeout) => {
-                let mut stream = self.connect()?;
-                write_request(&mut stream, &request, self.source_instance.as_deref())?;
-                crate::ipc::set_local_stream_polling(&mut stream, true)?;
-                let mut reader = BufReader::new(DeadlineReader {
-                    stream: &mut stream,
-                    deadline: Instant::now() + timeout,
-                });
-                parse_response_value(read_json_line(&mut reader)?)?
+                parse_response_value(self.request_value_with_timeout(&request, timeout)?)?
             }
             None => self.request(request)?,
         };
@@ -131,28 +138,6 @@ impl ApiClient {
 
     fn connect(&self) -> io::Result<LocalStream> {
         crate::ipc::connect_local_stream(&self.socket_path())
-    }
-}
-
-enum TimeoutKind {
-    Send,
-    Recv,
-}
-
-fn set_timeout_best_effort(
-    stream: &LocalStream,
-    kind: TimeoutKind,
-    timeout: Duration,
-) -> io::Result<()> {
-    let result = match kind {
-        TimeoutKind::Send => stream.set_send_timeout(Some(timeout)),
-        TimeoutKind::Recv => stream.set_recv_timeout(Some(timeout)),
-    };
-    match result {
-        Ok(()) => Ok(()),
-        #[cfg(windows)]
-        Err(err) if err.kind() == io::ErrorKind::Unsupported => Ok(()),
-        Err(err) => Err(err),
     }
 }
 
@@ -192,7 +177,7 @@ impl From<serde_json::Error> for ApiClientError {
 }
 
 fn write_request(
-    stream: &mut LocalStream,
+    stream: &mut impl Write,
     request: &Request,
     source_instance: Option<&str>,
 ) -> Result<(), ApiClientError> {
@@ -210,23 +195,61 @@ fn write_request(
     Ok(())
 }
 
-struct DeadlineReader<'a> {
+struct DeadlineStream<'a> {
     stream: &'a mut LocalStream,
     deadline: Instant,
+    cancelled: &'a AtomicBool,
 }
 
-impl Read for DeadlineReader<'_> {
+impl DeadlineStream<'_> {
+    fn check(&self) -> io::Result<()> {
+        if self.cancelled.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                "API request cancelled",
+            ));
+        }
+        if Instant::now() >= self.deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "API request timed out",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl Write for DeadlineStream<'_> {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        loop {
+            self.check()?;
+            match self.stream.write(buffer) {
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                    ) =>
+                {
+                    std::thread::sleep(Duration::from_millis(2))
+                }
+                result => return result,
+            }
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        // Writes are unbuffered; pipe flushing would wait for the peer to read.
+        self.check()
+    }
+}
+
+impl Read for DeadlineStream<'_> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         if buffer.is_empty() {
             return Ok(0);
         }
         loop {
-            if Instant::now() >= self.deadline {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "server status probe timed out",
-                ));
-            }
+            self.check()?;
             // Windows named pipes have no read timeout; peek-before-read keeps
             // both idle and partial responses subject to the same deadline.
             match crate::ipc::poll_local_stream_read_count(self.stream, buffer)? {
@@ -273,6 +296,49 @@ mod tests {
     fn local_session_target_resolves_named_session_socket() {
         let client = ApiClient::for_target(ConnectionTarget::LocalSession(Some("work".into())));
         assert!(client.socket_path().ends_with("sessions/work/herdr.sock"));
+    }
+
+    #[test]
+    fn api_cancellation_closes_a_partial_response_before_its_deadline() {
+        #[cfg(unix)]
+        use interprocess::local_socket::traits::Listener as _;
+        let path =
+            std::env::temp_dir().join(format!("herdr-api-cancel-{}.sock", std::process::id()));
+        let listener = crate::ipc::bind_private_local_listener(&path).unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let mut stream = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(&mut stream).read_line(&mut line).unwrap();
+            stream.write_all(b"{\"id\":").unwrap();
+            ready_tx.send(()).unwrap();
+            let _ = done_rx.recv_timeout(Duration::from_secs(2));
+        });
+        let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+        let stop = cancelled.clone();
+        let client = ApiClient::for_target(ConnectionTarget::SocketPath(path.clone()));
+        let worker = std::thread::spawn(move || {
+            client.request_value_cancellable(
+                &Request {
+                    id: "cancelled-probe".into(),
+                    method: Method::Ping(PingParams::default()),
+                },
+                Duration::from_secs(60),
+                &stop,
+            )
+        });
+        ready_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let start = Instant::now();
+        cancelled.store(true, Ordering::Release);
+        let result = worker.join().unwrap();
+        let _ = done_tx.send(());
+        server.join().unwrap();
+        assert!(
+            matches!(result, Err(ApiClientError::Io(error)) if error.kind() == io::ErrorKind::ConnectionAborted)
+        );
+        assert!(start.elapsed() < Duration::from_secs(1));
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]

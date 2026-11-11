@@ -96,7 +96,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | 通知 | `notification.show` |
 | 客户端 | `client.window_title.set`、`client.window_title.clear` |
 | 会话 | `session.snapshot` |
-| 运行时 | `runtime.source`、`runtime.request` |
+| 运行时 | `runtime.source`、`runtime.request`、`runtime.machines` |
 | 工作区 | `workspace.create`、`workspace.list`、`workspace.get`、`workspace.focus`、`workspace.rename`、`workspace.move`、`workspace.move_block`、`workspace.report_metadata`、`workspace.close` |
 | Worktree | `worktree.list`、`worktree.create`、`worktree.open`、`worktree.remove` |
 | 标签页 | `tab.create`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.close` |
@@ -514,13 +514,21 @@ Herdr 在本地 socket 上使用换行分隔的 JSON。在 Unix 上,那个 socke
 
 ## 运行时源路由
 
+在 Local 上，`runtime.machines` 读取共用 hc 的机器注册表，而非 Herdr 自己保存的 SSH 配置：
+
+```json
+{"id":"machines","method":"runtime.machines","params":{}}
+```
+
+`runtime_machines` 结果包含本地拥有者的 `core`（`id`、`name`）和远端 `machines` 数组。每条记录包括永久 `id`、显示 `name`、传输 `target`/`via`、可选 `session`、`host`、`version`、`temporary`、连接 `state` 以及可选的 `since_ms`/`why`。名称和传输提示不是 terminal 身份。此只读方法使用后台刷新的缓存，不会启动、attach 或停止程序。注册表不可用、格式错误、属于旧本地 core 或尚未加载时返回 `unavailable_runtime`，而不是空列表。客户端须在失败时保留上一份清单，不能把未知的新状态当成已连接。已保存的远端呈现主机拒绝此仅限 Local 的发现方法；调用前检查广告的方法支持。
+
 对 hc 呈现主机，用 `runtime.source` 发现固定源端：
 
 ```json
 {"id":"discover","method":"runtime.source","params":{}}
 ```
 
-结果包含 `host_instance`、源端 `generation`、`connected`、`core_id`、`error`、`retired`，以及适用时的已保存配置路由字段。`host_instance` 标识此呈现主机，不是永久 hc core 或终端绑定。离线发现不允许另选源端。
+结果包含 `host_instance`、源端 `generation`、`connected`、`core_id`、`error`、`retired`，以及适用时的已保存配置路由字段。`host_instance` 标识此呈现主机，不是永久 hc core 或终端绑定。离线发现不允许另选源端。验证过的共用源端还会返回可选 `owner_core_id` 和 `registry_core_id`，区分程序拥有者与本地注册表的权威 core。断线时仍可保留这些字段，但不能据此发送输入或更换源端。终端绑定使用拥有者 ID，而非注册表 ID。
 
 后续请求固定到返回的主机实例：
 

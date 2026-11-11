@@ -18,4 +18,5 @@ pub use self::snapshot::{
     capture, capture_history, DirectionSnapshot, LayoutSnapshot, SessionHistorySnapshot,
     SessionSnapshot, TabSnapshot, WorkspaceSnapshot,
 };
+pub(crate) use self::snapshot::{PaneSnapshot, SNAPSHOT_VERSION};
 pub(crate) use self::writer::SessionWriter;

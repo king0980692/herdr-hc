@@ -6347,6 +6347,22 @@
         {
           "properties": {
             "method": {
+              "const": "runtime.machines",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "runtime.request",
               "type": "string"
             },
@@ -6838,6 +6854,21 @@
             "failed"
           ],
           "type": "string"
+        },
+        "CoreInfo": {
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "name"
+          ],
+          "type": "object"
         },
         "EventData": {
           "oneOf": [
@@ -7820,6 +7851,65 @@
               "type": "object"
             }
           ]
+        },
+        "Machine": {
+          "properties": {
+            "host": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "session": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "since_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "state": {
+              "type": "string"
+            },
+            "target": {
+              "type": "string"
+            },
+            "temporary": {
+              "default": false,
+              "type": "boolean"
+            },
+            "version": {
+              "type": "string"
+            },
+            "via": {
+              "default": false,
+              "type": "boolean"
+            },
+            "why": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "target",
+            "host",
+            "version",
+            "state"
+          ],
+          "type": "object"
         },
         "NotificationShowReason": {
           "enum": [
@@ -10465,6 +10555,29 @@
             },
             {
               "properties": {
+                "core": {
+                  "$ref": "#/schemas/success_response/$defs/CoreInfo"
+                },
+                "machines": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/Machine"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "runtime_machines",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "core",
+                "machines"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
                 "connected": {
                   "type": "boolean"
                 },
@@ -10494,7 +10607,19 @@
                 "host_instance": {
                   "type": "string"
                 },
+                "owner_core_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "profile_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "registry_core_id": {
                   "type": [
                     "string",
                     "null"

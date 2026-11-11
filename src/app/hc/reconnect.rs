@@ -27,6 +27,7 @@ struct Recovered {
 }
 pub(crate) struct Recovery {
     pub generation: u64,
+    pub initial_inventory_due: Option<Instant>,
     pending: HashMap<TerminalId, Pending>,
     send: mpsc::Sender<Recovered>,
     receive: mpsc::Receiver<Recovered>,
@@ -36,6 +37,7 @@ impl Default for Recovery {
         let (send, receive) = mpsc::channel();
         Self {
             generation: 0,
+            initial_inventory_due: None,
             pending: HashMap::new(),
             send,
             receive,
@@ -44,14 +46,16 @@ impl Default for Recovery {
 }
 impl Recovery {
     pub(crate) fn deadline(&self) -> Option<Instant> {
-        if self.pending.values().filter(|p| p.task.is_some()).count() >= 4 {
-            return None;
-        }
-        self.pending
-            .values()
-            .filter(|p| p.task.is_none())
-            .map(|p| p.due)
-            .min()
+        let pane_due = if self.pending.values().filter(|p| p.task.is_some()).count() >= 4 {
+            None
+        } else {
+            self.pending
+                .values()
+                .filter(|p| p.task.is_none())
+                .map(|p| p.due)
+                .min()
+        };
+        pane_due.into_iter().chain(self.initial_inventory_due).min()
     }
 }
 impl App {
@@ -133,6 +137,9 @@ impl App {
         if source.generation != generation || generation <= self.hc_recovery.generation {
             return false;
         }
+        if source.client.is_some() && self.hc_recovery.initial_inventory_due.is_some() {
+            self.hc_recovery.initial_inventory_due = Some(Instant::now());
+        }
         let initial = self.hc_recovery.generation == 0;
         self.hc_recovery.generation = generation;
         self.hc_recovery.pending.clear();
@@ -187,6 +194,7 @@ impl App {
         changed
     }
     pub(crate) fn run_hc_recovery(&mut self, now: Instant) {
+        self.bootstrap_existing_hc_terminals(now);
         let capacity = 4usize.saturating_sub(
             self.hc_recovery
                 .pending

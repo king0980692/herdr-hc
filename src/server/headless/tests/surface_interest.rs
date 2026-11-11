@@ -53,6 +53,43 @@ fn request_active_surface(server: &mut HeadlessServer, client_id: u64, request_i
 }
 
 #[tokio::test]
+async fn hc_presenter_first_render_without_viewers_preserves_all_live_tab_sizes() {
+    let mut server = test_headless_server();
+    server.app.terminal_factory = crate::terminal::TerminalFactory::test_saved_source();
+    let mut workspace = crate::workspace::Workspace::test_new("shared-live");
+    workspace.test_add_tab(Some("other"));
+    workspace.assert_invariants_for_test();
+    let mut runtimes = Vec::new();
+    for (tab, (cols, rows)) in workspace.tabs.iter().zip([(132, 43), (110, 31)]) {
+        let pane = &tab.panes[&tab.root_pane];
+        let runtime =
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(cols, rows, b"existing");
+        let id = pane.attached_terminal_id.clone();
+        server.app.terminal_runtimes.insert(id.clone(), runtime);
+        runtimes.push((id, (rows, cols)));
+    }
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.active = Some(0);
+    server.app.state.selected = 0;
+    server.app.state.mode = crate::app::Mode::Terminal;
+    assert!(server.app.state.view.pane_infos.is_empty());
+    assert!(server.clients.is_empty());
+    server.render_and_stream();
+    assert!(!server.app.state.view.pane_infos.is_empty());
+    for (id, size) in runtimes {
+        assert_eq!(
+            server
+                .app
+                .terminal_runtimes
+                .get(&id)
+                .unwrap()
+                .current_size(),
+            size
+        );
+    }
+}
+
+#[tokio::test]
 async fn metadata_only_shell_is_isolated_until_surface_activation() {
     let mut server = test_headless_server();
     let mut input_rx = install_focused_test_runtime(&mut server, b"");

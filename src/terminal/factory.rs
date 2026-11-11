@@ -29,12 +29,29 @@ pub(crate) enum TerminalFactory {
 impl TerminalFactory {
     #[cfg(not(test))]
     pub(crate) fn local() -> io::Result<Self> {
+        if let Some(core_id) = std::env::var_os(crate::hc::shared::CORE_ENV) {
+            if std::env::var_os(crate::hc::source::PROFILE_ENV).is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "conflicting hc source selectors",
+                ));
+            }
+            let registry = std::env::var(crate::hc::shared::REGISTRY_ENV).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "shared hc registry core is required",
+                )
+            })?;
+            return CoreHost::connect(Source::Shared(crate::hc::shared::SharedSource::new(
+                core_id.to_string_lossy().into_owned(),
+                registry,
+            )))
+            .map(Self::Hc);
+        }
         if let Some(id) = std::env::var_os(crate::hc::source::PROFILE_ENV) {
             return Self::connect_saved(id.to_string_lossy().into_owned(), CoreHost::connect);
         }
-        let mut command = tokio::process::Command::new("hc");
-        command.arg("connect");
-        Ok(Self::connect(command))
+        Ok(Self::connect(crate::hc::shared::registry_command()))
     }
     fn connect_saved(
         id: String,
@@ -65,16 +82,92 @@ impl TerminalFactory {
             Err(e) => Self::Unavailable(e.to_string()),
         }
     }
+    pub(crate) fn initial_terminals(
+        &self,
+    ) -> io::Result<(String, Vec<crate::hc::state::Terminal>)> {
+        let Self::Hc(host) = self else {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "hc terminal discovery is unavailable",
+            ));
+        };
+        let source = host.state();
+        let client = host.client()?;
+        let reply = host.block_on(client.call("terminal.list", json!({"all":false})))?;
+        let current = host.state();
+        if current.generation != source.generation
+            || current.retired
+            || current
+                .client
+                .as_ref()
+                .is_none_or(|peer| peer.hello.core.id != client.hello.core.id)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "hc source changed during terminal discovery; layout was not replaced",
+            ));
+        }
+        let records = serde_json::from_value(reply.get("terminals").cloned().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "hc terminal discovery has no complete list",
+            )
+        })?)
+        .map_err(io::Error::other)?;
+        Ok((client.hello.core.id.clone(), records))
+    }
+
     pub(crate) fn source_state(&self) -> Option<SourceState> {
         match self {
             Self::Hc(host) => Some(host.state()),
             _ => None,
         }
     }
+    pub(crate) fn shared_machine_graph(&self) -> io::Result<crate::hc::machines::MachineGraph> {
+        let Self::Hc(host) = self else {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "hc source is unavailable",
+            ));
+        };
+        if host.saved {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "shared machine inventory is available on Local",
+            ));
+        }
+        let client = host.client()?;
+        let graph = host
+            .machines
+            .lock()
+            .map_err(|_| io::Error::other("hc machine inventory lock failed"))?
+            .clone()
+            .map_err(|error| io::Error::new(io::ErrorKind::NotConnected, error))?;
+        if graph.core.id != client.hello.core.id {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "hc machine inventory belongs to a previous local core",
+            ));
+        }
+        Ok(graph)
+    }
+    #[cfg(test)]
+    pub(crate) fn test_machine_graph(
+        &self,
+        graph: Result<crate::hc::machines::MachineGraph, String>,
+    ) {
+        let Self::Hc(host) = self else {
+            panic!("expected hc test factory")
+        };
+        *host.machines.lock().unwrap() = graph;
+    }
     pub(crate) fn watch_source(&self, events: tokio::sync::mpsc::Sender<AppEvent>) {
         if let Self::Hc(host) = self {
             host.watch(events);
         }
+    }
+    pub(crate) fn discovers_existing_programs(&self) -> bool {
+        matches!(self, Self::Hc(host) if !host.saved || host.shared)
     }
     pub(crate) fn is_saved_source(&self) -> bool {
         matches!(self,Self::Hc(host) if host.saved)

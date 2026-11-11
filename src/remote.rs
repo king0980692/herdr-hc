@@ -4,6 +4,7 @@ mod host;
 mod process;
 mod restart_policy;
 mod saved;
+mod shared;
 #[cfg(unix)]
 mod ssh_agent;
 
@@ -12,6 +13,7 @@ pub(crate) use attach::*;
 pub(crate) use host::run_remote_client_bridge;
 pub(crate) use saved::*;
 pub(crate) use saved::{check_saved_ssh, SavedSshSetup};
+pub(crate) use shared::*;
 
 pub(crate) fn run_remote_api_bridge(args: &[String]) -> std::io::Result<()> {
     match args {

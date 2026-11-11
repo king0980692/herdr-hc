@@ -146,6 +146,7 @@ operations::define_operations! {
     PluginPaneFocus(PluginPaneFocusParams) => "plugin.pane.focus", true, false;
     PluginPaneClose(PluginPaneCloseParams) => "plugin.pane.close", true, false;
     RuntimeSource(EmptyParams) => "runtime.source", false, false;
+    RuntimeMachines(EmptyParams) => "runtime.machines", false, false;
     RuntimeRequest(RuntimeRequestParams) => "runtime.request", false, false;
 }
 

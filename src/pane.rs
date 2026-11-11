@@ -111,6 +111,8 @@ const HC_SOURCE_CLIENT_ENV: &[&str] = &[
 ];
 const OUTER_TERMINAL_ENV: &[&str] = &[
     crate::hc::source::PROFILE_ENV,
+    crate::hc::shared::CORE_ENV,
+    crate::hc::shared::REGISTRY_ENV,
     "ITERM_SESSION_ID",
     "LC_TERMINAL",
     "LC_TERMINAL_VERSION",

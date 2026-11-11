@@ -91,6 +91,13 @@ impl ClientShellState {
             });
         }
 
+        next.extend(
+            self.endpoints
+                .iter()
+                .filter(|endpoint| matches!(endpoint.endpoint_id, ClientEndpointId::Hc(_)))
+                .cloned(),
+        );
+
         if !next
             .iter()
             .any(|endpoint| endpoint.endpoint_id == self.active_endpoint_id)
@@ -102,6 +109,33 @@ impl ClientShellState {
                 .any(|endpoint| &endpoint.endpoint_id == endpoint_id)
         });
         self.endpoints = next;
+    }
+
+    pub(crate) fn set_shared_endpoint_catalog(
+        &mut self,
+        sources: &[crate::client::endpoint::SharedEndpoint],
+    ) {
+        self.endpoints
+            .retain(|endpoint| match &endpoint.endpoint_id {
+                ClientEndpointId::Hc(key) => sources.iter().any(|source| &source.key == key),
+                _ => true,
+            });
+        for source in sources {
+            let id = ClientEndpointId::Hc(source.key.clone());
+            if let Some(endpoint) = self
+                .endpoints
+                .iter_mut()
+                .find(|endpoint| endpoint.endpoint_id == id)
+            {
+                endpoint.label = source.machine.name.clone();
+            } else {
+                let mut endpoint = local_endpoint();
+                endpoint.endpoint_id = id;
+                endpoint.label = source.machine.name.clone();
+                endpoint.status = ClientEndpointStatus::Connecting;
+                self.endpoints.push(endpoint);
+            }
+        }
     }
 
     pub(crate) fn select_unavailable_local(&mut self) {

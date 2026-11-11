@@ -9,7 +9,7 @@ use crate::{
 use std::{
     future::Future,
     io,
-    sync::{mpsc, Mutex},
+    sync::{mpsc, Arc, Mutex},
     time::Duration,
 };
 use tokio::sync::{oneshot, watch};
@@ -32,10 +32,34 @@ fn saved_route_changed(
     saved && (pinned.is_none() || pinned != current)
 }
 
+async fn check_source_route(source: &Source, pinned: &mut Option<SourceLocator>) -> io::Result<()> {
+    let current = source.locator().await?;
+    if source.is_remote() {
+        if pinned.is_some() && saved_route_changed(true, pinned, &current) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "hc source profile changed; local source host must restart",
+            ));
+        }
+        if current.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "hc source route is unavailable",
+            ));
+        }
+        if pinned.is_none() {
+            *pinned = current;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) struct CoreHost {
     pub(super) source: watch::Receiver<SourceState>,
     pub(crate) executor: tokio::runtime::Handle,
     pub(crate) saved: bool,
+    pub(crate) shared: bool,
+    pub(super) machines: Arc<Mutex<Result<crate::hc::machines::MachineGraph, String>>>,
     stop: Option<oneshot::Sender<()>>,
     watcher: Mutex<Option<tokio::task::AbortHandle>>,
 }
@@ -112,6 +136,8 @@ impl CoreHost {
                 source,
                 executor: tokio::runtime::Handle::current(),
                 saved,
+                shared: false,
+                machines: Arc::new(Mutex::new(Err("hc machine inventory is loading".into()))),
                 stop: None,
                 watcher: Mutex::new(None),
             },
@@ -119,7 +145,8 @@ impl CoreHost {
         )
     }
     pub(crate) fn connect(source: Source) -> io::Result<Self> {
-        let saved = matches!(&source, Source::Saved(_));
+        let saved = source.is_remote();
+        let shared = matches!(&source, Source::Shared(_));
         let host_instance = crate::client::endpoint::ProfileId::generate().to_string();
         let (changed, receiver) = watch::channel(SourceState {
             host_instance: host_instance.clone(),
@@ -131,6 +158,8 @@ impl CoreHost {
         });
         let (ready, receive) = mpsc::sync_channel(1);
         let (stop, mut stopped) = oneshot::channel();
+        let machines = Arc::new(Mutex::new(Err("hc machine inventory is loading".into())));
+        let inventory = machines.clone();
         crate::thread_spawn::spawn_named("herdr-hc", move || {
             let runtime = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -144,21 +173,24 @@ impl CoreHost {
             };
             runtime.block_on(async move {
                 // A retry may rebuild transport, never the host's source identity.
-                let selected = source.locator().ok().flatten();
-                let publish = |client, error, retired| {
+                let mut selected = None;
+                let publish = |client, error, retired, locator: &Option<SourceLocator>| {
                     let generation = changed.borrow().generation.saturating_add(1);
                     changed.send_replace(SourceState {
                         host_instance: host_instance.clone(), generation, client,
-                        locator: selected.clone(), error, retired,
+                        locator: locator.clone(), error, retired,
                     });
                 };
-                let route_changed = || saved_route_changed(saved, &selected, &source.locator().ok().flatten());
                 let mut first = Some(ready);
                 let mut attempt = 0u32;
-                let mut known_core: Option<String> = None;
+                let mut known_core = source.expected_core().map(str::to_owned);
                 loop {
-                    let (result,ssh_policy) = if route_changed() {
-                        (Err(io::Error::new(io::ErrorKind::NotConnected, "hc source profile changed or was disabled")),None)
+                    let route = tokio::select! {
+                        _ = &mut stopped => break,
+                        result = check_source_route(&source, &mut selected) => result,
+                    };
+                    let (result,ssh_policy) = if let Err(error) = route {
+                        (Err(error), None)
                     } else {
                         match source.connect_command(selected.as_ref()) {
                             Ok((command,policy)) => (tokio::select! {
@@ -169,20 +201,21 @@ impl CoreHost {
                         }
                     };
                     let mut client = result.as_ref().ok().cloned();
-                    let changed_route = route_changed();
+                    let route_error = tokio::select! {
+                        _ = &mut stopped => break,
+                        result = check_source_route(&source, &mut selected) => result.err(),
+                    };
                     let changed_core = saved && client.as_ref().is_some_and(|c| known_core.as_ref().is_some_and(|id| id != &c.hello.core.id));
-                    let retired = changed_route || changed_core;
-                    if retired {
+                    let error = if changed_core {
+                        Some(io::Error::new(io::ErrorKind::PermissionDenied, "hc core identity changed; local source host must restart"))
+                    } else { route_error.or_else(|| result.err()) };
+                    let retired = error.as_ref().is_some_and(|error| error.kind() == io::ErrorKind::PermissionDenied);
+                    if error.is_some() {
                         if let Some(client) = client.take() { client.disconnect(); }
                     } else if let Some(client) = client.as_ref() {
                         if known_core.is_none() { known_core = Some(client.hello.core.id.clone()); }
                     }
-                    let error = if changed_route {
-                        Some("hc source profile changed; local source host must restart".into())
-                    } else if changed_core {
-                        Some("hc core identity changed; local source host must restart".into())
-                    } else { result.err().map(|error| error.to_string()) };
-                    publish(client.clone(), error, retired);
+                    publish(client.clone(), error.map(|error| error.to_string()), retired, &selected);
                     if let Some(ready) = first.take() {
                         if ready.send(Ok(tokio::runtime::Handle::current())).is_err() { break; }
                     }
@@ -194,23 +227,28 @@ impl CoreHost {
                                 _ = &mut stopped => { client.disconnect(); return; },
                                 _ = client.closed() => break,
                                 _ = tokio::time::sleep(Duration::from_secs(1)) => {
-                                    if route_changed() {
+                                    if let Err(error) = check_source_route(&source, &mut selected).await {
                                         client.disconnect();
-                                        publish(None, Some("hc source profile changed".into()), true);
-                                        let _ = (&mut stopped).await;
-                                        return;
+                                        let retired = error.kind() == io::ErrorKind::PermissionDenied;
+                                        publish(None, Some(error.to_string()), retired, &selected);
+                                        if retired { let _ = (&mut stopped).await; return; }
+                                        break;
+                                    }
+                                    if !saved {
+                                        let graph = tokio::select! {
+                                            _ = &mut stopped => { client.disconnect(); return; },
+                                            graph = client.machine_graph() => graph,
+                                        };
+                                        if let Ok(mut inventory) = inventory.lock() {
+                                            *inventory = graph.map_err(|error| error.to_string());
+                                        }
                                     }
                                 }
                             }
                         }
                         client.disconnect();
-                        if route_changed() {
-                            publish(None, Some("hc source profile changed".into()), true);
-                            let _ = (&mut stopped).await;
-                            return;
-                        }
                         if connected_at.elapsed() >= Duration::from_secs(60) { attempt = 0; }
-                        publish(None, Some("hc disconnected; programs were not killed".into()), false);
+                        publish(None, Some("hc disconnected; programs were not killed".into()), false, &selected);
                     } else if let Some(policy)=ssh_policy{
                         // Publish startup readiness first; mux repair must not block the App thread.
                         let changed_route={
@@ -219,10 +257,10 @@ impl CoreHost {
                             loop{tokio::select!{
                                 _=&mut stopped=>return,
                                 result=&mut repair=>{if let Err(error)=result{tracing::debug!(%error,"hc SSH transport repair failed");}break false;},
-                                _=tokio::time::sleep(Duration::from_secs(1))=>{if route_changed(){break true;}}
+                                _=tokio::time::sleep(Duration::from_secs(1))=>{if let Err(error) = check_source_route(&source, &mut selected).await {break error.kind() == io::ErrorKind::PermissionDenied;}}
                             }}
                         };
-                        if changed_route{publish(None,Some("hc source profile changed".into()),true);let _=(&mut stopped).await;return;}
+                        if changed_route{publish(None,Some("hc source profile changed".into()),true,&selected);let _=(&mut stopped).await;return;}
                     }
                     let deadline = tokio::time::Instant::now() + retry_delay(attempt);
                     attempt = attempt.saturating_add(1);
@@ -231,10 +269,12 @@ impl CoreHost {
                             _ = &mut stopped => return,
                             _ = tokio::time::sleep_until(deadline) => break,
                             _ = tokio::time::sleep(Duration::from_secs(1)) => {
-                                if route_changed() {
-                                    publish(None, Some("hc source profile changed".into()), true);
-                                    let _ = (&mut stopped).await;
-                                    return;
+                                if let Err(error) = check_source_route(&source, &mut selected).await {
+                                    if error.kind() == io::ErrorKind::PermissionDenied {
+                                        publish(None, Some(error.to_string()), true, &selected);
+                                        let _ = (&mut stopped).await;
+                                        return;
+                                    }
                                 }
                             }
                         }
@@ -254,6 +294,8 @@ impl CoreHost {
             source: receiver,
             executor,
             saved,
+            shared,
+            machines,
             stop: Some(stop),
             watcher: Mutex::new(None),
         })
@@ -277,26 +319,36 @@ mod tests {
     use super::*;
     #[test]
     fn hc_saved_route_pin_rejects_offline_retargets_and_same_core_aliases() {
-        let pinned = Some(SourceLocator {
+        let pinned = Some(SourceLocator::Saved(crate::hc::source::SavedLocator {
             profile_id: "profile".into(),
             target: "offline-a".into(),
             session: "agents".into(),
             hc_path: None,
-        });
-        let mut current = pinned.clone();
-        assert!(!saved_route_changed(true, &pinned, &current));
-        current.as_mut().unwrap().target = "reachable-b".into();
-        assert!(saved_route_changed(true, &pinned, &current));
-        current.as_mut().unwrap().target = "same-core-alias".into();
-        assert!(saved_route_changed(true, &pinned, &current));
-        current = pinned.clone();
-        current.as_mut().unwrap().session = "other".into();
-        assert!(saved_route_changed(true, &pinned, &current));
-        current = pinned.clone();
-        current.as_mut().unwrap().hc_path = Some("/opt/hc-other".into());
-        assert!(saved_route_changed(true, &pinned, &current));
+        }));
+        let Some(SourceLocator::Saved(original)) = pinned.as_ref() else {
+            panic!("saved route")
+        };
+        let changed = |current: &crate::hc::source::SavedLocator| {
+            saved_route_changed(true, &pinned, &Some(SourceLocator::Saved(current.clone())))
+        };
+        let mut current = original.clone();
+        assert!(!changed(&current));
+        current.target = "reachable-b".into();
+        assert!(changed(&current));
+        current.target = "same-core-alias".into();
+        assert!(changed(&current));
+        current = original.clone();
+        current.session = "other".into();
+        assert!(changed(&current));
+        current = original.clone();
+        current.hc_path = Some("/opt/hc-other".into());
+        assert!(changed(&current));
         assert!(saved_route_changed(true, &pinned, &None));
-        assert!(saved_route_changed(true, &None, &current));
+        assert!(saved_route_changed(
+            true,
+            &None,
+            &Some(SourceLocator::Saved(current))
+        ));
         assert!(!saved_route_changed(false, &None, &None));
     }
 }

@@ -49,6 +49,7 @@ pub(crate) enum EndpointSupervisorEvent {
 enum ConnectTarget {
     Local(PathBuf),
     Ssh(super::SavedSshEndpoint),
+    Hc(super::SharedEndpoint),
 }
 
 struct ReconnectState {
@@ -174,6 +175,38 @@ impl EndpointSupervisors {
                 .entry(ClientEndpointId::Ssh(profile.id.clone()))
                 .or_insert_with(|| ReconnectState::new(ConnectTarget::Ssh(profile.clone()), now));
             state.target = ConnectTarget::Ssh(profile.clone());
+        }
+        retired
+    }
+
+    pub(crate) fn reconcile_shared(
+        &mut self,
+        sources: &[super::SharedEndpoint],
+        now: Instant,
+    ) -> Vec<ClientEndpointId> {
+        let mut retired = Vec::new();
+        let retiring = &mut self.retired;
+        self.endpoints.retain(|id, state| {
+            let ConnectTarget::Hc(previous) = &state.target else {
+                return true;
+            };
+            let keep = sources.iter().any(|source| source.same_route(previous));
+            if !keep {
+                retired.push(id.clone());
+                if !state.completed.load(Ordering::Acquire) {
+                    retiring
+                        .entry(id.clone())
+                        .or_insert_with(|| Arc::clone(&state.completed));
+                }
+            }
+            keep
+        });
+        for source in sources {
+            let state = self
+                .endpoints
+                .entry(ClientEndpointId::Hc(source.key.clone()))
+                .or_insert_with(|| ReconnectState::new(ConnectTarget::Hc(source.clone()), now));
+            state.target = ConnectTarget::Hc(source.clone());
         }
         retired
     }
@@ -482,6 +515,17 @@ fn connect_once(
                 profile.hc_path.as_deref(),
                 Arc::clone(&cancelled),
             )?;
+            (connected.stream, Box::new(connected.bridge))
+        }
+        ConnectTarget::Hc(source) => {
+            if source.machine.via {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "shared hc provider transport is unavailable; no SSH fallback was used",
+                ));
+            }
+            let connected =
+                crate::remote::connect_shared_core(&source.key, Arc::clone(&cancelled))?;
             (connected.stream, Box::new(connected.bridge))
         }
     };

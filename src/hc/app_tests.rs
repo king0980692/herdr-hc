@@ -22,6 +22,8 @@ fn hc_saved_launch_does_not_export_local_api_or_agent_proxy_paths() {
         "HERDR_WORKSPACE_ID",
         "HERDR_TAB_ID",
         "HERDR_HC_SOURCE_PROFILE",
+        "HERDR_HC_SHARED_CORE",
+        "HERDR_HC_SHARED_REGISTRY_CORE",
     ] {
         assert!(!env.contains_key(key));
         assert!(argv.windows(2).any(|a| a[0] == "-u" && a[1] == key));
@@ -216,6 +218,40 @@ fn hc_app_restore_retains_malformed_binding_instead_of_falling_back_to_a_shell()
         .as_object()
         .unwrap();
     assert_eq!(panes.values().next().unwrap()["hc_binding"]["core_id"], 42);
+}
+
+#[tokio::test]
+async fn shared_first_open_inventory_reads_only_and_rejects_a_source_generation_change() {
+    for change_source in [false, true] {
+        let (client, mut server) = super::tests::test_client();
+        let (factory, source) = TerminalFactory::test_source(Some(client));
+        let fetch = tokio::task::spawn_blocking(move || factory.initial_terminals());
+        let request: Value =
+            serde_json::from_slice(&super::tests::read_frame(&mut server).await.payload).unwrap();
+        assert_eq!(request["method"], "terminal.list");
+        assert_eq!(request["params"]["all"], false);
+        if change_source {
+            source.send_modify(|state| {
+                state.generation += 1;
+                state.client = None;
+            });
+        }
+        super::runtime_tests::reply(
+            &mut server,
+            request["id"].clone(),
+            json!({"terminals":[{"address":"t1","state":"live","cwd":"/source"}]}),
+        )
+        .await;
+        let result = fetch.await.unwrap();
+        if change_source {
+            assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::NotConnected);
+        } else {
+            let (owner, terminals) = result.unwrap();
+            assert_eq!(owner, "core-test");
+            assert_eq!(terminals.len(), 1);
+            assert_eq!(terminals[0].address, "t1");
+        }
+    }
 }
 
 pub(super) fn app(factory: TerminalFactory) -> crate::app::App {

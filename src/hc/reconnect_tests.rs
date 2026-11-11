@@ -8,6 +8,16 @@ use super::{
 use crate::{events::AppEvent, terminal::TerminalFactory};
 use tokio::io::DuplexStream;
 
+#[tokio::test]
+async fn hc_initial_inventory_retry_wakes_an_empty_headless_source() {
+    let mut app = app(TerminalFactory::test_saved_source());
+    let due = std::time::Instant::now();
+    app.hc_recovery.initial_inventory_due = Some(due);
+    assert_eq!(app.hc_recovery.deadline(), Some(due));
+    app.hc_recovery.initial_inventory_due = None;
+    assert!(app.hc_recovery.deadline().is_none());
+}
+
 fn publish(
     source: &tokio::sync::watch::Sender<crate::terminal::connection::SourceState>,
     generation: u64,

@@ -1,3 +1,4 @@
+use super::super::EndpointCatalog;
 use super::*;
 
 fn endpoint() -> ClientEndpointId {
@@ -121,6 +122,148 @@ fn shell_and_registry_with_source_failure(source_fail_after_write: bool) -> Test
         false,
     );
     (shell, endpoints, local_sent, remote_sent)
+}
+
+#[test]
+fn shared_snapshot_readiness_keeps_selected_input_owner_and_retries_that_owner() {
+    let (mut shell, mut endpoints, local_sent, _) = shell_and_registry();
+    let sources = super::super::SharedEndpoint::from_graph(crate::hc::machines::MachineGraph::from_reply(
+        crate::hc::CoreInfo { id: "registry".into(), name: "local".into() },
+        serde_json::json!({"machines":[{"id":"owner","name":"remote","target":"ssh-remote","session":null,"host":"host","version":"0.1.18","state":"connected"}]}),
+    ).unwrap());
+    let shared = ClientEndpointId::Hc(sources[0].key.clone());
+    shell.set_shared_endpoint_catalog(&sources);
+    shell.set_endpoint_status(&shared, ClientEndpointStatus::Online);
+    let mut catalog = EndpointCatalog::default();
+    catalog.shared = sources;
+    assert!(catalog.select_endpoint(&shared));
+    endpoints.insert(
+        shared.clone(),
+        FakeTransport {
+            sent: Default::default(),
+            fail_after_write: false,
+        },
+        9,
+        negotiation(),
+        false,
+    );
+    let mut state = crate::client::ClientState::test_new();
+    state.shell = Some(shell);
+    assert!(
+        crate::client::shell_runtime::ready_selected_endpoint_activation(
+            &state, &endpoints, &catalog
+        )
+        .is_none()
+    );
+    state
+        .shell
+        .as_mut()
+        .unwrap()
+        .set_endpoint_snapshot(&shared, Box::new(test_snapshot("shared-boot", 1)));
+    assert!(
+        matches!(crate::client::shell_runtime::ready_selected_endpoint_activation(&state, &endpoints, &catalog), Some(crate::client::events::ClientLoopEvent::ActivateEndpoint { endpoint_id, .. }) if endpoint_id == shared)
+    );
+    endpoints.set_surface_active(&ClientEndpointId::Local, false);
+    endpoints.set_surface_active(&shared, true);
+    assert!(endpoints.set_active(&shared));
+    assert!(state
+        .shell
+        .as_mut()
+        .unwrap()
+        .activate_endpoint_projection(&shared));
+    state
+        .shell
+        .as_mut()
+        .unwrap()
+        .set_endpoint_snapshot(&shared, Box::new(test_snapshot("shared-boot", 2)));
+    assert!(
+        crate::client::shell_runtime::ready_selected_endpoint_activation(
+            &state, &endpoints, &catalog
+        )
+        .is_none()
+    );
+    assert_eq!(endpoints.active_id(), &shared);
+    assert!(local_sent.lock().unwrap().is_empty());
+    endpoints.set_surface_active(&shared, false);
+    assert!(
+        matches!(crate::client::shell_runtime::ready_selected_endpoint_activation(&state, &endpoints, &catalog), Some(crate::client::events::ClientLoopEvent::ActivateEndpoint { endpoint_id, .. }) if endpoint_id == shared)
+    );
+}
+
+#[test]
+fn restoring_shared_selection_never_admits_input_to_initial_local_surface() {
+    let (shell, mut endpoints, local_sent, _) = shell_and_registry();
+    let mut state = crate::client::ClientState::test_new();
+    state.shell = Some(shell);
+    let mut catalog = EndpointCatalog::default();
+    catalog.selected_shared = Some(super::super::SharedCoreKey {
+        registry_core_id: "registry".into(),
+        core_id: "owner".into(),
+    });
+    assert!(endpoints.active_surface_available());
+    crate::client::shell_runtime::restore_catalog_selection(&mut state, &mut endpoints, &catalog);
+    assert!(!endpoints.active_surface_available());
+    assert!(state.presentation_frozen);
+    assert!(local_sent.lock().unwrap().is_empty());
+    assert!(matches!(
+        catalog.selected_endpoint(),
+        ClientEndpointId::Hc(_)
+    ));
+}
+
+#[test]
+fn authoritative_empty_inventory_recovers_a_removed_persisted_shared_selection() {
+    let (shell, mut endpoints, _, _) = shell_and_registry();
+    let mut state = crate::client::ClientState::test_new();
+    state.shell = Some(shell);
+    let mut catalog = EndpointCatalog::default();
+    catalog.selected_shared = Some(super::super::SharedCoreKey {
+        registry_core_id: "registry".into(),
+        core_id: "removed-owner".into(),
+    });
+    crate::client::shell_runtime::restore_catalog_selection(&mut state, &mut endpoints, &catalog);
+    assert!(matches!(
+        catalog.selected_endpoint(),
+        ClientEndpointId::Hc(_)
+    ));
+    let now = Instant::now();
+    let mut supervisors = super::super::EndpointSupervisors::new(&[], now);
+    let mut commands = crate::client::endpoint_commands::EndpointCommands::default();
+    assert!(crate::client::catalog_reload::apply_shared(
+        &mut state,
+        &mut endpoints,
+        &mut commands,
+        &mut supervisors,
+        &mut catalog,
+        Vec::new(),
+        now
+    ));
+    assert_eq!(catalog.selected_endpoint(), ClientEndpointId::Local);
+    assert!(endpoints.connection(&ClientEndpointId::Local).is_some());
+    assert!(matches!(
+        crate::client::shell_runtime::catalog_retirement_activation(&mut state, &endpoints),
+        Some(crate::client::events::ClientLoopEvent::ActivateEndpoint {
+            endpoint_id: ClientEndpointId::Local,
+            force: true,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn retired_catalog_source_recovers_idle_local_without_waiting_for_another_snapshot() {
+    let (shell, endpoints, _, _) = shell_and_registry();
+    let mut state = crate::client::ClientState::test_new();
+    state.shell = Some(shell);
+    state.freeze_presentation();
+    assert!(matches!(
+        crate::client::shell_runtime::catalog_retirement_activation(&mut state, &endpoints),
+        Some(crate::client::events::ClientLoopEvent::ActivateEndpoint {
+            endpoint_id: ClientEndpointId::Local,
+            force: true,
+            ..
+        })
+    ));
 }
 
 fn surface_success(id: &str, active: bool, projection_revision: u64) -> Vec<u8> {

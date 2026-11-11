@@ -36,13 +36,15 @@ impl ClientShellState {
             .remote_collapsed_groups
             .iter()
             .filter_map(|(endpoint_id, groups)| {
-                let ClientEndpointId::Ssh(profile_id) = endpoint_id else {
-                    return None;
+                let profile_id = match endpoint_id {
+                    ClientEndpointId::Local => return None,
+                    ClientEndpointId::Ssh(id) => id.to_string(),
+                    ClientEndpointId::Hc(_) => endpoint_id.storage_key(),
                 };
                 let mut collapsed_groups = groups.iter().cloned().collect::<Vec<_>>();
                 collapsed_groups.sort();
-                (!collapsed_groups.is_empty()).then(|| preferences::ClientRemoteCollapsedGroups {
-                    profile_id: profile_id.to_string(),
+                (!collapsed_groups.is_empty()).then_some(preferences::ClientRemoteCollapsedGroups {
+                    profile_id,
                     collapsed_groups,
                 })
             })

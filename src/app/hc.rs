@@ -1,4 +1,5 @@
 //! hc source updates are fenced runtime events, not inferred pane exits or hooks.
+mod bootstrap;
 mod reconnect;
 use super::{actions::PaneStateUpdate, App};
 use crate::{events::AppEvent, hc::state::RuntimeSnapshot, terminal::TerminalId};

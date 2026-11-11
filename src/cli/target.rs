@@ -9,8 +9,35 @@ thread_local! {
     static TARGET: RefCell<Option<MachineTarget>> = const { RefCell::new(None) };
 }
 
+enum MachineRoute {
+    Saved(SavedSshEndpoint),
+    Shared(crate::client::endpoint::SharedEndpoint),
+}
+
+impl MachineRoute {
+    fn label(&self) -> &str {
+        match self {
+            Self::Saved(profile) => &profile.label,
+            Self::Shared(source) => &source.machine.name,
+        }
+    }
+    fn identity(&self) -> (String, String) {
+        match self {
+            Self::Saved(profile) => (profile.id.to_string(), profile.session.clone()),
+            Self::Shared(source) => (
+                crate::client::endpoint::ClientEndpointId::Hc(source.key.clone()).storage_key(),
+                source
+                    .machine
+                    .session
+                    .clone()
+                    .unwrap_or_else(|| "default".into()),
+            ),
+        }
+    }
+}
+
 struct MachineTarget {
-    profile: SavedSshEndpoint,
+    route: MachineRoute,
     bridge: Option<ApiClient>,
     #[cfg(test)]
     client_override: Option<ApiClient>,
@@ -37,14 +64,17 @@ pub(super) fn maybe_run(args: &[String]) -> Option<io::Result<super::CommandOutc
         if super::spec::print_requested_help(&args)? {
             return Ok(super::CommandOutcome::Handled(0));
         }
-        let profiles = EndpointCatalog::load_profiles().map_err(io::Error::other)?;
-        let profile = match resolve_machine(&profiles, &selector) {
-            Ok(profile) => profile.clone(),
+        let route = match resolve_route(
+            EndpointCatalog::load_profiles(),
+            &selector,
+            crate::hc::shared::registry_graph,
+        ) {
+            Ok(route) => route,
             Err(error) => return usage_error(error),
         };
         let _scope = TARGET.with(|target| {
             TargetScope(target.replace(Some(MachineTarget {
-                profile,
+                route,
                 bridge: None,
                 #[cfg(test)]
                 client_override: None,
@@ -52,6 +82,53 @@ pub(super) fn maybe_run(args: &[String]) -> Option<io::Result<super::CommandOutc
         });
         super::maybe_run(&args)
     })())
+}
+
+fn resolve_route(
+    profiles: Result<Vec<SavedSshEndpoint>, String>,
+    selector: &str,
+    registry: impl FnOnce() -> io::Result<crate::hc::machines::MachineGraph>,
+) -> Result<MachineRoute, String> {
+    // Published legacy profile IDs retain their meaning even if a new alias matches one.
+    if let Some(profile) = profiles.as_ref().ok().and_then(|profiles| {
+        profiles
+            .iter()
+            .find(|profile| profile.id.as_str() == selector)
+    }) {
+        if !profile.enabled {
+            return Err(format!("machine '{selector}' is disabled"));
+        }
+        return Ok(MachineRoute::Saved(profile.clone()));
+    }
+    let sources =
+        crate::client::endpoint::SharedEndpoint::from_graph(registry().map_err(|error| {
+            format!("shared hc registry unavailable; no legacy source was selected: {error}")
+        })?);
+    if let Some(source) = resolve_shared_machine(&sources, selector) {
+        return Ok(MachineRoute::Shared(source.clone()));
+    }
+    if selector.starts_with("hc:") {
+        return Err("shared hc source is unavailable or belongs to another registry; no legacy source was selected".into());
+    }
+    resolve_machine(&profiles?, selector).map(|profile| MachineRoute::Saved(profile.clone()))
+}
+
+fn resolve_shared_machine<'a>(
+    sources: &'a [crate::client::endpoint::SharedEndpoint],
+    selector: &str,
+) -> Option<&'a crate::client::endpoint::SharedEndpoint> {
+    sources
+        .iter()
+        .find(|source| {
+            crate::client::endpoint::ClientEndpointId::Hc(source.key.clone()).storage_key()
+                == selector
+        })
+        .or_else(|| sources.iter().find(|source| source.key.core_id == selector))
+        .or_else(|| {
+            sources
+                .iter()
+                .find(|source| source.machine.name == selector)
+        })
 }
 
 fn usage_error(error: String) -> io::Result<super::CommandOutcome> {
@@ -75,16 +152,21 @@ pub(super) fn api_client() -> io::Result<ApiClient> {
         }
         if target.bridge.is_none() {
             target.bridge = Some(
-                crate::remote::saved_source_api_client(
-                    target.profile.id.as_str(),
-                    &target.profile.target,
-                    &target.profile.session,
-                    target.profile.hc_path.as_deref(),
-                )
+                match &target.route {
+                    MachineRoute::Saved(profile) => crate::remote::saved_source_api_client(
+                        profile.id.as_str(),
+                        &profile.target,
+                        &profile.session,
+                        profile.hc_path.as_deref(),
+                    ),
+                    MachineRoute::Shared(source) => {
+                        crate::remote::shared_core_api_client(&source.key)
+                    }
+                }
                 .map_err(|error| {
                     io::Error::new(
                         error.kind(),
-                        format!("machine '{}': {error}", target.profile.label),
+                        format!("machine '{}': {error}", target.route.label()),
                     )
                 })?,
             );
@@ -118,7 +200,8 @@ pub(super) fn remote_error(error: io::Error) -> io::Error {
             error.kind(),
             format!(
                 "machine '{}' (session {}): {error}",
-                target.profile.label, target.profile.session
+                target.route.label(),
+                target.route.identity().1
             ),
         )
     })
@@ -126,19 +209,17 @@ pub(super) fn remote_error(error: io::Error) -> io::Error {
 
 pub(super) fn restart_guidance() -> String {
     TARGET.with(|target| match target.borrow().as_ref() {
-        Some(target) => format!("Update local Herdr, then restart this machine's local source host with `herdr --machine {} server stop`. hc programs remain running.",target.profile.id),
+        Some(target) => format!("Update local Herdr, then restart this machine's local source host with `herdr --machine {} server stop`. hc programs remain running.",target.route.identity().0),
         None => crate::session::active_restart_after_update_guidance(),
     })
 }
 
 pub(super) fn remote_identity() -> Option<(String, String)> {
     TARGET.with(|target| {
-        target.borrow().as_ref().map(|target| {
-            (
-                target.profile.id.to_string(),
-                target.profile.session.clone(),
-            )
-        })
+        target
+            .borrow()
+            .as_ref()
+            .map(|target| target.route.identity())
     })
 }
 
@@ -186,7 +267,9 @@ fn parse_machine_prefix(args: &[String]) -> Result<Option<(String, Vec<String>)>
                     .ok_or("missing value for --machine")?
             };
             if value.trim().is_empty() || value.starts_with('-') {
-                return Err("--machine requires a saved machine label or profile ID".into());
+                return Err(
+                    "--machine requires a shared hc source or legacy profile selector".into(),
+                );
             }
             machine = Some(value);
         } else if arg.starts_with('-') && arg != "--" {
@@ -206,7 +289,7 @@ fn parse_machine_prefix(args: &[String]) -> Result<Option<(String, Vec<String>)>
         return Ok(None);
     };
     if other_prefix {
-        return Err("--machine cannot be combined with other launch options; it uses the saved machine's session".into());
+        return Err("--machine cannot be combined with other launch options; it uses the selected source's session".into());
     }
     if index >= args.len() || args[index] == "--" {
         return Err("usage: herdr --machine <label-or-id> <command>".into());
@@ -279,8 +362,10 @@ pub(super) fn with_test_client<T>(client: ApiClient, run: impl FnOnce() -> T) ->
     let _scope = TARGET.with(|target| {
         TargetScope(
             target.replace(Some(MachineTarget {
-                profile: SavedSshEndpoint::new("test-machine", "unused", "remote-session")
-                    .expect("valid test profile"),
+                route: MachineRoute::Saved(
+                    SavedSshEndpoint::new("test-machine", "unused", "remote-session")
+                        .expect("valid test profile"),
+                ),
                 bridge: None,
                 client_override: Some(client),
             })),
@@ -291,10 +376,47 @@ pub(super) fn with_test_client<T>(client: ApiClient, run: impl FnOnce() -> T) ->
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shared_machine_selector_prefers_identity_over_reused_display_names() {
+        let graph = crate::hc::machines::MachineGraph::from_reply(crate::hc::CoreInfo {id:"registry".into(),name:"local".into()}, serde_json::json!({"machines":[
+            {"id":"other","name":"owner","target":"second","session":null,"host":"host","version":"0.1.18","state":"connected"},
+            {"id":"owner","name":"renamed","target":"first","session":null,"host":"host","version":"0.1.18","state":"connected"}
+        ]})).unwrap();
+        let sources = crate::client::endpoint::SharedEndpoint::from_graph(graph);
+        assert_eq!(
+            super::resolve_shared_machine(&sources, "owner")
+                .unwrap()
+                .machine
+                .target,
+            "first"
+        );
+        assert_eq!(
+            super::resolve_shared_machine(&sources, "hc:registry/other")
+                .unwrap()
+                .machine
+                .target,
+            "second"
+        );
+        assert!(super::resolve_shared_machine(&sources, "hc:replaced/owner").is_none());
+    }
     use super::*;
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).into()).collect()
+    }
+
+    #[test]
+    fn failed_shared_discovery_never_authorizes_legacy_alias_fallback() {
+        let legacy = SavedSshEndpoint::new("build", "isolated", "private").unwrap();
+        let result = super::resolve_route(Ok(vec![legacy.clone()]), "build", || {
+            Err(io::Error::new(io::ErrorKind::TimedOut, "registry stalled"))
+        });
+        assert!(matches!(result, Err(error) if error.contains("no legacy source was selected")));
+        let route = super::resolve_route(Ok(vec![legacy.clone()]), legacy.id.as_str(), || {
+            panic!("an explicit legacy identity must not query the registry")
+        })
+        .unwrap();
+        assert!(matches!(route, super::MachineRoute::Saved(profile) if profile == legacy));
     }
 
     #[test]

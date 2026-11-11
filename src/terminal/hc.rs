@@ -117,8 +117,7 @@ impl TerminalState {
                 .and_then(|s| s.get("title"))
                 .and_then(Value::as_str)
                 .filter(|s| !s.is_empty())
-                .map(str::to_owned)
-                .or_else(|| self.terminal_title_stripped()),
+                .map(str::to_owned),
             display_agent: status
                 .and_then(|s| s.get("app"))
                 .and_then(Value::as_str)

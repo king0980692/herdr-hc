@@ -9,6 +9,7 @@ mod control;
 mod health;
 mod message_policy;
 mod registry;
+mod shared;
 mod ssh_metadata;
 mod supervisor;
 mod writer;
@@ -18,6 +19,7 @@ pub(crate) use catalog::*;
 pub(crate) use control::*;
 pub(crate) use message_policy::*;
 pub(crate) use registry::*;
+pub(crate) use shared::*;
 pub(crate) use ssh_metadata::{SshMachineMetadata, SshMetadataCache};
 pub(crate) use supervisor::*;
 pub(crate) use writer::NativeEndpointTransport;
@@ -74,6 +76,7 @@ impl fmt::Display for ProfileId {
 pub(crate) enum ClientEndpointId {
     Local,
     Ssh(ProfileId),
+    Hc(SharedCoreKey),
 }
 
 impl ClientEndpointId {
@@ -81,10 +84,32 @@ impl ClientEndpointId {
         matches!(self, Self::Local)
     }
 
+    pub(crate) fn parse_storage_key(value: &str) -> Result<Self, String> {
+        if value == "local" {
+            return Ok(Self::Local);
+        }
+        if let Some(key) = value.strip_prefix("hc:") {
+            let (registry, owner) = key.split_once('/').ok_or("invalid shared hc endpoint")?;
+            if [registry, owner].iter().any(|id| {
+                id.is_empty()
+                    || id.contains('/')
+                    || id.chars().any(|c| c.is_control() || c.is_whitespace())
+            }) {
+                return Err("invalid shared hc endpoint".into());
+            }
+            return Ok(Self::Hc(SharedCoreKey {
+                registry_core_id: registry.into(),
+                core_id: owner.into(),
+            }));
+        }
+        ProfileId::parse(value.strip_prefix("ssh:").unwrap_or(value)).map(Self::Ssh)
+    }
+
     pub(crate) fn storage_key(&self) -> String {
         match self {
             Self::Local => "local".into(),
             Self::Ssh(profile_id) => format!("ssh:{profile_id}"),
+            Self::Hc(key) => format!("hc:{}/{}", key.registry_core_id, key.core_id),
         }
     }
 }
@@ -101,6 +126,31 @@ pub(crate) enum ClientEndpointStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn endpoint_storage_keys_round_trip_without_collapsing_shared_identity() {
+        for id in [
+            ClientEndpointId::Local,
+            ClientEndpointId::Ssh(ProfileId::generate()),
+            ClientEndpointId::Hc(SharedCoreKey {
+                registry_core_id: "registry".into(),
+                core_id: "owner".into(),
+            }),
+        ] {
+            assert_eq!(
+                ClientEndpointId::parse_storage_key(&id.storage_key()).unwrap(),
+                id
+            );
+        }
+        for value in [
+            "hc:/owner",
+            "hc:registry/",
+            "hc:registry/owner/alias",
+            "hc:registry/owner\n",
+        ] {
+            assert!(ClientEndpointId::parse_storage_key(value).is_err());
+        }
+    }
 
     #[test]
     fn profile_ids_are_opaque_and_stable_when_parsed() {
