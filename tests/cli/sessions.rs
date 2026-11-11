@@ -5,9 +5,14 @@ fn named_sessions_use_separate_servers_and_workspace_state() {
     let base = unique_test_dir();
     let config_home = base.join("config");
     let runtime_dir = base.join("runtime");
+    // Sessions on one hc core project each other's live programs when they
+    // first open, at a time set by their source connection. Separate cores keep
+    // this test about separate servers and workspace state, not that race.
+    let alpha_runtime = runtime_dir.join("alpha");
+    let beta_runtime = runtime_dir.join("beta");
 
-    let alpha = spawn_named_server(&config_home, &runtime_dir, "alpha");
-    let beta = spawn_named_server(&config_home, &runtime_dir, "beta");
+    let alpha = spawn_named_server(&config_home, &alpha_runtime, "alpha");
+    let beta = spawn_named_server(&config_home, &beta_runtime, "beta");
 
     wait_for_socket(
         &named_session_socket(&config_home, "alpha"),
@@ -20,7 +25,7 @@ fn named_sessions_use_separate_servers_and_workspace_state() {
 
     run_named_cli_json(
         &config_home,
-        &runtime_dir,
+        &alpha_runtime,
         &[
             "--session",
             "alpha",
@@ -33,7 +38,7 @@ fn named_sessions_use_separate_servers_and_workspace_state() {
     );
     run_named_cli_json(
         &config_home,
-        &runtime_dir,
+        &beta_runtime,
         &[
             "--session",
             "beta",
@@ -47,12 +52,12 @@ fn named_sessions_use_separate_servers_and_workspace_state() {
 
     let alpha_list = run_named_cli_json(
         &config_home,
-        &runtime_dir,
+        &alpha_runtime,
         &["--session", "alpha", "workspace", "list"],
     );
     let beta_list = run_named_cli_json(
         &config_home,
-        &runtime_dir,
+        &beta_runtime,
         &["--session", "beta", "workspace", "list"],
     );
 
