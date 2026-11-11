@@ -76,6 +76,8 @@ impl TerminalFactory {
         Self::Hc(CoreHost::test_source(None, true).0)
     }
 
+    // Production startup is compiled out of tests; there only the Unix live checks use it.
+    #[cfg_attr(all(test, not(unix)), allow(dead_code))]
     pub(crate) fn connect(command: tokio::process::Command) -> Self {
         match CoreHost::connect(Source::command(command)) {
             Ok(host) => Self::Hc(host),

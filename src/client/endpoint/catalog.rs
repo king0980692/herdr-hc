@@ -126,6 +126,8 @@ impl EndpointCatalog {
     /// not to what any client has selected. An inline selection naming a
     /// removed or disabled profile must not hide the profiles themselves, or
     /// that profile's own host could never see that it should retire.
+    // Production startup is compiled out of tests; there only the Unix live checks use it.
+    #[cfg_attr(all(test, not(unix)), allow(dead_code))]
     pub(crate) fn load_source_profiles() -> Result<Vec<SavedSshEndpoint>, String> {
         Self::load_source_profiles_from_path(&catalog_path())
     }

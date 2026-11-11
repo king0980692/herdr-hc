@@ -179,6 +179,8 @@ impl Client {
     pub(crate) fn disconnect(&self) {
         self.connection.abort();
     }
+    // Production startup is compiled out of tests; there only the Unix live checks use it.
+    #[cfg_attr(all(test, not(unix)), allow(dead_code))]
     pub(crate) async fn closed(&self) {
         self.outgoing.closed().await;
     }

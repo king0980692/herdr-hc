@@ -32,6 +32,8 @@ fn saved_route_changed(
     saved && (pinned.is_none() || pinned != current)
 }
 
+// Production startup is compiled out of tests; there only the Unix live checks use it.
+#[cfg_attr(all(test, not(unix)), allow(dead_code))]
 async fn check_source_route(source: &Source, pinned: &mut Option<SourceLocator>) -> io::Result<()> {
     let current = source.locator().await?;
     if source.is_remote() {
@@ -144,6 +146,8 @@ impl CoreHost {
             send,
         )
     }
+    // Production startup is compiled out of tests; there only the Unix live checks use it.
+    #[cfg_attr(all(test, not(unix)), allow(dead_code))]
     pub(crate) fn connect(source: Source) -> io::Result<Self> {
         let saved = source.is_remote();
         let shared = matches!(&source, Source::Shared(_));

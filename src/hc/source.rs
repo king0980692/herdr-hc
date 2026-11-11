@@ -13,6 +13,7 @@ pub(crate) struct SavedLocator {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(all(test, not(unix)), allow(dead_code))]
 pub(crate) enum SourceLocator {
     Saved(SavedLocator),
     Shared(super::shared::SharedLocator),
@@ -57,6 +58,8 @@ impl SourceLocator {
     }
 }
 
+// Production startup is compiled out of tests; there only the Unix live checks use it.
+#[cfg_attr(all(test, not(unix)), allow(dead_code))]
 #[derive(Clone)]
 pub(crate) enum Source {
     Command(CommandSpec),
@@ -72,6 +75,8 @@ pub(crate) struct CommandSpec {
     cwd: Option<PathBuf>,
 }
 
+// Production startup is compiled out of tests; there only the Unix live checks use it.
+#[cfg_attr(all(test, not(unix)), allow(dead_code))]
 impl Source {
     pub(crate) fn command(command: Command) -> Self {
         let command = command.as_std();

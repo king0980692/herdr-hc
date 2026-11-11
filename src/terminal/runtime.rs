@@ -71,7 +71,7 @@ impl TerminalRuntime {
     }
 
     /// Adapter lifecycle contract; production close is acknowledged by TerminalFactory.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) async fn terminate_hc(&self) -> std::io::Result<()> {
         self.0.terminate_hc().await
     }

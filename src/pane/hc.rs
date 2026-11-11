@@ -133,7 +133,7 @@ impl HcIo {
         self.task.abort(); // Dropping the streams sends CLOSE, never terminal.kill.
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(super) async fn terminate(&self) -> io::Result<()> {
         let address = self.updates.borrow().binding.address.clone();
         self.client
@@ -600,7 +600,7 @@ impl PaneRuntime {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) async fn terminate_hc(&self) -> io::Result<()> {
         match &self.io {
             PaneRuntimeIo::Hc(io) => io.terminate().await,
