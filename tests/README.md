@@ -101,6 +101,17 @@ Machine-setup tests may fake the read-only SSH hello; they assert that no
 terminal or remote Herdr operation follows it. Program/runtime tests still use
 the real isolated hc backend above.
 
+`machine_api` covers `--machine` routing. Its fake-presenter cases bind the
+`hc-<profile>` session socket themselves, answer the unscoped `runtime.source`
+preflight, and require every later request to arrive as a `runtime.request`
+fenced to that host instance; their `ssh` stub only records calls, because the
+CLI must never open SSH itself. A machine label is resolved through a private
+Local hc registry first, so those cases register one scratch core each. The one
+end-to-end case lets the CLI start the real presenter, which reaches a second
+private core through an hc-only SSH shim; it stops that presenter itself and
+checks the source program survives. The file is compiled out on macOS, so only
+a Linux run exercises it.
+
 `live_handoff` now also houses explicit hc presentation-restart contracts.
 `restart_presentation` stops and starts the presenter, checking the permanent
 core ID and complete source address/PID set before/after both operations. It is
