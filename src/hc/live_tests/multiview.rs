@@ -4,6 +4,8 @@ use super::*;
 
 const A_SIZE: (u64, u64) = (100, 35);
 const B_SIZE: (u64, u64) = (80, 24);
+/// What hc gives a live program that nobody is viewing.
+const HEADLESS_SIZE: (u64, u64) = (200, 120);
 /// A primary device attributes reply, as a terminal emulator answers `CSI c`.
 const AUTOMATIC_REPLY: &[u8] = b"\x1b[?62;22c";
 
@@ -236,7 +238,10 @@ async fn probe(
     }
     drop(stream_a);
     drop(stream_b);
-    println!("multiview {label}: attach order, manual input, focus, resize and detach/reattach verified; pid and owner unchanged");
+    // With no viewer left the source falls back to its own headless size, so
+    // closing the last viewer does resize a running program.
+    expect_size(a, address, HEADLESS_SIZE, "last viewer left").await?;
+    println!("multiview {label}: attach order, manual input, focus, resize, detach/reattach and headless size verified; pid and owner unchanged");
     Ok(separate_frame)
 }
 

@@ -126,6 +126,28 @@ macOS 會排除 `tests/cli.rs`、`tests/machine_api.rs` 與部分 `tests/api_pin
 - 同目錄的 `herdr-native-trial` 是隔離試用啟動腳本：獨立的 XDG config/state/runtime（預設 `~/.local/state/herdr-native-trial`）加上私有的 hc 0.1.20（`trial-bin/hc`），不會 attach 共用 core。已用非互動方式驗證：program 建在私有 core，共用 core 與 `t12` 不變。`herdr-native-trial-hc` 對該私有 core 下 hc 指令。
 - 尚未有人實際操作過 TUI；連接真正共用 core 的試用需要另外同意（會 attach 到工作中的 program）。
 
+### macOS 隔離試用結果（2026-11-11，原工作站，另一個 session 執行並回報）
+
+來源 `ed92d877`；`just ci` 與 `just docs-contract-test` 在 macOS 通過（4073 passed／18 skipped），未改任何 source 或測試。候選 Mach-O arm64 SHA256 `f9fc101ee686cb9c1129ac21d1dafe510b2ec309e7b51890497f2ee01b24f03c`，放在 `/var/tmp/ht-oQct5B/`（非長期儲存）。私有 hc 是 macOS 0.1.19 的複本，啟動前驗證 owner 不等於正常 Local。
+
+已由實際 TUI 操作驗證（對應上方「實際 Native TUI」P0 的部分項目）：
+
+- [x] 分割、四向移動、zoom、resize、開／切 tab、輸入與輸出。
+- [x] 邊框標題：raw OSC title 不冒充 border label；手動 rename 才顯示。
+- [x] 明確關閉 pane 只終止該 binding；TUI 退出與 presenter 停止只 detach；重開後 layout、public ID、program PID／argv／keep 保留，沒有 replacement shell。
+
+仍未驗證：
+
+- [ ] 使用者原本的 layout 與共用 registry（這次是試用自建的 layout）。
+- [ ] 兩個真實 Native viewer 同時連線的 query/reply 與重連。
+- [ ] 自訂外部指令（含 `HERDR_ACTIVE_PANE_ID` 腳本）、sidebar/plugin、滑鼠、onboarding、真實 agent。
+- [ ] ble prompt 顯示字面的 `\e[1;38;…m>\e[m[INS]`：未定位。待對照：一般終端機用同一組私有 XDG 開 Bash，若仍出現即為隔離環境造成。mise 找不到 zoxide 與 trust 提示確定是私有 XDG 造成。
+
+兩個契約區分（不是缺陷）：
+
+- API `terminal_id` 在 presenter 重啟後會重新分配；身份是 permanent owner core ID + local address 與 public workspace/tab/pane ID。
+- **最後一個 viewer 離開後，hc 把 live program 的尺寸改成 headless 預設 200x120**，重新顯示時再依 layout resize。0.1.17、0.1.18、0.1.19（macOS）、0.1.20 行為相同；`hc_multiview_live_qualification` 現在斷言這點。後果：沒有其他 viewer 時關掉 Native，全螢幕程式會經歷兩次重排。
+
 ### P1：驗證與發布前 gate
 
 - [ ] 每次修改後都要有一次完整的 **Linux** 執行（`cargo nextest run --locked --no-fail-fast`，pinned hc 0.1.18 置於 PATH 最前）：`tests/cli.rs`、`tests/machine_api.rs` 與部分 `tests/api_ping.rs` 在 macOS 不編譯，私人 repo 的 Actions 也已停用，沒有任何自動化會執行它們。
