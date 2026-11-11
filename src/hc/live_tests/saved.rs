@@ -598,7 +598,26 @@ async fn exercise_catalog_retirement(
             }
         })
         .await
-        .map_err(|_| invalid("catalog change did not retire the source host"))?;
+        .map_err(|_| {
+            let state = std::fs::read_to_string(format!("/proc/{pid}/status"))
+                .ok()
+                .and_then(|status| {
+                    status
+                        .lines()
+                        .filter(|line| line.starts_with("State:") || line.starts_with("PPid:"))
+                        .map(str::to_owned)
+                        .reduce(|a, b| format!("{a} {b}"))
+                })
+                .unwrap_or_else(|| "unavailable".into());
+            let log = std::fs::read_to_string(
+                presenter.root.join(format!("c/herdr-dev/sessions/hc-{id}/herdr-server.log")),
+            )
+            .unwrap_or_default();
+            let tail: Vec<_> = log.lines().rev().take(12).collect();
+            invalid(format!(
+                "catalog change did not retire the source host (pid {pid}: {state}); log tail (newest first): {tail:#?}"
+            ))
+        })?;
         assert_eq!(live_programs(probe).await?, programs);
         let snapshot_path = presenter
             .api

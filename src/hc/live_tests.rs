@@ -205,8 +205,40 @@ async fn target() -> io::Result<Target> {
     })
 }
 
+/// Permanent IDs of cores that are in use, comma-separated. The scratch core's
+/// first hello must match none of them before anything is run, attached or killed.
+const PROTECTED_CORES_ENV: &str = "HERDR_HC_SMOKE_PROTECTED_CORES";
+
+fn refuse_protected_core(core_id: &str, protected: Option<&str>) -> io::Result<()> {
+    if core_id.trim().is_empty() {
+        return Err(invalid("scratch core reported no permanent id"));
+    }
+    if protected
+        .into_iter()
+        .flat_map(|ids| ids.split(','))
+        .any(|id| id.trim() == core_id)
+    {
+        return Err(invalid(
+            "scratch target resolved to a protected core; nothing was run",
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn hc_smoke_refuses_a_protected_core_before_running_anything() {
+    assert!(refuse_protected_core("scratch", None).is_ok());
+    assert!(refuse_protected_core("scratch", Some("owner-a, owner-b")).is_ok());
+    assert!(refuse_protected_core("owner-b", Some("owner-a, owner-b")).is_err());
+    assert!(refuse_protected_core(" ", None).is_err());
+}
+
 async fn exercise(target: &Target) -> io::Result<()> {
     let client = Client::connect(target.command(&["connect"])).await?;
+    refuse_protected_core(
+        &client.hello.core.id,
+        std::env::var(PROTECTED_CORES_ENV).ok().as_deref(),
+    )?;
     println!(
         "native hc: {} ({})",
         client.hello.version, client.hello.core.name

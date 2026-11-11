@@ -122,6 +122,21 @@ impl EndpointCatalog {
         Self::load_from_path(&catalog_path()).map(|catalog| catalog.ssh)
     }
 
+    /// Profiles as a source host needs them: a host is bound to one profile,
+    /// not to what any client has selected. An inline selection naming a
+    /// removed or disabled profile must not hide the profiles themselves, or
+    /// that profile's own host could never see that it should retire.
+    pub(crate) fn load_source_profiles() -> Result<Vec<SavedSshEndpoint>, String> {
+        Self::load_source_profiles_from_path(&catalog_path())
+    }
+
+    fn load_source_profiles_from_path(path: &Path) -> Result<Vec<SavedSshEndpoint>, String> {
+        let mut catalog = Self::read_from_path(path)?;
+        catalog.selected_profile = None;
+        catalog.validate()?;
+        Ok(catalog.ssh)
+    }
+
     fn load_from_paths(catalog_path: &Path, selection_path: &Path) -> Result<Self, String> {
         let mut catalog = Self::load_from_path(catalog_path)?;
         match load_selection_from_path(selection_path) {
@@ -315,6 +330,12 @@ impl EndpointCatalog {
     }
 
     fn load_from_path(path: &Path) -> Result<Self, String> {
+        let catalog = Self::read_from_path(path)?;
+        catalog.validate()?;
+        Ok(catalog)
+    }
+
+    fn read_from_path(path: &Path) -> Result<Self, String> {
         let file = match std::fs::File::open(path) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
@@ -338,10 +359,8 @@ impl EndpointCatalog {
         if content.len() as u64 > MAX_CATALOG_BYTES {
             return Err("endpoint catalog exceeds the storage limit".into());
         }
-        let catalog: Self = serde_json::from_str(&content)
-            .map_err(|error| format!("stored endpoint catalog is invalid: {error}"))?;
-        catalog.validate()?;
-        Ok(catalog)
+        serde_json::from_str(&content)
+            .map_err(|error| format!("stored endpoint catalog is invalid: {error}"))
     }
 
     fn store_to_path(&self, path: &Path) -> Result<(), String> {
@@ -456,6 +475,46 @@ mod tests {
         assert_eq!(loaded, catalog);
         assert_eq!(loaded.ssh[0].id, id);
         assert_eq!(loaded.ssh[0].hc_path, None);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn source_profiles_stay_readable_when_the_selected_profile_is_disabled_or_removed() {
+        let path = path("source-profiles");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let id = "0123456789abcdef0123456789abcdef";
+        for (ssh, expected) in [
+            (
+                format!(
+                    r#"[{{"id":"{id}","label":"Build","target":"build","session":"default","enabled":false}}]"#
+                ),
+                vec![false],
+            ),
+            ("[]".to_owned(), vec![]),
+        ] {
+            std::fs::write(
+                &path,
+                format!(r#"{{"version":1,"selected_profile":"{id}","ssh":{ssh}}}"#),
+            )
+            .unwrap();
+            // A client cannot use this selection...
+            assert!(EndpointCatalog::load_from_path(&path)
+                .unwrap_err()
+                .contains("absent or disabled"));
+            // ...but the profile's own source host must still see why it retires.
+            let profiles = EndpointCatalog::load_source_profiles_from_path(&path).unwrap();
+            assert_eq!(
+                profiles
+                    .iter()
+                    .map(|profile| profile.enabled)
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
+        // Everything else about the catalog is still validated.
+        std::fs::write(&path, r#"{"version":999,"ssh":[]}"#).unwrap();
+        assert!(EndpointCatalog::load_source_profiles_from_path(&path).is_err());
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 

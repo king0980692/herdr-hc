@@ -103,8 +103,8 @@ impl Source {
             }
             Self::Command(_) => return Ok(None),
         };
-        let profiles =
-            crate::client::endpoint::EndpointCatalog::load_profiles().map_err(io::Error::other)?;
+        let profiles = crate::client::endpoint::EndpointCatalog::load_source_profiles()
+            .map_err(io::Error::other)?;
         let profile = profiles
             .into_iter()
             .find(|p| p.id.as_str() == id && p.enabled)
