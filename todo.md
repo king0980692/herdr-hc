@@ -119,6 +119,13 @@ macOS 會排除 `tests/cli.rs`、`tests/machine_api.rs` 與部分 `tests/api_pin
 - [ ] `client_mode::sigwinch_refreshes_host_palette_without_resizing` 在遷移前的 `ee5bfb50` 於此環境即失敗，與 hc 無關，原因未查。
 - [ ] `cli::sessions::named_sessions_use_separate_servers_and_workspace_state` 不穩定：完整併發執行約每數次失敗一次（最近 4 次中 2 次），beta session 多出標籤 `~` 的 workspace。推測（未驗證）：兩個 named session 共用同一個 hc core，first-open bootstrap 依時序把 alpha 的 program 投影進 beta；若成立，named session 之間不再隔離。
 
+### 候選版（此 WSL2 主機，2026-11-11）
+
+- 來源：分支 `fix/linux-hc-process-facts` 的 `747df3d4`，`cargo build --release --locked`，Rust 1.96.1。
+- 位置：`~/.local/opt/herdr-native/643df92db8e4/herdr`，SHA256 `643df92db8e4a1a162b38384aa99e474ba89a3121c98b62d43c0a8264d5c614b`。沒有動 `~/.local/bin/herdr`（0.9.5）與 `~/.local/bin/herdr-core`（0.1.17）。
+- 同目錄的 `herdr-native-trial` 是隔離試用啟動腳本：獨立的 XDG config/state/runtime（預設 `~/.local/state/herdr-native-trial`）加上私有的 hc 0.1.20（`trial-bin/hc`），不會 attach 共用 core。已用非互動方式驗證：program 建在私有 core，共用 core 與 `t12` 不變。`herdr-native-trial-hc` 對該私有 core 下 hc 指令。
+- 尚未有人實際操作過 TUI；連接真正共用 core 的試用需要另外同意（會 attach 到工作中的 program）。
+
 ### P1：驗證與發布前 gate
 
 - [ ] 每次修改後都要有一次完整的 **Linux** 執行（`cargo nextest run --locked --no-fail-fast`，pinned hc 0.1.18 置於 PATH 最前）：`tests/cli.rs`、`tests/machine_api.rs` 與部分 `tests/api_ping.rs` 在 macOS 不編譯，私人 repo 的 Actions 也已停用，沒有任何自動化會執行它們。
