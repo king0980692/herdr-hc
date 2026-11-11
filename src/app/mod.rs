@@ -32,7 +32,6 @@ mod window_title;
 mod worktrees;
 
 use std::collections::HashMap;
-#[cfg(unix)]
 use std::io;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

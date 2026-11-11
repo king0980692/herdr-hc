@@ -495,7 +495,8 @@ async fn run_connection(
 mod app_tests;
 #[cfg(test)]
 mod exit_tests;
-#[cfg(test)]
+// Opt-in live checks drive real Unix sockets, permissions and process signals.
+#[cfg(all(test, unix))]
 mod live_tests;
 #[cfg(test)]
 mod reconnect_tests;
