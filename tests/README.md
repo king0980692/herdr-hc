@@ -36,6 +36,9 @@ core or launch a program for cleanup. Upstream stop ends even kept programs;
 their saved pending records are not permission to respawn them. Failure, timeout
 or uncertain endpoint ownership retains the root and registry entry for retry.
 Only a timed-out stopper CLI is killed; there is no hc PID-scan/kill fallback.
+A session whose core never wrote its identity (`core.json`) never served and
+needs no stop: on macOS a test that stops its server within a second can end
+the launching `hc` while it is still handing a launchd job its state.
 
 `hc_fixture` covers independent/reused cores, unknown-runtime no-op, every private
 source session (including 64-byte holder paths), kept-program/core-crash cleanup

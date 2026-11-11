@@ -354,7 +354,13 @@ fn cleanup_root(root: &Path) -> io::Result<()> {
                 Some(true) => {
                     confirmed.insert(entry.file_name());
                 }
-                Some(false) => unconfirmed |= !confirmed.contains(&entry.file_name()),
+                // A core writes its identity (core.json) before it serves anyone. Without
+                // one it never started: a launcher stopped mid-start (macOS hands launchd
+                // jobs their state over a socket) leaves nothing that could hold a program.
+                Some(false) => {
+                    unconfirmed |= !confirmed.contains(&entry.file_name())
+                        && entry.path().join("core.json").exists()
+                }
                 None => return Err(io::Error::other("hc stop did not confirm its outcome")),
             }
         }
