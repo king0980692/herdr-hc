@@ -108,6 +108,7 @@ macOS 會排除 `tests/cli.rs`、`tests/machine_api.rs` 與部分 `tests/api_pin
 - [ ] **`worktree remove` 在 Native 無法使用**：workspace 內只要有 hc pane 就回 `unsupported_runtime`（`src/app/api.rs`、`src/app/api/worktrees/deferred.rs`），而 Native 的 pane 全是 hc pane。三個 CLI 測試目前斷言「被拒且 program／checkout 未被動到」。要恢復功能需實作以 `terminal.kill` 終止精確 binding 的 hc 版移除。
 - [ ] **`--machine` 的政策待確認**：PATH 沒有 `hc` 時，以標籤選 legacy SSH 機器會 fail closed，只有完整 profile ID 可用（`tests/machine_api.rs` 與 `src/cli/target.rs` 的單元測試目前都固定此行為）。
 - [ ] **`tests/machine_api.rs` 已改寫為 hc 架構，但失去部分覆蓋**：舊的 SSH API bridge 測試（遠端 herdr 探索／metadata 快取、stale path 與 ping timeout 復原、舊 bridge 拒絕）對應的程式路徑已不存在，沒有移植。來源離線（SSH 失敗）時 `--machine` 指令的行為目前沒有測試。
+- [x] **hc 0.1.17 的 automatic response 會偷走控制尺寸（已實測，2026-11-11）**：`hc_multiview_live_qualification`（ignored，隔離 scratch core）在 0.1.18 上 AUTOMATIC_INPUT 不影響尺寸；在 0.1.17 上 Native 退回 DATA，B（80x24）每回一次 automatic reply 就把 A（100x35）控制的尺寸改成 80x24，6/6 回合、兩次執行皆同。共用 gx10 與 leon 目前都是 0.1.17。這是 frame 層的證據，尚未在真實 Native TUI 的 query/reply 上驗證。待決定：preserving 升級共用 core 至 ≥0.1.18，或讓 Native 在 core 不支援時只由控制中的 viewer 回覆。
 - [ ] **saved／shared 來源仍有 `agent start` 啟動競態**：`pane.process_info` 只對 Local 來源回報 hc 事實（遠端 PID 不外露），所以 CLI 對遠端來源不會在 shell 初始化期間重試。
 - [ ] **`agent prompt --wait` 會漏掉瞬間的 working**：hc 事件串流有發出連續的 working→idle，但 Herdr 的投影只保留最新狀態。`tests/cli/agents.rs` 的假 agent 以 0.2s 停留避開。
 - [ ] `client_mode::sigwinch_refreshes_host_palette_without_resizing` 在遷移前的 `ee5bfb50` 於此環境即失敗，與 hc 無關，原因未查。

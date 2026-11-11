@@ -1,4 +1,5 @@
 //! Opt-in checks against the installed upstream core, isolated from user state.
+mod multiview;
 mod saved;
 
 use super::*;
@@ -877,6 +878,29 @@ async fn hc_smoke_cleanup_checks_nested_source_sockets_before_removing_evidence(
     drop(listener);
     target.cleanup().await.unwrap();
     assert!(!root.exists());
+}
+
+#[test]
+#[ignore = "needs installed upstream hc; creates only an isolated scratch core"]
+fn hc_multiview_live_qualification() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("multiview executor");
+    let target = runtime.block_on(target()).expect("scratch target");
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        runtime.block_on(multiview::exercise(&target))
+    }));
+    let cleanup = runtime.block_on(target.cleanup());
+    assert!(
+        cleanup.is_ok(),
+        "cleanup failed for {}: {cleanup:?}",
+        target.scratch
+    );
+    match outcome {
+        Ok(result) => assert!(result.is_ok(), "hc multiview failed: {result:?}"),
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
 }
 
 #[test]
