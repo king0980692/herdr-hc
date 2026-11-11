@@ -520,6 +520,29 @@ fn process_group_pids(process_group_id: u32) -> Vec<u32> {
     Vec::new()
 }
 
+/// The parent of a local process, from `proc_pidinfo(PROC_PIDTBSDINFO)`.
+pub fn parent_pid(pid: u32) -> Option<u32> {
+    if pid == 0 {
+        return None;
+    }
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let ret = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            &mut info as *mut _ as *mut libc::c_void,
+            size,
+        )
+    };
+    if ret != size {
+        return None;
+    }
+    #[allow(clippy::useless_conversion)] // pbi_ppid's integer type is platform-dependent
+    u32::try_from(info.pbi_ppid).ok().filter(|ppid| *ppid > 0)
+}
+
 /// Read `e_tpgid` (foreground process group of the controlling terminal)
 /// for the given PID.
 pub fn foreground_process_group_id(pid: u32) -> Option<u32> {

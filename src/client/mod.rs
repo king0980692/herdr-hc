@@ -233,14 +233,16 @@ fn run_client_with_mode(
     crate::logging::startup("client");
     info!(path = %socket_path.display(), "{log_message}");
 
-    let endpoint_catalog = if client_rendered_shell && !is_remote_client_process() {
-        endpoint::EndpointCatalog::load().unwrap_or_else(|error| {
-            warn!(%error, "saved SSH endpoint catalog is unavailable");
+    // herdr-hc presents only the Local core: no saved or shared sources.
+    let endpoint_catalog =
+        if client_rendered_shell && !is_remote_client_process() && !crate::hc_entry::ENABLED {
+            endpoint::EndpointCatalog::load().unwrap_or_else(|error| {
+                warn!(%error, "saved SSH endpoint catalog is unavailable");
+                endpoint::EndpointCatalog::default()
+            })
+        } else {
             endpoint::EndpointCatalog::default()
-        })
-    } else {
-        endpoint::EndpointCatalog::default()
-    };
+        };
     let federated =
         endpoint_catalog.has_enabled_ssh() || endpoint_catalog.selected_shared.is_some();
 
@@ -670,7 +672,9 @@ async fn run_client_loop(
     let mut pending_catalog: Option<Result<Vec<endpoint::SavedSshEndpoint>, String>> = None;
     let mut pending_shared = None;
     if state.shell.is_some() && !is_remote_client && state.attach_escape.is_none() {
-        catalog_reload::watch_profiles(event_tx.clone(), should_quit.clone());
+        if !crate::hc_entry::ENABLED {
+            catalog_reload::watch_profiles(event_tx.clone(), should_quit.clone());
+        }
         jump_request::watch(event_tx.clone(), should_quit.clone());
     }
 

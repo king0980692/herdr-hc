@@ -776,6 +776,20 @@ fn process_argv(pid: u32) -> Option<Vec<String>> {
     (!parts.is_empty()).then_some(parts)
 }
 
+/// The parent of a local process, from `/proc/<pid>/stat`.
+pub fn parent_pid(pid: u32) -> Option<u32> {
+    if pid == 0 {
+        return None;
+    }
+    parent_pid_from_stat(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
+}
+
+fn parent_pid_from_stat(stat: &str) -> Option<u32> {
+    // The command name may contain spaces and parentheses; fields follow the last ')'.
+    let rest = stat.get(stat.rfind(')')? + 2..)?;
+    rest.split_whitespace().nth(1)?.parse().ok()
+}
+
 /// Get the current working directory of a process.
 /// Uses /proc/<pid>/cwd symlink.
 pub fn process_cwd(pid: u32) -> Option<PathBuf> {
@@ -1177,6 +1191,19 @@ mod tests {
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn parent_pid_reads_the_field_after_a_command_name_with_parentheses() {
+        assert_eq!(
+            super::parent_pid_from_stat("123 (name with ) paren) S 77 456 789 0 456"),
+            Some(77)
+        );
+        assert_eq!(super::parent_pid_from_stat("garbage"), None);
+        assert_eq!(
+            super::parent_pid(std::process::id()),
+            Some(std::os::unix::process::parent_id())
+        );
     }
 
     #[test]

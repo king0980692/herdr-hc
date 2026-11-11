@@ -20,6 +20,9 @@ const KNOWN_TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
 ];
 
 pub fn app_dir_name() -> &'static str {
+    if crate::hc_entry::ENABLED {
+        return crate::hc_entry::app_dir_name(cfg!(debug_assertions));
+    }
     if cfg!(debug_assertions) {
         "herdr-dev"
     } else {

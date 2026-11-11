@@ -206,8 +206,14 @@ impl CoreHost {
                         result = check_source_route(&source, &mut selected) => result.err(),
                     };
                     let changed_core = saved && client.as_ref().is_some_and(|c| known_core.as_ref().is_some_and(|id| id != &c.hello.core.id));
+                    // herdr-hc shares programs with other viewers; a core that would let their
+                    // terminal replies take the size is refused, not used in degraded form.
+                    let unsupported = crate::hc_entry::ENABLED
+                        && client.as_ref().is_some_and(|c| !crate::hc_entry::core_supported(&c.hello));
                     let error = if changed_core {
                         Some(io::Error::new(io::ErrorKind::PermissionDenied, "hc core identity changed; local source host must restart"))
+                    } else if unsupported {
+                        Some(io::Error::new(io::ErrorKind::Unsupported, "herdr-hc needs an hc core with automatic_input (hc 0.1.18 or newer)"))
                     } else { route_error.or_else(|| result.err()) };
                     let retired = error.as_ref().is_some_and(|error| error.kind() == io::ErrorKind::PermissionDenied);
                     if error.is_some() {

@@ -218,6 +218,11 @@ pub fn foreground_process_group_id(_child_pid: u32) -> Option<u32> {
 }
 
 /// Unsupported platform stub.
+/// Process ancestry is not available on this platform.
+pub fn parent_pid(_pid: u32) -> Option<u32> {
+    None
+}
+
 pub fn process_cwd(_pid: u32) -> Option<PathBuf> {
     None
 }

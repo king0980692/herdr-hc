@@ -20,6 +20,11 @@ include = [
     "Cargo.toml",
 ]
 
+[features]
+# Build `herdr-hc`: a Native view of the machine's Local hc core only, with its
+# own app directory, no saved or shared sources, and no self-update.
+hc-entry = []
+
 [workspace]
 members = ["crates/ghostty-vt"]
 default-members = [".", "crates/ghostty-vt"]

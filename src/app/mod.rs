@@ -614,8 +614,12 @@ impl App {
         // Background auto-update is disabled for non-persistent test apps
         // and in debug/test builds so local development never mutates the
         // running binary out from under spawned test processes.
-        let version_check_enabled =
-            background_update_check_enabled(policy.background_updates, config.update.version_check);
+        // herdr-hc must never be offered, or replaced by, a stock herdr release.
+        let version_check_enabled = !crate::hc_entry::ENABLED
+            && background_update_check_enabled(
+                policy.background_updates,
+                config.update.version_check,
+            );
         let manifest_check_enabled = background_update_check_enabled(
             policy.background_updates,
             config.update.manifest_check,

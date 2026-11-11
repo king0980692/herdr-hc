@@ -26,6 +26,7 @@ mod events;
 use ghostty_vt as ghostty;
 mod handoff_runtime;
 pub mod hc;
+mod hc_entry;
 mod input;
 mod integration;
 mod ipc;
@@ -470,7 +471,8 @@ fn random_nested_message() -> &'static str {
 }
 
 fn exit_if_nested_disabled(config: &config::Config) {
-    if should_block_nested(config) {
+    // herdr-hc refuses only the exact self-projection, checked before launch.
+    if !hc_entry::ENABLED && should_block_nested(config) {
         eprintln!("\x1b[1merror:\x1b[0m nested herdr is disabled by default.");
         eprintln!("see configuration if you want to enable it.");
         eprintln!();
@@ -518,6 +520,12 @@ fn main() -> io::Result<()> {
             std::process::exit(2);
         }
     };
+    if hc_entry::ENABLED {
+        if let Err(err) = hc_entry::prepare_process(&raw_args) {
+            eprintln!("error: {err}");
+            std::process::exit(2);
+        }
+    }
     #[cfg(windows)]
     if let Some(result) = platform::maybe_activate_desktop_notification(&raw_args) {
         return result;
@@ -798,8 +806,15 @@ fn main() -> io::Result<()> {
     let loaded_config = config::Config::load();
     exit_if_nested_disabled(&loaded_config.config);
 
-    let saved_federation =
-        client::endpoint::EndpointCatalog::load().is_ok_and(|catalog| catalog.has_enabled_ssh());
+    if hc_entry::ENABLED {
+        let running = server::autodetect::is_server_listening().unwrap_or(false);
+        if let Err(err) = hc_entry::prepare_tui_launch(running) {
+            eprintln!("herdr-hc: {err}");
+            std::process::exit(1);
+        }
+    }
+    let saved_federation = !hc_entry::ENABLED
+        && client::endpoint::EndpointCatalog::load().is_ok_and(|catalog| catalog.has_enabled_ssh());
     if let Err(err) = server::autodetect::auto_detect_launch(saved_federation) {
         eprintln!("herdr: {err}");
         std::process::exit(1);

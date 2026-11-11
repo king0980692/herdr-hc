@@ -11,7 +11,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-fn initial_layout(core: &str, records: Vec<Terminal>) -> io::Result<Option<SessionSnapshot>> {
+fn initial_layout(
+    core: &str,
+    records: Vec<Terminal>,
+    excluded_pids: &HashSet<u32>,
+) -> io::Result<Option<SessionSnapshot>> {
     let mut addresses = HashSet::new();
     let mut tabs = Vec::new();
     let mut identity_cwd = PathBuf::new();
@@ -50,6 +54,16 @@ fn initial_layout(core: &str, records: Vec<Terminal>) -> io::Result<Option<Sessi
                 io::ErrorKind::InvalidData,
                 "unknown hc lifecycle; initial layout was not created",
             ));
+        }
+        // The terminal a launching client runs in is never shown inside itself.
+        if terminal
+            .facts
+            .get("pid")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|pid| u32::try_from(pid).ok())
+            .is_some_and(|pid| excluded_pids.contains(&pid))
+        {
+            continue;
         }
         let pane = u32::try_from(tabs.len())
             .ok()
@@ -139,7 +153,9 @@ impl App {
         let discovery = self
             .terminal_factory
             .initial_terminals()
-            .and_then(|(core, terminals)| initial_layout(&core, terminals));
+            .and_then(|(core, terminals)| {
+                initial_layout(&core, terminals, &crate::hc_entry::excluded_program_pids())
+            });
         let snapshot = match discovery {
             Ok(snapshot) => {
                 self.hc_recovery.initial_inventory_due = None;
@@ -201,6 +217,7 @@ mod tests {
                 terminal("t2", "finished"),
                 terminal("t1b", "live"),
             ],
+            &HashSet::new(),
         )
         .unwrap()
         .unwrap();
@@ -216,13 +233,57 @@ mod tests {
             assert!(pane.launch_argv.is_none() && pane.agent_resume.is_none());
         }
         assert_ne!(workspace.tabs[0].focused, workspace.tabs[1].focused);
-        assert!(initial_layout("owner", vec![]).unwrap().is_none());
+        assert!(initial_layout("owner", vec![], &HashSet::new())
+            .unwrap()
+            .is_none());
         for records in [
             vec![terminal("t1", "live"), terminal("t1", "live")],
             vec![terminal("t01", "live")],
             vec![terminal("t1", "future")],
         ] {
-            assert!(initial_layout("owner", records).is_err());
+            assert!(initial_layout("owner", records, &HashSet::new()).is_err());
         }
+    }
+
+    #[test]
+    fn initial_layout_leaves_out_the_program_hosting_the_launching_client() {
+        let with_pid = |address: &str, pid: u32| -> Terminal {
+            serde_json::from_value(serde_json::json!({
+                "address":address,"state":"live","cwd":"/source","pid":pid
+            }))
+            .unwrap()
+        };
+        let snapshot = initial_layout(
+            "owner",
+            vec![
+                with_pid("t1", 100),
+                with_pid("t2", 200),
+                with_pid("t3", 300),
+            ],
+            &HashSet::from([200]),
+        )
+        .unwrap()
+        .unwrap();
+        let addresses: Vec<_> = snapshot.workspaces[0]
+            .tabs
+            .iter()
+            .map(|tab| {
+                tab.panes
+                    .values()
+                    .next()
+                    .unwrap()
+                    .hc_binding
+                    .clone()
+                    .unwrap()["address"]
+                    .clone()
+            })
+            .collect();
+        assert_eq!(addresses, ["t1", "t3"]);
+        // Excluding the only program leaves nothing to project, not an error.
+        assert!(
+            initial_layout("owner", vec![with_pid("t2", 200)], &HashSet::from([200]))
+                .unwrap()
+                .is_none()
+        );
     }
 }
