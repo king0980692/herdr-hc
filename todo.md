@@ -151,6 +151,14 @@ macOS 會排除 `tests/cli.rs`、`tests/machine_api.rs` 與部分 `tests/api_pin
 - API `terminal_id` 在 presenter 重啟後會重新分配；身份是 permanent owner core ID + local address 與 public workspace/tab/pane ID。
 - **最後一個 viewer 離開後，hc 把 live program 的尺寸改成 headless 預設 200x120**，重新顯示時再依 layout resize。0.1.17、0.1.18、0.1.19（macOS）、0.1.20 行為相同；`hc_multiview_live_qualification` 現在斷言這點。後果：沒有其他 viewer 時關掉 Native，全螢幕程式會經歷兩次重排。
 
+### GitHub Actions 與 herdr-hc release（2026-11-11）
+
+- 私人 repo 已開啟 Actions（以 `king0980692` 操作）。上游 workflow（stale-close、website-deploy、preview、release 等）尚未被 GitHub 登錄所以無法停用；它們只會在 `master` 有新 push 時被登錄，**push `master` 前必須先停用**。
+- `herdr-hc-release.yml`：`herdr-hc-*` tag → 完整 CI → 以 `--features hc-entry` build Linux／macOS／Windows → 私人 repo prerelease。
+- **Linux CI 通過**。
+- **macOS 已修好**：`server_headless` 的三個短測試在 hc 0.1.18～0.1.20 都會失敗。原因是 server 在一秒內被關掉時，正在經由 launchd 啟動 core 的 `hc` 也被結束，狀態傳到一半（core.log：`launchd detach failed: EOF while parsing`），core 從沒啟動。fixture 現在把沒有 `core.json` 的 session 視為從未啟動。以 hc 0.1.20 在 macOS runner 跑完整檢查：4053 passed／18 skipped，lint 與輔助檢查通過。hc 上游在這種中斷後會留下未清除的 launchd job 與 `/tmp/hc-launchd-*`。
+- [ ] **Windows CI 仍失敗**：dead code 已修，但 Native 建立 pane 需要 hc，而 Windows runner 沒有 build hc；ConPTY smoke test 與需要 hc 的整合測試都會失敗。這從 hc 遷移起就存在。
+
 ### P1：驗證與發布前 gate
 
 - [ ] 每次修改後都要有一次完整的 **Linux** 執行（`cargo nextest run --locked --no-fail-fast`，pinned hc 0.1.18 置於 PATH 最前）：`tests/cli.rs`、`tests/machine_api.rs` 與部分 `tests/api_ping.rs` 在 macOS 不編譯，私人 repo 的 Actions 也已停用，沒有任何自動化會執行它們。
