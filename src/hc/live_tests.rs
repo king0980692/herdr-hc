@@ -521,8 +521,11 @@ async fn exercise_app(target: &Target) -> io::Result<()> {
     app.terminal_runtimes
         .get(&id)
         .unwrap()
+        // hc clears a status once the pane's interactive shell is back in the
+        // foreground, so the report comes from a child that keeps running and
+        // still runs each later line as a command.
         .try_send_bytes(Bytes::from_static(
-            b"printf '\\033]7501;state=blocked\\007HC_APP_READY\\n'\r",
+            b"/bin/sh -c 'printf \"\\033]7501;state=blocked\\007HC_APP_READY\\n\"; while IFS= read -r l; do eval \"$l\"; done'\r",
         ))
         .map_err(io::Error::other)?;
     timeout(Duration::from_secs(10), async {

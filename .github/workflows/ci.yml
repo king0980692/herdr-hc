@@ -173,7 +173,7 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           repository: herdrdev/herdr-core
-          ref: 9ce385d9c8abb041dd4437476d770365b3fb5282 # hc 0.1.18
+          ref: de97ea5ba5d6877a5e082316b4a1a5b4918e861f # hc 0.1.20
           path: .local/hc-test-source
           submodules: true
           persist-credentials: false

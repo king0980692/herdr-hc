@@ -1,7 +1,7 @@
 # Subprocess runtime tests
 
 Unix subprocess tests need upstream `hc` on the parent test runner's `PATH`.
-CI builds hc 0.1.18 from commit `9ce385d9c8abb041dd4437476d770365b3fb5282`
+CI builds hc 0.1.20 from commit `de97ea5ba5d6877a5e082316b4a1a5b4918e861f`
 (including its pinned Ghostty submodule); there is no fake backend or silent skip
 when hc is missing. Use Zig 0.16.0 for builds. Building the pinned hc from source
 on macOS also requires full Xcode: its Ghostty build emits an XCFramework.

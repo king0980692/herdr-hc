@@ -329,7 +329,10 @@ async fn exercise(target: &Target, presenter: &mut Presenter) -> io::Result<()> 
         .await?;
     stream
         .input(
-            Bytes::from_static(b"printf '\\033]7501;state=idle:app=codex\\007'\r"),
+            // The stand-in agent holds the foreground and runs each prompt line.
+            Bytes::from_static(
+                b"/bin/sh -c 'printf \"\\033]7501;state=idle:app=codex\\007\"; while IFS= read -r l; do eval \"$l\"; done'\r",
+            ),
             false,
         )
         .await?;

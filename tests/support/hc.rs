@@ -202,19 +202,46 @@ pub fn request(socket: &Path, method: &str, params: serde_json::Value) -> serde_
     serde_json::from_str(&line).unwrap()
 }
 
+static STATUS_AGENTS: OnceLock<Mutex<HashSet<(PathBuf, String)>>> = OnceLock::new();
+
+/// A stand-in agent that owns the pane's foreground and reports whatever state
+/// it is told on stdin. hc clears a status once the pane's interactive shell is
+/// back in the foreground, so a report typed at the prompt would not last.
+const STATUS_AGENT: &str = r#"emit() { printf "\033]7501;state=%s:app=%s\007" "$1" "$2"; }; emit "$1" "$2"; while IFS= read -r line; do set -- $line; case "$1" in clear) printf "\033]7501;state=clear\007"; exit 0 ;; idle|working|blocked|done|error) emit "$1" "$2" ;; esac; done"#;
+
+fn send_status_line(socket: &Path, pane: &str, text: String) {
+    let response = request(
+        socket,
+        "pane.send_text",
+        serde_json::json!({"pane_id":pane,"text":text}),
+    );
+    assert!(
+        response.get("error").is_none(),
+        "emit source status: {response}"
+    );
+}
+
+/// Makes the pane's program report `agent` in `state`, as a real agent does on
+/// its own terminal. The first report starts the stand-in agent in the pane's
+/// shell; later ones drive it, so the pane is no longer an idle shell.
 pub fn report_agent(socket: &Path, pane: &str, agent: &str, state: &str) {
     assert!([agent, state].iter().all(|value| !value.is_empty()
         && value
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))));
-    let response = request(
+    let started = STATUS_AGENTS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap()
+        .insert((socket.to_path_buf(), pane.to_owned()));
+    send_status_line(
         socket,
-        "pane.send_text",
-        serde_json::json!({"pane_id":pane,"text":format!("printf '\\033]7501;state={state}:app={agent}\\007'\n")}),
-    );
-    assert!(
-        response.get("error").is_none(),
-        "emit source status: {response}"
+        pane,
+        if started {
+            format!("/bin/sh -c '{STATUS_AGENT}' hc-status-agent {state} {agent}\n")
+        } else {
+            format!("{state} {agent}\n")
+        },
     );
     let mut last = serde_json::Value::Null;
     assert!(
@@ -227,16 +254,22 @@ pub fn report_agent(socket: &Path, pane: &str, agent: &str, state: &str) {
     );
 }
 
-/// Withdraws the pane program's root status record, as a program does on exit.
+/// Withdraws the pane program's root status record, as a program does on exit,
+/// and returns the pane to its shell.
 pub fn clear_agent(socket: &Path, pane: &str) {
-    let response = request(
+    let running = STATUS_AGENTS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap()
+        .remove(&(socket.to_path_buf(), pane.to_owned()));
+    send_status_line(
         socket,
-        "pane.send_text",
-        serde_json::json!({"pane_id":pane,"text":"printf '\\033]7501;state=clear\\007'\n"}),
-    );
-    assert!(
-        response.get("error").is_none(),
-        "clear source status: {response}"
+        pane,
+        if running {
+            "clear\n".to_owned()
+        } else {
+            "printf '\\033]7501;state=clear\\007'\n".to_owned()
+        },
     );
     let mut last = serde_json::Value::Null;
     assert!(

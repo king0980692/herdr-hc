@@ -111,8 +111,7 @@ macOS 會排除 `tests/cli.rs`、`tests/machine_api.rs` 與部分 `tests/api_pin
 - [x] **hc 0.1.17 的 automatic response 會偷走控制尺寸（已實測，2026-11-11）**：`hc_multiview_live_qualification`（ignored，隔離 scratch core）在 0.1.18 上 AUTOMATIC_INPUT 不影響尺寸；在 0.1.17 上 Native 退回 DATA，B（80x24）每回一次 automatic reply 就把 A（100x35）控制的尺寸改成 80x24，6/6 回合、兩次執行皆同。共用 gx10 與 leon 目前都是 0.1.17。這是 frame 層的證據，尚未在真實 Native TUI 的 query/reply 上驗證。決定方向：preserving 升級共用 core 至 ≥0.1.18。
 - [x] **preserving 升級已在隔離環境演練通過（2026-11-11）**：同一個測試加上 `HERDR_HC_MULTIVIEW_UPDATE_FROM=<build>`（執行檔必須是帶 `.disposable-hc` 標記的可拋棄複本，否則拒絕）。0.1.17 scratch core 上先起 program，再 `hc update --from`：core 永久 ID、program PID、state、尺寸、created、argv 全部不變；**升級前就存在的 program 升級後也改用 AUTOMATIC_INPUT**，尺寸不再被偷。`hc update` 只改寫自己的執行檔（canonicalize 後的 current_exe）並重啟該 session 的 core。
 - [x] **release artifact 演練（2026-11-11）**：目前 release 是 **0.1.20**。0.1.17 → 0.1.20 的 preserving 升級在隔離 scratch core 上兩次通過，結果與 debug build 相同（ID／PID／尺寸不變，既有 program 也改用 AUTOMATIC_INPUT）。
-- [ ] **Native 尚未對 hc 0.1.20 合格**（pin 仍是 0.1.18）。PATH 改用 0.1.20 跑完整套件多 6 個失敗，`hc_native_live_smoke` 也失敗：
-  - 0.1.20 的新行為「agent 退回 shell 後清除其最後狀態」（herdr-core #166）會清掉從 shell prompt 用 `printf` 送出的 OSC 7501。測試 fixture（`support::hc::report_agent`、smoke）正是這樣回報，所以狀態變回 unknown。隔離 probe 已確認：program 自己在前景送出的回報保留，shell prompt 送出的被清除。真實 agent 是前景 program，不受影響；但 fixture 必須改成由前景 program 回報才能 pin 到 0.1.20。
+- [x] **Native 已對 hc 0.1.20 合格，pin 前移至 0.1.20（2026-11-11）**：0.1.20 會在 pane 的互動 shell 回到前景時清除狀態（herdr-core #166），所以從 shell prompt 用 `printf` 送出的 OSC 7501 不會保留。`support::hc::report_agent` 與 live smoke 改由佔住前景的 stand-in agent 回報。完整套件、`hc_native_live_smoke`、多 viewer probe 在 0.1.20 與 0.1.18 上結果相同（只剩 sigwinch）。真實 agent 本來就是前景 program，但這點沒有用真實 agent 驗證。
   - `client_mode::federated_client_starts_without_local_and_survives_its_restart` 的間歇失敗**不是 0.1.20 特有**：單獨重跑時 0.1.20 為 48 過／3 敗，0.1.18 為 38 過／1 敗；5 個併發迴圈下 55 次中 4 次失敗，落在三個不同斷言。這是一個對時序與負載敏感的長測試。抓到一個具體機制：來源重連期間，client 的鍵盤輸入被 presenter 丟棄（log：`targeted pane key input failed: no available capacity`）。hc pane 的輸入佇列只有 32 筆（`src/pane/hc.rs` 的 `INPUT_QUEUE`），滿了就 `try_send` 失敗並丟掉該筆，不是整筆拒絕也不是排隊；測試每 100ms 重送整行，部分字元被丟後 shell 的輸入行被弄亂。「第二輪重連後畫面沒恢復」那種失敗沒有抓到診斷，原因仍未知。
 - [ ] **真正升級共用 core 前仍未驗證的事**：演練用的是 pinned source 的 debug build，不是 release artifact；program 只有 `/bin/cat`，升級當下沒有 viewer attach、沒有 `keep`、只有一個 holder；沒有驗證已 attach 的 Native／legacy viewer 在 core 重啟後的重連。實際升級仍須先存 before/after facts 並取得該次範圍的明確同意。
 - [ ] **saved／shared 來源仍有 `agent start` 啟動競態**：`pane.process_info` 只對 Local 來源回報 hc 事實（遠端 PID 不外露），所以 CLI 對遠端來源不會在 shell 初始化期間重試。
@@ -170,7 +169,7 @@ just docs-contract-test
 
 路徑僅代表原工作站；接手環境先核對工具版本，不可為了記憶體省略 debug、弱化測試、增加 ignore 或做未核准 SDK/toolchain/cache workaround。
 
-- herdr-core source pin：`9ce385d9c8abb041dd4437476d770365b3fb5282`；原工作站 `/Users/lychang/herdr-core` 保持乾淨，**本次只修改 Herdr**。
+- herdr-core source pin：`de97ea5ba5d6877a5e082316b4a1a5b4918e861f`（hc 0.1.20，2026-11-11 由 0.1.18 的 `9ce385d9…` 前移）；原工作站 `/Users/lychang/herdr-core` 保持乾淨，**本次只修改 Herdr**。
 - 最近 leon 非互動 PATH 沒有 cargo，但 `$HOME/.cargo/bin` 有 cargo/rustc 1.91.1；不是上述 Herdr qualification toolchain，不能聲稱已完成 fresh Linux 1.96.1 驗證。
 - Shared default remote 的非互動 PATH 沒有 literal `hc`；bootstrap 使用 `command -v herdr-core` 或 `$HOME/.local/bin/herdr-core`，不能改成 local fallback。
 
