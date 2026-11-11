@@ -228,6 +228,79 @@ async fn hc_terminal_runtime_receives_authoritative_status_and_outage_is_not_pan
 }
 
 #[tokio::test]
+async fn hc_terminal_runtime_detaches_instead_of_dropping_part_of_stalled_input() {
+    let (client, mut server) = test_client();
+    let (runtime, _, _) = attach(client, &mut server).await;
+    until_kind(&mut server, AUTOMATIC_INPUT).await;
+    let mut updates = runtime.hc_updates().unwrap();
+
+    // The source stops reading. Numbered keys keep arriving until the transport,
+    // then the outgoing queue, then the pane's input queue are all full.
+    let key = |index: usize| Bytes::from(format!("{index:08}{}", "k".repeat(256)));
+    let mut accepted = 0usize;
+    let overflow = loop {
+        match runtime.try_send_bytes(key(accepted)) {
+            Ok(()) => accepted += 1,
+            Err(error) => break error,
+        }
+        assert!(
+            accepted < 100_000,
+            "a stalled source never filled the queue"
+        );
+        tokio::task::yield_now().await;
+    };
+    assert!(
+        matches!(overflow, mpsc::error::TrySendError::Full(_)),
+        "{overflow:?}"
+    );
+
+    // From here every key is refused outright, even once there is room again.
+    assert!(matches!(
+        runtime.try_send_bytes(key(accepted)),
+        Err(mpsc::error::TrySendError::Closed(_))
+    ));
+    timeout(Duration::from_secs(2), async {
+        while updates.borrow_and_update().attached {
+            updates.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!runtime.hc_snapshot().unwrap().connected);
+    assert!(matches!(
+        runtime.try_send_bytes(key(accepted)),
+        Err(mpsc::error::TrySendError::Closed(_))
+    ));
+
+    // What did reach the source is an unbroken prefix of what was typed.
+    let mut delivered = 0usize;
+    while let Ok(Ok(frame)) = timeout(Duration::from_millis(300), async {
+        let mut header = [0u8; 9];
+        server.read_exact(&mut header).await?;
+        let length = u32::from_le_bytes(header[5..9].try_into().unwrap()) as usize;
+        let mut payload = vec![0u8; length];
+        server.read_exact(&mut payload).await?;
+        Ok::<_, io::Error>((header[4], payload))
+    })
+    .await
+    {
+        let (kind, payload) = frame;
+        if kind != DATA || payload.len() < 8 {
+            continue;
+        }
+        let Ok(index) = std::str::from_utf8(&payload[..8])
+            .unwrap_or("")
+            .parse::<usize>()
+        else {
+            continue;
+        };
+        assert_eq!(index, delivered, "the source received input with a hole");
+        delivered += 1;
+    }
+    assert!(delivered <= accepted);
+}
+
+#[tokio::test]
 async fn hc_terminal_runtime_submission_drains_output_and_events_during_enter_delay() {
     let (client, mut server) = test_client();
     let (runtime, _, _) = attach(client, &mut server).await;

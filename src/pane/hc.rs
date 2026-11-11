@@ -167,6 +167,14 @@ impl HcIo {
             .try_send(Command::Input(bytes, false))
             .map_err(|error| match error {
                 mpsc::error::TrySendError::Full(Command::Input(bytes, _)) => {
+                    // A stalled source would otherwise take some keys and drop
+                    // others, leaving the program a line with holes in it.
+                    // Detach instead: every later key is refused until recovery
+                    // reattaches, and nothing still queued is delivered late.
+                    self.shutdown();
+                    tracing::warn!(
+                        "hc input queue unavailable; detached rather than dropping part of the input"
+                    );
                     mpsc::error::TrySendError::Full(bytes)
                 }
                 mpsc::error::TrySendError::Closed(Command::Input(bytes, _)) => {

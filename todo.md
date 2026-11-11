@@ -113,6 +113,8 @@ macOS 會排除 `tests/cli.rs`、`tests/machine_api.rs` 與部分 `tests/api_pin
 - [x] **release artifact 演練（2026-11-11）**：目前 release 是 **0.1.20**。0.1.17 → 0.1.20 的 preserving 升級在隔離 scratch core 上兩次通過，結果與 debug build 相同（ID／PID／尺寸不變，既有 program 也改用 AUTOMATIC_INPUT）。
 - [x] **Native 已對 hc 0.1.20 合格，pin 前移至 0.1.20（2026-11-11）**：0.1.20 會在 pane 的互動 shell 回到前景時清除狀態（herdr-core #166），所以從 shell prompt 用 `printf` 送出的 OSC 7501 不會保留。`support::hc::report_agent` 與 live smoke 改由佔住前景的 stand-in agent 回報。完整套件、`hc_native_live_smoke`、多 viewer probe 在 0.1.20 與 0.1.18 上結果相同（只剩 sigwinch）。真實 agent 本來就是前景 program，但這點沒有用真實 agent 驗證。
   - `client_mode::federated_client_starts_without_local_and_survives_its_restart` 的間歇失敗**不是 0.1.20 特有**：單獨重跑時 0.1.20 為 48 過／3 敗，0.1.18 為 38 過／1 敗；5 個併發迴圈下 55 次中 4 次失敗，落在三個不同斷言。這是一個對時序與負載敏感的長測試。抓到一個具體機制：來源重連期間，client 的鍵盤輸入被 presenter 丟棄（log：`targeted pane key input failed: no available capacity`）。hc pane 的輸入佇列只有 32 筆（`src/pane/hc.rs` 的 `INPUT_QUEUE`），滿了就 `try_send` 失敗並丟掉該筆，不是整筆拒絕也不是排隊；測試每 100ms 重送整行，部分字元被丟後 shell 的輸入行被弄亂。「第二輪重連後畫面沒恢復」那種失敗沒有抓到診斷，原因仍未知。
+- [x] **leon 共用 core 已 preserving 升級至 hc 0.1.20（2026-11-11 約 12:02 UTC，使用者明確同意該次範圍）**：`hc update --from` 演練過的 release artifact（SHA256 `0e4a0c2f…53c95e`），以 core 原有的乾淨環境執行。before/after：core ID `6130a31a…` 不變；core PID 1208149 → 3787724；holder PID 305673 與 instance 不變（現在標為非 current，符合 hc「更新前的 terminal 維持舊 holder」的說明）；`t12` 的 PID 310752、`/proc` 啟動時間、created、argv、keep、state、尺寸 113x33 全部不變；沒有多出 program；新 core 的環境變數與舊 core 相同。已連線的遠端 viewer 在數秒內自動重連。備份與 before/after facts 在該主機的 `~/.local/state/herdr-core-upgrade-20261111/`（含 0.1.17 binary 與升級前的 state 目錄）。**沒有直接在這個 core 上量測 automatic reply 是否仍偷尺寸**（依據是同一個 binary 的隔離演練）。hc 0.1.20 另提示：core 會在最後一個登入結束時停止，`sudo loginctl enable-linger` 可避免，未處理。
+- [ ] **gx10 仍是 hc 0.1.17**（aarch64，需另一個 artifact，未演練）。leon 的核准不延伸到 gx10；升級前候選 TUI 不應 attach 其工作 program。
 - [ ] **真正升級共用 core 前仍未驗證的事**：演練用的是 pinned source 的 debug build，不是 release artifact；program 只有 `/bin/cat`，升級當下沒有 viewer attach、沒有 `keep`、只有一個 holder；沒有驗證已 attach 的 Native／legacy viewer 在 core 重啟後的重連。實際升級仍須先存 before/after facts 並取得該次範圍的明確同意。
 - [ ] **saved／shared 來源仍有 `agent start` 啟動競態**：`pane.process_info` 只對 Local 來源回報 hc 事實（遠端 PID 不外露），所以 CLI 對遠端來源不會在 shell 初始化期間重試。
 - [ ] **`agent prompt --wait` 會漏掉瞬間的 working**：hc 事件串流有發出連續的 working→idle，但 Herdr 的投影只保留最新狀態。`tests/cli/agents.rs` 的假 agent 以 0.2s 停留避開。
@@ -167,7 +169,7 @@ macOS 會排除 `tests/cli.rs`、`tests/machine_api.rs` 與部分 `tests/api_pin
 | --- | --- | --- |
 | Local/default registry | `baccf53f89810cf8ed1e77ca9a4b6e9c` | 0.1.19，使用者獨立更新 |
 | 共用 gx10 | `3431734c422fe905bd487f2f495bdb4f` | 0.1.17 |
-| 共用 leon | `6130a31a167522145c275e2185e6d395` | 0.1.17 |
+| 共用 leon | `6130a31a167522145c275e2185e6d395` | 0.1.20（2026-11-11 升級） |
 | 舊 isolated gx10 | `67646f8cf08976eb03d60f93461983c5` | 必須重讀 |
 
 重要規則：
