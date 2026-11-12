@@ -84,9 +84,11 @@ impl TerminalFactory {
             Err(e) => Self::Unavailable(e.to_string()),
         }
     }
+    /// The core's live programs, and (herdr-hc builds) herdr.app's layout of
+    /// them when it has one. The layout is advisory: unreadable means `None`.
     pub(crate) fn initial_terminals(
         &self,
-    ) -> io::Result<(String, Vec<crate::hc::state::Terminal>)> {
+    ) -> io::Result<(String, Vec<crate::hc::state::Terminal>, Option<Value>)> {
         let Self::Hc(host) = self else {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -96,6 +98,23 @@ impl TerminalFactory {
         let source = host.state();
         let client = host.client()?;
         let reply = host.block_on(client.call("terminal.list", json!({"all":false})))?;
+        let layout = if crate::hc_entry::ENABLED
+            && !host.saved
+            && client.hello.methods.contains("doc.get")
+        {
+            match host.block_on(client.call(
+                "doc.get",
+                json!({ "name": crate::hc_entry::app_layout::DOCUMENT }),
+            )) {
+                Ok(reply) => Some(reply["value"].clone()).filter(|value| !value.is_null()),
+                Err(error) => {
+                    tracing::warn!(%error, "herdr.app layout unavailable; programs open as tabs");
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let current = host.state();
         if current.generation != source.generation
             || current.retired
@@ -116,7 +135,7 @@ impl TerminalFactory {
             )
         })?)
         .map_err(io::Error::other)?;
-        Ok((client.hello.core.id.clone(), records))
+        Ok((client.hello.core.id.clone(), records, layout))
     }
 
     pub(crate) fn source_state(&self) -> Option<SourceState> {

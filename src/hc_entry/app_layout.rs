@@ -259,6 +259,111 @@ pub(crate) fn place_split(
     }
 }
 
+/// A herdr.app space as herdr-hc can show it on first open.
+#[derive(Debug, PartialEq)]
+pub(crate) struct ShownSpace {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) folder: String,
+    pub(crate) tabs: Vec<ShownTab>,
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) struct ShownTab {
+    pub(crate) name: String,
+    pub(crate) layout: ShownLayout,
+}
+
+/// A tab's panes: programs side by side (`row`) or stacked, each with its share.
+#[derive(Debug, PartialEq)]
+pub(crate) enum ShownLayout {
+    Program(String),
+    Split {
+        row: bool,
+        parts: Vec<(f64, ShownLayout)>,
+    },
+}
+
+fn text(node: &Value, key: &str) -> String {
+    node.get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned()
+}
+
+fn shown_layout(node: &Value, take: &mut impl FnMut(&str) -> bool) -> Option<ShownLayout> {
+    match kind(node) {
+        "block" => terminal(node)
+            .filter(|address| take(address))
+            .map(|address| ShownLayout::Program(address.to_owned())),
+        "row" | "column" => {
+            let mut parts: Vec<(f64, ShownLayout)> = children(node)?
+                .iter()
+                .filter_map(|child| {
+                    let share = weight(child).filter(|w| w.is_finite() && *w > 0.0);
+                    Some((share.unwrap_or(1.0), shown_layout(child, take)?))
+                })
+                .collect();
+            match parts.len() {
+                0 => None,
+                1 => parts.pop().map(|(_, only)| only),
+                _ => Some(ShownLayout::Split {
+                    row: kind(node) == "row",
+                    parts,
+                }),
+            }
+        }
+        // A stack shows one child at a time: herdr-hc shows that one. The
+        // others' programs stay untaken and are shown elsewhere.
+        "stack" => {
+            let c = children(node)?;
+            let active = node.get("active").and_then(Value::as_str);
+            let shown = active.and_then(|id| {
+                c.iter()
+                    .find(|n| n.get("id").and_then(Value::as_str) == Some(id))
+            });
+            shown
+                .and_then(|n| shown_layout(n, take))
+                .or_else(|| c.iter().find_map(|n| shown_layout(n, take)))
+        }
+        _ => None,
+    }
+}
+
+/// The spaces and tabs of herdr.app's document holding programs `take`
+/// accepts (it is asked once per block and should accept an address once).
+/// Empty tabs and spaces are left out; a malformed document gives none.
+pub(crate) fn shown_spaces(
+    document: &Value,
+    mut take: impl FnMut(&str) -> bool,
+) -> Vec<ShownSpace> {
+    let Some(spaces) = document.get("spaces").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    spaces
+        .iter()
+        .filter_map(|space| {
+            let tabs: Vec<ShownTab> = space
+                .get("tabs")
+                .and_then(Value::as_array)?
+                .iter()
+                .filter_map(|tab| {
+                    Some(ShownTab {
+                        name: text(tab, "name"),
+                        layout: shown_layout(tab.get("root")?, &mut take)?,
+                    })
+                })
+                .collect();
+            (!tabs.is_empty()).then(|| ShownSpace {
+                id: text(space, "id"),
+                name: text(space, "name"),
+                folder: text(space, "folder"),
+                tabs,
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -379,5 +484,89 @@ mod tests {
         collapse(&mut node);
         assert_eq!(node["children"][0]["content"]["terminal"], "t1");
         assert_eq!(node["children"][0]["size"]["weight"], 2.0);
+    }
+
+    fn taking<'a>(live: &'a [&'a str]) -> impl FnMut(&str) -> bool + 'a {
+        let mut left: std::collections::HashSet<&str> = live.iter().copied().collect();
+        move |address| left.remove(address)
+    }
+
+    #[test]
+    fn spaces_and_tabs_keep_their_shape_with_only_shown_programs() {
+        // As herdr.app writes it: each tab root is a row named after the tab.
+        let doc = json!({"spaces": [
+            {"id": "sp1", "name": "Test", "folder": "/w", "tabs": [
+                {"id": "tb1", "name": "tab 1", "root": {"id": "tb1", "type": "row", "children": [
+                    {"id": "p1", "type": "block", "content": {"terminal": "t1"}, "size": {"weight": 3.0}},
+                    {"id": "s1", "type": "column", "children": [
+                        pane("p2", "t2"),
+                        pane("p3", "t9"),
+                        {"id": "p4", "type": "block", "content": {"mod": "viewer"}},
+                    ]},
+                ]}},
+                {"id": "tb2", "name": "gone", "root": {"id": "tb2", "type": "row",
+                    "children": [pane("p5", "t9")]}},
+            ]},
+            {"id": "sp2", "name": "empty", "folder": "/", "tabs": []},
+            {"id": "sp3", "name": "", "folder": "", "tabs": [
+                {"id": "tb3", "name": "", "root": {"id": "tb3", "type": "row", "children": [
+                    pane("p6", "t1"),
+                    {"id": "p7", "type": "block", "content": {"terminal": "t3"}, "size": {"px": 300}},
+                ]}},
+            ]},
+        ]});
+        let spaces = shown_spaces(&doc, taking(&["t1", "t2", "t3"]));
+        assert_eq!(
+            spaces,
+            vec![
+                ShownSpace {
+                    id: "sp1".into(),
+                    name: "Test".into(),
+                    folder: "/w".into(),
+                    tabs: vec![ShownTab {
+                        name: "tab 1".into(),
+                        layout: ShownLayout::Split {
+                            row: true,
+                            parts: vec![
+                                (3.0, ShownLayout::Program("t1".into())),
+                                (1.0, ShownLayout::Program("t2".into())),
+                            ],
+                        },
+                    }],
+                },
+                // t1 is shown once, so this tab keeps only t3 (pixel sizes count as one share).
+                ShownSpace {
+                    id: "sp3".into(),
+                    name: String::new(),
+                    folder: String::new(),
+                    tabs: vec![ShownTab {
+                        name: String::new(),
+                        layout: ShownLayout::Program("t3".into()),
+                    }],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_stack_shows_its_active_child_and_leaves_the_rest_untaken() {
+        let doc = document(json!({"id": "tb1", "type": "row", "children": [
+            {"id": "k", "type": "stack", "active": "p2",
+                "children": [pane("p1", "t1"), pane("p2", "t2")]},
+        ]}));
+        let mut taken = Vec::new();
+        let spaces = shown_spaces(&doc, |address| {
+            taken.push(address.to_owned());
+            true
+        });
+        assert_eq!(taken, ["t2"]);
+        assert_eq!(spaces[0].tabs[0].layout, ShownLayout::Program("t2".into()));
+    }
+
+    #[test]
+    fn a_document_without_spaces_shows_nothing() {
+        for doc in [Value::Null, json!({"spaces": 3}), json!([1])] {
+            assert!(shown_spaces(&doc, |_| true).is_empty());
+        }
     }
 }

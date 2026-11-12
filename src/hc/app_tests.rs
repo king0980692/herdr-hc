@@ -246,8 +246,9 @@ async fn shared_first_open_inventory_reads_only_and_rejects_a_source_generation_
         if change_source {
             assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::NotConnected);
         } else {
-            let (owner, terminals) = result.unwrap();
+            let (owner, terminals, layout) = result.unwrap();
             assert_eq!(owner, "core-test");
+            assert!(layout.is_none());
             assert_eq!(terminals.len(), 1);
             assert_eq!(terminals[0].address, "t1");
         }
