@@ -160,7 +160,7 @@ macOS 會排除 `tests/cli.rs`、`tests/machine_api.rs` 與部分 `tests/api_pin
 - [x] **第一個 herdr-hc release（2026-11-12）**：tag `herdr-hc-20261111-6b346218`，Linux 與 macOS 測試通過後 build 五個平台並發布為 prerelease：https://github.com/king0980692/herdr-hc/releases/tag/herdr-hc-20261111-6b346218 。過程中修正：Windows 編譯錯誤、macOS fixture、`named_sessions` 測試共用 hc core 的時序競態、Linux build 刪掉 runner 預設 apt 鏡像後解析不到 ubuntu.com。release 門檻刻意不含 Windows。
 - [x] **issue #3（2026-11-12）**：herdr-hc 建立的 program 帶 herdr.app 的 placement 標籤（`herdr.space`、`herdr.tab`、`herdr.seen=0`），分割沿用所在 tab 的 placement、新 tab 用同 space 的新 tab id、新 workspace 用新 space。依 herdr-app `defaults/AGENTS.md`，herdr.app 只顯示帶 `herdr.space` 的 terminal，收編時會設 `keep: true`（使用者同意此例外）。program 自行結束時改記 info。重新 attach 改要求 2000 行歷史。issue 的第 2、3、5b、5c 項未修改。
 - [ ] `client_mode::federated_client_starts_without_local_and_survives_its_restart` 在此機器上約三成偶發失敗（重新 attach 歷史 0 行 8/12、2000 行 7/12 通過，無差別），未查。
-- [ ] **leon 在 2026-11-12 重開機，`t12`（keep:false）因 core 停止而結束（`stopped_by_restart`）**。linger 未開啟；是否執行 `sudo loginctl enable-linger lychang` 由使用者決定。
+- [x] **leon 在 2026-11-12 重開機，`t12`（keep:false）因 core 停止而結束（`stopped_by_restart`）**。使用者已於 2026-11-12 執行 `sudo loginctl enable-linger lychang`（`Linger=yes`），core 不再隨最後一個登入結束而停止。
 - [ ] **Windows CI 仍失敗**：dead code 已修，但 Native 建立 pane 需要 hc，而 Windows runner 沒有 build hc；ConPTY smoke test 與需要 hc 的整合測試都會失敗。這從 hc 遷移起就存在。
 
 ### P1：驗證與發布前 gate
