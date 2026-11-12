@@ -64,6 +64,7 @@ pub(crate) struct CoreHost {
     pub(super) machines: Arc<Mutex<Result<crate::hc::machines::MachineGraph, String>>>,
     stop: Option<oneshot::Sender<()>>,
     watcher: Mutex<Option<tokio::task::AbortHandle>>,
+    pub(crate) placements: Mutex<crate::hc_entry::Placements>,
 }
 impl Drop for CoreHost {
     fn drop(&mut self) {
@@ -142,6 +143,7 @@ impl CoreHost {
                 machines: Arc::new(Mutex::new(Err("hc machine inventory is loading".into()))),
                 stop: None,
                 watcher: Mutex::new(None),
+                placements: Mutex::default(),
             },
             send,
         )
@@ -308,6 +310,7 @@ impl CoreHost {
             machines,
             stop: Some(stop),
             watcher: Mutex::new(None),
+            placements: Mutex::default(),
         })
     }
     pub(crate) fn block_on<T: Send>(

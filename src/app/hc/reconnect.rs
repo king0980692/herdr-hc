@@ -255,7 +255,7 @@ impl App {
                     cols,
                     client,
                     &binding.address,
-                    0,
+                    crate::pane::REATTACH_HISTORY_LINES,
                     scrollback,
                     theme,
                     appearance,

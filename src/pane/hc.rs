@@ -10,6 +10,10 @@ use serde_json::{json, Value};
 use tokio::sync::watch;
 
 const INPUT_QUEUE: usize = 32;
+/// Scrollback the core replays when a viewer re-attaches an existing program
+/// (after a restart or reconnect). A fresh parser has none of its own; a new
+/// program has none to replay.
+pub(crate) const REATTACH_HISTORY_LINES: usize = 2000;
 
 enum Command {
     Input(Bytes, bool),
@@ -90,7 +94,14 @@ impl HcIo {
                 guard
                     .updates
                     .send_modify(|state| state.error = Some(error.to_string()));
-                tracing::warn!(%error, core = %task_client.hello.core.id, "hc attachment unavailable; program was not killed");
+                // A program that ended on its own also closes its attachment.
+                let finished = guard.updates.borrow().terminal.facts.get("state")
+                    == Some(&Value::from("finished"));
+                if finished {
+                    tracing::info!(%error, core = %task_client.hello.core.id, "hc program ended; its attachment closed");
+                } else {
+                    tracing::warn!(%error, core = %task_client.hello.core.id, "hc attachment unavailable; program was not killed");
+                }
             }
             drop(guard);
         });

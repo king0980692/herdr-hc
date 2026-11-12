@@ -158,6 +158,9 @@ macOS 會排除 `tests/cli.rs`、`tests/machine_api.rs` 與部分 `tests/api_pin
 - **Linux CI 通過**。
 - **macOS 已修好**：`server_headless` 的三個短測試在 hc 0.1.18～0.1.20 都會失敗。原因是 server 在一秒內被關掉時，正在經由 launchd 啟動 core 的 `hc` 也被結束，狀態傳到一半（core.log：`launchd detach failed: EOF while parsing`），core 從沒啟動。fixture 現在把沒有 `core.json` 的 session 視為從未啟動。以 hc 0.1.20 在 macOS runner 跑完整檢查：4053 passed／18 skipped，lint 與輔助檢查通過。hc 上游在這種中斷後會留下未清除的 launchd job 與 `/tmp/hc-launchd-*`。
 - [x] **第一個 herdr-hc release（2026-11-12）**：tag `herdr-hc-20261111-6b346218`，Linux 與 macOS 測試通過後 build 五個平台並發布為 prerelease：https://github.com/king0980692/herdr-hc/releases/tag/herdr-hc-20261111-6b346218 。過程中修正：Windows 編譯錯誤、macOS fixture、`named_sessions` 測試共用 hc core 的時序競態、Linux build 刪掉 runner 預設 apt 鏡像後解析不到 ubuntu.com。release 門檻刻意不含 Windows。
+- [x] **issue #3（2026-11-12）**：herdr-hc 建立的 program 帶 herdr.app 的 placement 標籤（`herdr.space`、`herdr.tab`、`herdr.seen=0`），分割沿用所在 tab 的 placement、新 tab 用同 space 的新 tab id、新 workspace 用新 space。依 herdr-app `defaults/AGENTS.md`，herdr.app 只顯示帶 `herdr.space` 的 terminal，收編時會設 `keep: true`（使用者同意此例外）。program 自行結束時改記 info。重新 attach 改要求 2000 行歷史。issue 的第 2、3、5b、5c 項未修改。
+- [ ] `client_mode::federated_client_starts_without_local_and_survives_its_restart` 在此機器上約三成偶發失敗（重新 attach 歷史 0 行 8/12、2000 行 7/12 通過，無差別），未查。
+- [ ] **leon 在 2026-11-12 重開機，`t12`（keep:false）因 core 停止而結束（`stopped_by_restart`）**。linger 未開啟；是否執行 `sudo loginctl enable-linger lychang` 由使用者決定。
 - [ ] **Windows CI 仍失敗**：dead code 已修，但 Native 建立 pane 需要 hc，而 Windows runner 沒有 build hc；ConPTY smoke test 與需要 hc 的整合測試都會失敗。這從 hc 遷移起就存在。
 
 ### P1：驗證與發布前 gate
@@ -179,7 +182,7 @@ macOS 會排除 `tests/cli.rs`、`tests/machine_api.rs` 與部分 `tests/api_pin
 | --- | --- | --- |
 | Local/default registry | `baccf53f89810cf8ed1e77ca9a4b6e9c` | 0.1.19，使用者獨立更新 |
 | 共用 gx10 | `3431734c422fe905bd487f2f495bdb4f` | 0.1.20（2026-11-11 升級） |
-| 共用 leon | `6130a31a167522145c275e2185e6d395` | 0.1.20（2026-11-11 升級） |
+| 共用 leon | `6130a31a167522145c275e2185e6d395` | 0.1.20（2026-11-11 升級；2026-11-12 重開機後 `t12` 已結束） |
 | 舊 isolated gx10 | `67646f8cf08976eb03d60f93461983c5` | 必須重讀 |
 
 重要規則：

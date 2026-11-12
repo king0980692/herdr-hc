@@ -102,6 +102,27 @@ impl App {
         self.terminate_hc_terminals(ids)
     }
 
+    /// Where this program's pane sits in herdr, so new programs beside it carry
+    /// the same herdr.app placement (see `hc_entry::Placements`).
+    fn learn_hc_placement(&self, terminal_id: &TerminalId, labels: &serde_json::Value) {
+        for workspace in &self.state.workspaces {
+            for tab in &workspace.tabs {
+                if tab
+                    .panes
+                    .values()
+                    .any(|pane| &pane.attached_terminal_id == terminal_id)
+                {
+                    self.terminal_factory.learn_placement(
+                        &workspace.id,
+                        &crate::workspace::public_tab_id_for_number(&workspace.id, tab.number),
+                        labels,
+                    );
+                    return;
+                }
+            }
+        }
+    }
+
     pub(crate) fn apply_hc_update(
         &mut self,
         terminal_id: TerminalId,
@@ -122,6 +143,11 @@ impl App {
                 && binding["address"].as_str() == Some(&snapshot.binding.address)
         }) {
             return (false, Vec::new());
+        }
+        if crate::hc_entry::ENABLED {
+            if let Some(labels) = snapshot.terminal.facts.get("labels") {
+                self.learn_hc_placement(&terminal_id, labels);
+            }
         }
         let finished = snapshot.is_nonkept_exit()
             && terminal.hc_snapshot.as_ref().is_some_and(|old| {

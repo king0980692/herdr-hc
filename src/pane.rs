@@ -28,6 +28,7 @@ mod agent_detection;
 mod background_agent;
 mod cursor;
 mod hc;
+pub(crate) use hc::REATTACH_HISTORY_LINES;
 mod input;
 mod kitty_keyboard;
 mod osc;
@@ -198,6 +199,18 @@ impl PaneLaunchEnv {
             pane_id,
         };
         self
+    }
+
+    /// The herdr workspace and tab a managed launch belongs to.
+    pub(crate) fn workspace_and_tab(&self) -> Option<(&str, &str)> {
+        match &self.identity {
+            PaneLaunchIdentity::Managed {
+                workspace_id,
+                tab_id,
+                ..
+            } => Some((workspace_id, tab_id)),
+            _ => None,
+        }
     }
 
     pub(crate) fn without_pane_identity(mut self) -> Self {

@@ -204,6 +204,80 @@ pub(crate) fn prepare_tui_launch(server_running: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// herdr.app shows a core terminal only when it carries `herdr.space=<id>`;
+/// `herdr.tab=<id>` picks its tab, and ids it does not know become a new space
+/// or tab (herdr-app `defaults/AGENTS.md`, "Every terminal is a core terminal").
+pub(crate) const SPACE_LABEL: &str = "herdr.space";
+pub(crate) const TAB_LABEL: &str = "herdr.tab";
+/// herdr.app starts its own terminals at `herdr.seen=0` (herdr-app `docs/labels.md`).
+const SEEN_LABEL: &str = "herdr.seen";
+
+/// Which herdr.app space and tab each herdr-hc workspace and tab maps to,
+/// learned from the labels of the programs it shows. Keyed by herdr-hc's
+/// public workspace and tab ids.
+#[derive(Debug, Default)]
+pub(crate) struct Placements {
+    tabs: std::collections::HashMap<(String, String), (String, String)>,
+    spaces: std::collections::HashMap<String, String>,
+}
+
+impl Placements {
+    /// Records where a program in this herdr-hc tab lives in herdr.app.
+    pub(crate) fn learn(&mut self, workspace: &str, tab: &str, space: &str, space_tab: &str) {
+        if space.is_empty() || space_tab.is_empty() {
+            return;
+        }
+        self.spaces.insert(workspace.to_owned(), space.to_owned());
+        self.tabs.insert(
+            (workspace.to_owned(), tab.to_owned()),
+            (space.to_owned(), space_tab.to_owned()),
+        );
+    }
+
+    /// Labels for a new program in this herdr-hc tab: its tab's herdr.app
+    /// placement, else its workspace's space with a new tab, else a new space.
+    pub(crate) fn labels_for_new_program(
+        &mut self,
+        workspace: &str,
+        tab: &str,
+        mut new_id: impl FnMut(&str) -> String,
+    ) -> serde_json::Map<String, serde_json::Value> {
+        let key = (workspace.to_owned(), tab.to_owned());
+        let (space, space_tab) = match self.tabs.get(&key) {
+            Some(placement) => placement.clone(),
+            None => {
+                let space = self
+                    .spaces
+                    .get(workspace)
+                    .cloned()
+                    .unwrap_or_else(|| new_id("sp"));
+                (space, new_id("tb"))
+            }
+        };
+        self.learn(workspace, tab, &space, &space_tab);
+        let mut labels = serde_json::Map::new();
+        labels.insert(SPACE_LABEL.into(), space.into());
+        labels.insert(TAB_LABEL.into(), space_tab.into());
+        labels.insert(SEEN_LABEL.into(), "0".into());
+        labels
+    }
+}
+
+/// A fresh placement id, unique across processes and calls.
+pub(crate) fn new_placement_id(prefix: &str) -> String {
+    use std::hash::{BuildHasher, Hasher};
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    hasher.write_u32(std::process::id());
+    hasher.write_u64(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    hasher.write_u128(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos()),
+    );
+    format!("{prefix}{:016x}", hasher.finish())
+}
+
 /// A core this entry can share programs with: terminal-generated replies must
 /// not take another viewer's size.
 pub(crate) fn core_supported(hello: &crate::hc::Hello) -> bool {
@@ -285,6 +359,44 @@ mod tests {
             Some("inner")
         );
         assert_eq!(hosting_program(&[900, 600], &live), None);
+    }
+
+    #[test]
+    fn hc_entry_places_new_programs_where_herdr_app_shows_their_tab() {
+        let mut ids = 0;
+        let mut new_id = |prefix: &str| {
+            ids += 1;
+            format!("{prefix}{ids}")
+        };
+        let mut placements = Placements::default();
+        // A program herdr.app started, now shown in herdr-hc's w1:t1.
+        placements.learn("w1", "w1:t1", "spApp", "tbApp");
+
+        // A split in that tab joins the same herdr.app tab.
+        let split = placements.labels_for_new_program("w1", "w1:t1", &mut new_id);
+        assert_eq!(split[SPACE_LABEL], "spApp");
+        assert_eq!(split[TAB_LABEL], "tbApp");
+        assert_eq!(split[SEEN_LABEL], "0");
+
+        // A new tab in that workspace gets a new tab in the same space, and
+        // keeps it for later splits.
+        let tab = placements.labels_for_new_program("w1", "w1:t2", &mut new_id);
+        assert_eq!(tab[SPACE_LABEL], "spApp");
+        assert_eq!(tab[TAB_LABEL], "tb1");
+        let again = placements.labels_for_new_program("w1", "w1:t2", &mut new_id);
+        assert_eq!(again[TAB_LABEL], "tb1");
+
+        // A workspace herdr.app has never seen gets its own space.
+        let fresh = placements.labels_for_new_program("w2", "w2:t1", &mut new_id);
+        assert_eq!(fresh[SPACE_LABEL], "sp2");
+        assert_eq!(fresh[TAB_LABEL], "tb3");
+
+        // Empty labels (a terminal herdr.app parked) teach nothing.
+        placements.learn("w3", "w3:t1", "", "");
+        let parked = placements.labels_for_new_program("w3", "w3:t1", &mut new_id);
+        assert_eq!(parked[SPACE_LABEL], "sp4");
+
+        assert_ne!(new_placement_id("sp"), new_placement_id("sp"));
     }
 
     #[test]

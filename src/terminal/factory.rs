@@ -171,6 +171,26 @@ impl TerminalFactory {
     pub(crate) fn discovers_existing_programs(&self) -> bool {
         matches!(self, Self::Hc(host) if !host.saved || host.shared)
     }
+    /// Remembers where a shown program lives in herdr.app, so new programs in
+    /// the same herdr workspace and tab land beside it there.
+    pub(crate) fn learn_placement(&self, workspace: &str, tab: &str, labels: &Value) {
+        let Self::Hc(host) = self else {
+            return;
+        };
+        if !crate::hc_entry::ENABLED || host.saved {
+            return;
+        }
+        let label = |key| labels.get(key).and_then(Value::as_str).unwrap_or_default();
+        if let Ok(mut placements) = host.placements.lock() {
+            placements.learn(
+                workspace,
+                tab,
+                label(crate::hc_entry::SPACE_LABEL),
+                label(crate::hc_entry::TAB_LABEL),
+            );
+        }
+    }
+
     pub(crate) fn is_saved_source(&self) -> bool {
         matches!(self,Self::Hc(host) if host.saved)
     }
@@ -260,6 +280,20 @@ impl TerminalFactory {
                     .as_ref()
                     .map(|argv| TerminalCommand::Argv(argv, AgentDetection::Disabled))
                     .unwrap_or(command);
+                // herdr-hc shares the Local core with herdr.app, which shows only
+                // terminals placed in one of its spaces.
+                let labels = env
+                    .workspace_and_tab()
+                    .filter(|_| crate::hc_entry::ENABLED && !host.saved)
+                    .and_then(|(workspace, tab)| {
+                        let mut placements = host.placements.lock().ok()?;
+                        Some(placements.labels_for_new_program(
+                            workspace,
+                            tab,
+                            crate::hc_entry::new_placement_id,
+                        ))
+                    })
+                    .unwrap_or_default();
                 let (argv, env) =
                     crate::pane::hc_launch_command(command, env, self.is_saved_source())?;
                 let cwd = cwd.to_str().ok_or_else(|| {
@@ -267,7 +301,7 @@ impl TerminalFactory {
                 })?;
                 host.block_on(async {
                     // Never retry run: timeout/disconnect can mean the program already exists.
-                    let result=client.call("terminal.run",json!({"argv":argv,"env":env,"cwd":(!cwd.is_empty()).then_some(cwd),"size":{"rows":rows.max(crate::pane::MIN_PANE_ROWS),"cols":cols.max(crate::pane::MIN_PANE_COLS)},"no_parent":true,"no_notify":true,"keep":false})).await?;
+                    let result=client.call("terminal.run",json!({"argv":argv,"env":env,"cwd":(!cwd.is_empty()).then_some(cwd),"size":{"rows":rows.max(crate::pane::MIN_PANE_ROWS),"cols":cols.max(crate::pane::MIN_PANE_COLS)},"no_parent":true,"no_notify":true,"labels":labels,"keep":false})).await?;
                     let address=result.get("address").and_then(Value::as_str).ok_or_else(||io::Error::new(io::ErrorKind::InvalidData,"hc run returned no address; outcome unknown"))?;
                     let binding=TerminalBinding{core_id:client.hello.core.id.clone(),address:address.to_owned()};
                     binding.validate().map_err(|e|io::Error::new(e.kind(),format!("hc run returned an invalid binding; outcome unknown: {e}")))?;
@@ -307,7 +341,7 @@ impl TerminalFactory {
             cols,
             client,
             &binding.address,
-            0,
+            crate::pane::REATTACH_HISTORY_LINES,
             scrollback,
             theme,
             appearance,
