@@ -29,7 +29,7 @@ async fn fixture() -> (
 }
 
 #[tokio::test]
-async fn hc_terminal_finished_closes_only_confirmed_nonkept_live_transitions() {
+async fn hc_terminal_finished_closes_only_confirmed_program_exits_from_live() {
     for case in [
         "finished",
         "viewer_closed",
@@ -126,7 +126,8 @@ async fn hc_terminal_finished_closes_only_confirmed_nonkept_live_transitions() {
             _ => {}
         }
         app.apply_hc_update(id.clone(), token, snapshot);
-        let closes = matches!(case, "finished" | "viewer_closed");
+        // A kept terminal (herdr.app keeps those it adopts) that exits is final too.
+        let closes = matches!(case, "finished" | "viewer_closed" | "kept" | "unknown_keep");
         assert_eq!(app.state.workspaces.is_empty(), closes, "{case}");
         assert_eq!(!app.state.terminals.contains_key(&id), closes, "{case}");
         assert_eq!(app.terminal_runtimes.get(&id).is_none(), closes, "{case}");

@@ -622,7 +622,7 @@ impl HeadlessServer {
                 };
                 // Capture client geometry only for lifecycle completion, not every status update.
                 let exit_focus = snapshot
-                    .is_nonkept_exit()
+                    .is_program_exit()
                     .then(|| (self.shell_focus_targets(), self.focused_shell_tabs()));
                 let (changed, updates) =
                     self.app

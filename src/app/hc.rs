@@ -149,7 +149,7 @@ impl App {
                 self.learn_hc_placement(&terminal_id, labels);
             }
         }
-        let finished = snapshot.is_nonkept_exit()
+        let finished = snapshot.is_program_exit()
             && terminal.hc_snapshot.as_ref().is_some_and(|old| {
                 old.terminal
                     .facts
