@@ -165,7 +165,8 @@ macOS 會排除 `tests/cli.rs`、`tests/machine_api.rs` 與部分 `tests/api_pin
   - 首次開啟（沒有既有 session）時依該文件建立 workspace／tab／分割樹，保留名稱與比例；文件沒顯示的 program 放進其 `herdr.space` 對應的 workspace 的新 tab，否則放到另一個 workspace；讀不到文件時行為不變。stack 只取顯示中的子節點。
   - 只在 scratch core 驗證（模擬 herdr.app 的晚收編）；真正的 herdr.app 對這些寫入的反應要在 Mac 上確認。已有 herdr-hc session 的使用者不會套用首次開啟的版面。
   - release `herdr-hc-20261112-2b6b6517`（Linux／macOS 測試通過）。Mac 實機（2026-11-12）：沒有 session 時照 herdr.app 版面重建、先往下再往右 split（herdr.app 顯示相同，使用者親自確認）、herdr.app 收編過的 pane 打 `exit` 後 herdr-hc 關掉 pane，三項通過（issue #3 comment 6830236077）。
-  - [ ] **剩下 Test 2**：關掉 herdr.app → 在 herdr-hc split → 再開 herdr.app，排列是否相同。測完再關 issue #3。
+  - [x] **Test 2 通過**（issue #3 comment 6831836820）：herdr.app ⌘Q 後在 herdr-hc split，重開排列相同。Mac 四項全過。
+  - [x] herdr.app 關閉期間 split 出的程式 keep 一直是 false：herdr.app 只對不在版面的 terminal 收編並設 keep，而 herdr-hc 已先把它寫進版面。使用者決定由 herdr-hc 在寫入新程式後自己設 `keep: true`（scratch 驗證）。
   - Mac 上的變動：舊 `~/.config/herdr-hc/session.json` 改名為 `session.json.bak-949d`；`~/.local/bin/herdr-hc` 指向新版；新的 herdr-hc 跑在 herdr-hc-test3 session。
 - [ ] `client_mode::federated_client_starts_without_local_and_survives_its_restart` 在此機器上約三成偶發失敗（重新 attach 歷史 0 行 8/12、2000 行 7/12 通過，無差別），未查。
 - [x] **leon 在 2026-11-12 重開機，`t12`（keep:false）因 core 停止而結束（`stopped_by_restart`）**。使用者已於 2026-11-12 執行 `sudo loginctl enable-linger lychang`（`Linger=yes`），core 不再隨最後一個登入結束而停止。

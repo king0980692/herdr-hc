@@ -546,6 +546,14 @@ async fn place_split_once(
             )
             .await
         {
+            // herdr.app keeps the programs it shows (it adopts with
+            // `keep: true`); one herdr-hc writes in is never adopted by it.
+            Ok(_) if client.hello.methods.contains("terminal.keep") => {
+                client
+                    .call("terminal.keep", json!({ "terminal": new, "keep": true }))
+                    .await?;
+                return Ok(());
+            }
             Ok(_) => return Ok(()),
             Err(error) if error.to_string().contains("\"conflict\"") => continue,
             Err(error) => return Err(error),
