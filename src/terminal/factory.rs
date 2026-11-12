@@ -171,6 +171,45 @@ impl TerminalFactory {
     pub(crate) fn discovers_existing_programs(&self) -> bool {
         matches!(self, Self::Hc(host) if !host.saved || host.shared)
     }
+    /// Records a split herdr-hc made in herdr.app's shared layout, so herdr.app
+    /// shows `new` beside `source` along the same axis instead of adopting it
+    /// beside its tab's last pane. Runs off the caller's thread; a second pass
+    /// a moment later moves the pane back if herdr.app adopted it meanwhile.
+    pub(crate) fn place_split_in_herdr_app(
+        &self,
+        source: String,
+        new: String,
+        row: bool,
+        ratio: f64,
+    ) {
+        let Self::Hc(host) = self else {
+            return;
+        };
+        if !crate::hc_entry::ENABLED || host.saved {
+            return;
+        }
+        let Ok(client) = host.client() else {
+            return;
+        };
+        if !["doc.get", "doc.set"]
+            .iter()
+            .all(|method| client.hello.methods.contains(*method))
+        {
+            return;
+        }
+        host.executor.spawn(async move {
+            for pass in 0..2 {
+                if pass > 0 {
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                }
+                if let Err(error) = place_split_once(&client, &source, &new, row, ratio).await {
+                    tracing::warn!(%error, %source, %new, "herdr.app layout was not updated for a split");
+                    return;
+                }
+            }
+        });
+    }
+
     /// Remembers where a shown program lives in herdr.app, so new programs in
     /// the same herdr workspace and tab land beside it there.
     pub(crate) fn learn_placement(&self, workspace: &str, tab: &str, labels: &Value) {
@@ -446,6 +485,54 @@ async fn kill(client: &Client, address: &str) -> io::Result<()> {
         )));
     }
     Ok(())
+}
+
+/// One read-modify-write of herdr.app's layout, retried on a version conflict.
+async fn place_split_once(
+    client: &crate::hc::Client,
+    source: &str,
+    new: &str,
+    row: bool,
+    ratio: f64,
+) -> io::Result<()> {
+    use crate::hc_entry::app_layout::{place_split, SplitPlacement, DOCUMENT};
+    for _ in 0..4 {
+        let current = client.call("doc.get", json!({ "name": DOCUMENT })).await?;
+        // No herdr.app has written a layout on this core: nothing to keep in step.
+        if current["value"].is_null() {
+            return Ok(());
+        }
+        let version = current["version"].as_u64().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "herdr.app layout has no version",
+            )
+        })?;
+        let mut document = current["value"].clone();
+        if place_split(
+            &mut document,
+            source,
+            new,
+            row,
+            ratio,
+            crate::hc_entry::new_placement_id,
+        ) != SplitPlacement::Placed
+        {
+            return Ok(());
+        }
+        match client
+            .call(
+                "doc.set",
+                json!({ "name": DOCUMENT, "version": version, "value": document }),
+            )
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(error) if error.to_string().contains("\"conflict\"") => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::other("herdr.app layout kept changing"))
 }
 
 #[cfg(test)]

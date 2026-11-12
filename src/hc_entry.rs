@@ -5,6 +5,8 @@
 
 use std::{collections::HashSet, io, sync::OnceLock};
 
+pub(crate) mod app_layout;
+
 pub(crate) const ENABLED: bool = cfg!(feature = "hc-entry");
 
 /// The program a launching client runs inside, handed to the server it starts

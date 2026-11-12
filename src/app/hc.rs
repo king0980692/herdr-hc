@@ -102,6 +102,37 @@ impl App {
         self.terminate_hc_terminals(ids)
     }
 
+    /// Mirrors a split herdr-hc just made into herdr.app's layout (herdr-hc
+    /// builds only), so both apps arrange the two panes the same way.
+    pub(crate) fn sync_hc_split_to_herdr_app(
+        &self,
+        ws_idx: usize,
+        source_pane: crate::layout::PaneId,
+        new_pane: crate::layout::PaneId,
+        direction: ratatui::layout::Direction,
+        ratio: Option<f32>,
+    ) {
+        if !crate::hc_entry::ENABLED {
+            return;
+        }
+        let address = |pane| {
+            let workspace = self.state.workspaces.get(ws_idx)?;
+            let terminal = self.state.terminals.get(workspace.terminal_id(pane)?)?;
+            terminal.hc_binding.as_ref()?["address"]
+                .as_str()
+                .map(str::to_owned)
+        };
+        let (Some(source), Some(new)) = (address(source_pane), address(new_pane)) else {
+            return;
+        };
+        self.terminal_factory.place_split_in_herdr_app(
+            source,
+            new,
+            direction == ratatui::layout::Direction::Horizontal,
+            f64::from(ratio.unwrap_or(0.5)),
+        );
+    }
+
     /// Where this program's pane sits in herdr, so new programs beside it carry
     /// the same herdr.app placement (see `hc_entry::Placements`).
     fn learn_hc_placement(&self, terminal_id: &TerminalId, labels: &serde_json::Value) {

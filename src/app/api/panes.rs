@@ -117,6 +117,13 @@ impl App {
         self.state
             .terminals
             .insert(new_pane.terminal.id.clone(), new_pane.terminal);
+        self.sync_hc_split_to_herdr_app(
+            ws_idx,
+            target_pane_id,
+            new_pane.pane_id,
+            direction,
+            params.ratio,
+        );
         self.schedule_session_save();
         let pane = self.pane_info(ws_idx, new_pane.pane_id).unwrap();
         self.emit_event(EventEnvelope {
