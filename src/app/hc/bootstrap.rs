@@ -253,7 +253,8 @@ fn initial_layout(
     let mut workspaces = Vec::new();
     let mut by_space = HashMap::new();
     for space in spaces {
-        let mut draft = WorkspaceDraft::new(named(space.name), PathBuf::from(space.folder));
+        // Like any herdr workspace, it is identified by its first pane's folder.
+        let mut draft = WorkspaceDraft::new(named(space.name), PathBuf::new());
         for tab in space.tabs {
             let mut panes = HashMap::new();
             if let Some(layout) = draft.layout(tab.layout, &programs, &mut panes)? {
@@ -515,7 +516,7 @@ mod tests {
         assert_eq!(snapshot.workspaces.len(), 2);
         let work = &snapshot.workspaces[0];
         assert_eq!(work.custom_name.as_deref(), Some("Work"));
-        assert_eq!(work.identity_cwd, PathBuf::from("/work"));
+        assert_eq!(work.identity_cwd, PathBuf::from("/t1"));
         assert_eq!(work.tabs.len(), 2);
         assert_eq!(work.tabs[0].custom_name.as_deref(), Some("main"));
         let LayoutSnapshot::Split {

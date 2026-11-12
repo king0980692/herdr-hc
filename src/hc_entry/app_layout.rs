@@ -264,7 +264,6 @@ pub(crate) fn place_split(
 pub(crate) struct ShownSpace {
     pub(crate) id: String,
     pub(crate) name: String,
-    pub(crate) folder: String,
     pub(crate) tabs: Vec<ShownTab>,
 }
 
@@ -357,7 +356,6 @@ pub(crate) fn shown_spaces(
             (!tabs.is_empty()).then(|| ShownSpace {
                 id: text(space, "id"),
                 name: text(space, "name"),
-                folder: text(space, "folder"),
                 tabs,
             })
         })
@@ -522,7 +520,6 @@ mod tests {
                 ShownSpace {
                     id: "sp1".into(),
                     name: "Test".into(),
-                    folder: "/w".into(),
                     tabs: vec![ShownTab {
                         name: "tab 1".into(),
                         layout: ShownLayout::Split {
@@ -538,7 +535,6 @@ mod tests {
                 ShownSpace {
                     id: "sp3".into(),
                     name: String::new(),
-                    folder: String::new(),
                     tabs: vec![ShownTab {
                         name: String::new(),
                         layout: ShownLayout::Program("t3".into()),
