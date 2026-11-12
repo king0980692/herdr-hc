@@ -524,7 +524,7 @@ fn agent_start_rejects_a_shell_replaced_by_a_foreground_program() {
             .status
             .success()
     );
-    thread::sleep(Duration::from_millis(150));
+    wait_for_pane_foreground(&socket_path, &pane_id, "sleep");
 
     let started = run_cli(
         &socket_path,
