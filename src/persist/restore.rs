@@ -451,6 +451,7 @@ fn restore_workspace(
             // Repository metadata is optional and may block on unavailable
             // storage. The app refreshes it after restoring the session.
             cached_auto_label: crate::workspace::fallback_label_from_cwd(&snap.identity_cwd),
+            follows_shared_name: false,
             cached_git_status_key: snap.identity_cwd.clone(),
             cached_git_branch: None,
             cached_git_ahead_behind: None,

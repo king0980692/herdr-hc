@@ -198,6 +198,9 @@ pub struct Workspace {
     pub(crate) cached_identity_cwd: PathBuf,
     /// Automatic workspace label cached outside the render path.
     pub(crate) cached_auto_label: String,
+    /// Shown in a shared herdr.app layout whose space has no name: named as
+    /// herdr.app names it, after its first pane's current folder.
+    pub(crate) follows_shared_name: bool,
     /// Cache key for periodic Git status associated with `cached_identity_cwd`.
     pub(crate) cached_git_status_key: PathBuf,
     /// Cached current git branch for the workspace repo.
@@ -270,6 +273,7 @@ impl Workspace {
             identity_cwd: identity_cwd.clone(),
             cached_identity_cwd: identity_cwd.clone(),
             cached_auto_label,
+            follows_shared_name: false,
             cached_git_status_key,
             cached_git_branch: if filesystem_local {
                 git_branch(&identity_cwd)
@@ -398,6 +402,7 @@ impl Workspace {
                 identity_cwd: initial_cwd.clone(),
                 cached_identity_cwd: initial_cwd.clone(),
                 cached_auto_label,
+                follows_shared_name: false,
                 cached_git_status_key,
                 cached_git_branch: if filesystem_local {
                     git_branch(&initial_cwd)
@@ -893,10 +898,36 @@ impl Workspace {
         if let Some(name) = &self.custom_name {
             return name.clone();
         }
+        if let Some(name) = self.shared_display_name(terminals, terminal_runtimes) {
+            return name;
+        }
 
         self.resolved_identity_cwd_from(terminals, terminal_runtimes)
             .map(|cwd| self.automatic_display_name_for_cwd(&cwd))
             .unwrap_or_else(|| "workspace".into())
+    }
+
+    /// herdr.app's name for an unnamed space: its first pane's current
+    /// folder (the checkout's top when it is in this workspace's repository).
+    fn shared_display_name(
+        &self,
+        terminals: &HashMap<TerminalId, TerminalState>,
+        terminal_runtimes: &TerminalRuntimeRegistry,
+    ) -> Option<String> {
+        if !self.follows_shared_name {
+            return None;
+        }
+        let tab = self.tabs.first()?;
+        let pane = *tab.layout.pane_ids().first()?;
+        let cwd = tab
+            .foreground_cwd_for_pane(pane, terminal_runtimes)
+            .or_else(|| tab.cwd_for_pane(pane, terminals, terminal_runtimes))?;
+        let folder = self
+            .cached_git_space
+            .as_ref()
+            .filter(|space| cwd.starts_with(&space.repo_root))
+            .map_or(cwd.as_path(), |space| space.repo_root.as_path());
+        Some(fallback_label_from_cwd(folder))
     }
 
     fn automatic_display_name_for_cwd(&self, cwd: &std::path::Path) -> String {
@@ -1035,6 +1066,7 @@ impl Workspace {
             identity_cwd: identity_cwd.clone(),
             cached_identity_cwd: identity_cwd.clone(),
             cached_auto_label: fallback_label_from_cwd(&identity_cwd),
+            follows_shared_name: false,
             cached_git_status_key: identity_cwd.clone(),
             cached_git_branch: git_branch(&identity_cwd),
             cached_git_ahead_behind: None,
@@ -1469,6 +1501,42 @@ mod tests {
 
         assert_eq!(ws.display_name_from_terminals(&terminals), "repo");
         assert_eq!(ws.display_name(), "workspace");
+    }
+
+    #[test]
+    fn an_unnamed_shared_space_is_named_as_herdr_app_names_it() {
+        let mut ws = Workspace::test_new("ignored");
+        ws.custom_name = None;
+        let root_pane = ws.tabs[0].root_pane;
+        let terminal_id = ws.tabs[0].terminal_id(root_pane).unwrap().clone();
+        // Identity follows the cwd the program started in; herdr.app names the
+        // space after the folder its first pane is in (no runtime: the same).
+        ws.cached_identity_cwd = PathBuf::from("/herdr-test/home");
+        ws.cached_auto_label = "home".into();
+        ws.cached_git_space = Some(GitSpaceMetadata {
+            key: "k".into(),
+            checkout_key: "k".into(),
+            repo_name: "bot".into(),
+            repo_root: PathBuf::from("/herdr-test/bot"),
+            is_linked_worktree: false,
+        });
+        let mut terminals = HashMap::new();
+        terminals.insert(
+            terminal_id.clone(),
+            TerminalState::new(terminal_id.clone(), PathBuf::from("/herdr-test/reports")),
+        );
+        let runtimes = TerminalRuntimeRegistry::new();
+        assert_eq!(ws.display_name_from(&terminals, &runtimes), "reports");
+        ws.follows_shared_name = true;
+        assert_eq!(ws.display_name_from(&terminals, &runtimes), "reports");
+        // Inside the workspace's checkout: the checkout's top, as herdr.app does.
+        terminals.insert(
+            terminal_id.clone(),
+            TerminalState::new(terminal_id, PathBuf::from("/herdr-test/bot/src/deep")),
+        );
+        assert_eq!(ws.display_name_from(&terminals, &runtimes), "bot");
+        ws.follows_shared_name = false;
+        assert_eq!(ws.display_name_from(&terminals, &runtimes), "deep");
     }
 
     #[test]

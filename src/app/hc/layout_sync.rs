@@ -448,6 +448,11 @@ impl App {
                 continue;
             };
             let name = named(&space.name);
+            let follows = space.name.trim().is_empty();
+            if self.state.workspaces[ws_idx].follows_shared_name != follows {
+                self.state.workspaces[ws_idx].follows_shared_name = follows;
+                changed = true;
+            }
             let workspace = &self.state.workspaces[ws_idx];
             if !renamed_here(&space.id, &workspace.custom_name) && workspace.custom_name != name {
                 self.state.workspaces[ws_idx].custom_name = name;
