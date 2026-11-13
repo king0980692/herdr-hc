@@ -80,6 +80,15 @@ pub enum AppEvent {
         generation: u64,
     },
     HcRecoveryReady,
+    /// Live programs that appeared on the source's core after this viewer
+    /// opened (another viewer or a shell started them).
+    // Started only by production startup; fake-core unit tests never subscribe.
+    #[cfg_attr(test, allow(dead_code))]
+    HcProgramsAppeared {
+        generation: u64,
+        core_id: String,
+        terminals: Vec<crate::hc::state::Terminal>,
+    },
     HcTerminalEffects {
         enabled: std::sync::Arc<std::sync::atomic::AtomicBool>,
         pane_id: crate::layout::PaneId,

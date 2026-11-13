@@ -62,6 +62,14 @@ impl App {
             }
             AppEvent::HcSourceChanged { generation } => self.hc_source_changed(generation),
             AppEvent::HcRecoveryReady => self.finish_hc_recovery(),
+            AppEvent::HcProgramsAppeared {
+                generation,
+                core_id,
+                terminals,
+            } => {
+                self.add_appeared_hc_programs(generation, core_id, terminals);
+                true
+            }
             AppEvent::HcTerminalUpdated {
                 terminal_id,
                 runtime_token,
@@ -188,6 +196,14 @@ impl App {
             }
             AppEvent::HcRecoveryReady => {
                 self.finish_hc_recovery();
+                return Vec::new();
+            }
+            AppEvent::HcProgramsAppeared {
+                generation,
+                core_id,
+                terminals,
+            } => {
+                self.add_appeared_hc_programs(generation, core_id, terminals);
                 return Vec::new();
             }
             AppEvent::HcTerminalUpdated {

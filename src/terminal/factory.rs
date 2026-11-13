@@ -187,6 +187,18 @@ impl TerminalFactory {
             host.watch(events);
         }
     }
+    /// Reports live programs that appear on a discovering source's core
+    /// after this viewer opened (not in herdr-hc builds: herdr.app's layout
+    /// places those).
+    // Started only by production startup; fake-core unit tests never subscribe.
+    #[cfg_attr(test, allow(dead_code))]
+    pub(crate) fn watch_programs(&self, events: tokio::sync::mpsc::Sender<AppEvent>) {
+        if let Self::Hc(host) = self {
+            if !crate::hc_entry::ENABLED && self.discovers_existing_programs() {
+                host.watch_programs(events);
+            }
+        }
+    }
     pub(crate) fn discovers_existing_programs(&self) -> bool {
         matches!(self, Self::Hc(host) if !host.saved || host.shared)
     }

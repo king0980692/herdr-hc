@@ -444,6 +444,49 @@ impl Workspace {
         Ok((self.tabs.len() - 1, terminal, runtime))
     }
 
+    /// Adds a tab showing a program already running on the source, after the
+    /// others, without changing the active tab.
+    #[allow(clippy::too_many_arguments)] // geometry, host context and the binding
+    pub(crate) fn create_tab_attached(
+        &mut self,
+        rows: u16,
+        cols: u16,
+        cwd: PathBuf,
+        scrollback_limit_bytes: usize,
+        host_terminal_theme: crate::terminal_theme::TerminalTheme,
+        host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
+        binding: &crate::hc::state::TerminalBinding,
+        factory: &crate::terminal::TerminalFactory,
+    ) -> std::io::Result<(usize, TerminalState, TerminalRuntime)> {
+        let Some(tab) = self.active_tab() else {
+            return Err(std::io::Error::other("workspace has no tab"));
+        };
+        let (events, render_notify, render_dirty) = (
+            tab.events.clone(),
+            tab.render_notify.clone(),
+            tab.render_dirty.clone(),
+        );
+        let (tab, terminal, runtime) = Tab::new_attached(
+            self.next_public_tab_number,
+            cwd,
+            rows,
+            cols,
+            scrollback_limit_bytes,
+            host_terminal_theme,
+            host_terminal_appearance,
+            events,
+            render_notify,
+            render_dirty,
+            binding,
+            factory,
+        )?;
+        self.next_public_tab_number += 1;
+        let pane_number = self.next_public_pane_number;
+        self.register_new_pane_with_number(tab.root_pane, pane_number);
+        self.tabs.push(tab);
+        Ok((self.tabs.len() - 1, terminal, runtime))
+    }
+
     pub fn close_tab(&mut self, idx: usize) -> bool {
         if self.tabs.len() <= 1 || idx >= self.tabs.len() {
             return false;

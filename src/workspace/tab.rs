@@ -173,6 +173,64 @@ impl Tab {
         ))
     }
 
+    /// A tab showing a program that already runs on the source: attach only,
+    /// never a launch.
+    // Construction threads geometry, host context, and render hooks.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_attached(
+        number: usize,
+        cwd: PathBuf,
+        rows: u16,
+        cols: u16,
+        scrollback_limit_bytes: usize,
+        host_terminal_theme: crate::terminal_theme::TerminalTheme,
+        host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
+        events: mpsc::Sender<AppEvent>,
+        render_notify: Arc<Notify>,
+        render_dirty: Arc<RenderSignal>,
+        binding: &crate::hc::state::TerminalBinding,
+        factory: &crate::terminal::TerminalFactory,
+    ) -> std::io::Result<(Self, TerminalState, TerminalRuntime)> {
+        let (layout, root_id) = TileLayout::new();
+        let runtime = factory.restore(
+            binding,
+            root_id,
+            rows,
+            cols,
+            scrollback_limit_bytes,
+            host_terminal_theme,
+            host_terminal_appearance,
+            events.clone(),
+            render_notify.clone(),
+            render_dirty.clone(),
+        )?;
+        let terminal_id = TerminalId::alloc();
+        let terminal = TerminalState::new(terminal_id.clone(), cwd)
+            .with_hc_binding(Some(
+                serde_json::to_value(binding).map_err(std::io::Error::other)?,
+            ))
+            .with_runtime(&runtime);
+        let mut panes = HashMap::new();
+        panes.insert(root_id, PaneState::new(terminal_id));
+        Ok((
+            Self {
+                custom_name: None,
+                number,
+                root_pane: root_id,
+                layout,
+                panes,
+                #[cfg(test)]
+                runtimes: HashMap::new(),
+                zoomed: false,
+                events,
+                render_notify,
+                render_dirty,
+            },
+            terminal,
+            runtime,
+        ))
+    }
+
     pub fn is_auto_named(&self) -> bool {
         self.custom_name.is_none()
     }

@@ -1422,6 +1422,7 @@ impl AppState {
         match event {
             AppEvent::HcSourceChanged { .. }
             | AppEvent::HcRecoveryReady
+            | AppEvent::HcProgramsAppeared { .. }
             | AppEvent::HcTerminalEffects { .. } => Vec::new(),
             AppEvent::HcTerminalUpdated {
                 terminal_id,

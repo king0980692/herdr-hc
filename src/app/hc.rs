@@ -1,4 +1,5 @@
 //! hc source updates are fenced runtime events, not inferred pane exits or hooks.
+mod appeared;
 mod bootstrap;
 mod reconnect;
 use super::{actions::PaneStateUpdate, App};

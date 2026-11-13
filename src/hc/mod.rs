@@ -202,6 +202,20 @@ impl Client {
         ))
     }
 
+    /// Every terminal's events on this core: the reply holds `seq` and the
+    /// `terminals` they apply to.
+    pub async fn subscribe_core(&self) -> io::Result<(Value, Events)> {
+        let (reply, stream) = self.open("events.subscribe", json!({})).await?;
+        Ok((
+            reply,
+            Events {
+                stream,
+                pending: BytesMut::new(),
+                credit_pending: 0,
+            },
+        ))
+    }
+
     /// Registers a new stream before waking the RPC caller: first paint/events
     /// may follow the response in the same transport read.
     pub async fn open(&self, method: &str, params: Value) -> io::Result<(Value, Stream)> {

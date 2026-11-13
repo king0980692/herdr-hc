@@ -653,6 +653,9 @@ impl App {
         let default_workspace_initialized =
             !state.workspaces.is_empty() || terminal_factory.is_saved_source();
         terminal_factory.watch_source(event_tx.clone());
+        // Fake-core unit tests script every request; they never see this subscription.
+        #[cfg(not(test))]
+        terminal_factory.watch_programs(event_tx.clone());
         let mut app = Self {
             plugin_installation_leases,
             plugin_installation_cleanup_allowed,

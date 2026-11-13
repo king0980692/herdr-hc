@@ -64,13 +64,16 @@ pub(crate) struct CoreHost {
     pub(super) machines: Arc<Mutex<Result<crate::hc::machines::MachineGraph, String>>>,
     stop: Option<oneshot::Sender<()>>,
     watcher: Mutex<Option<tokio::task::AbortHandle>>,
+    programs: Mutex<Option<tokio::task::AbortHandle>>,
     pub(crate) placements: Mutex<crate::hc_entry::Placements>,
 }
 impl Drop for CoreHost {
     fn drop(&mut self) {
-        if let Ok(watcher) = self.watcher.get_mut() {
-            if let Some(task) = watcher.take() {
-                task.abort();
+        for watcher in [&mut self.watcher, &mut self.programs] {
+            if let Ok(watcher) = watcher.get_mut() {
+                if let Some(task) = watcher.take() {
+                    task.abort();
+                }
             }
         }
         if let Some(stop) = self.stop.take() {
@@ -117,6 +120,42 @@ impl CoreHost {
             }
         }
     }
+    /// Follows every connected core for live programs this viewer has not
+    /// seen yet. Programs present when it first connects are not reported;
+    /// ones created while it was disconnected are, from the next snapshot.
+    // Started only by production startup; fake-core unit tests never subscribe.
+    #[cfg_attr(test, allow(dead_code))]
+    pub(crate) fn watch_programs(&self, events: tokio::sync::mpsc::Sender<AppEvent>) {
+        let mut source = self.source.clone();
+        let task = self.executor.spawn(async move {
+            let mut known = KnownPrograms::default();
+            loop {
+                let (generation, client) = {
+                    let state = source.borrow_and_update();
+                    (state.generation, state.client.clone())
+                };
+                let follow = async {
+                    if let Some(client) = client {
+                        if let Err(error) =
+                            follow_programs(&client, generation, &mut known, &events).await
+                        {
+                            tracing::debug!(%error, "hc program events ended");
+                        }
+                    }
+                    std::future::pending::<()>().await;
+                };
+                tokio::select! {
+                    () = follow => {}
+                    changed = source.changed() => if changed.is_err() { break },
+                }
+            }
+        });
+        if let Ok(mut programs) = self.programs.lock() {
+            if let Some(old) = programs.replace(task.abort_handle()) {
+                old.abort();
+            }
+        }
+    }
     #[cfg(test)]
     pub(crate) fn test(client: Client) -> Self {
         Self::test_source(Some(client), false).0
@@ -143,6 +182,7 @@ impl CoreHost {
                 machines: Arc::new(Mutex::new(Err("hc machine inventory is loading".into()))),
                 stop: None,
                 watcher: Mutex::new(None),
+                programs: Mutex::new(None),
                 placements: Mutex::default(),
             },
             send,
@@ -310,6 +350,7 @@ impl CoreHost {
             machines,
             stop: Some(stop),
             watcher: Mutex::new(None),
+            programs: Mutex::new(None),
             placements: Mutex::default(),
         })
     }
@@ -363,5 +404,163 @@ mod tests {
             &Some(SourceLocator::Saved(current))
         ));
         assert!(!saved_route_changed(false, &None, &None));
+    }
+}
+
+/// The program addresses a viewer has seen on one core.
+#[derive(Default)]
+pub(crate) struct KnownPrograms {
+    core: Option<String>,
+    addresses: std::collections::HashSet<String>,
+}
+
+impl KnownPrograms {
+    /// A core's full list of terminals: on first sight of a core they are
+    /// only remembered; after that, the ones not seen before are returned.
+    pub(crate) fn snapshot(
+        &mut self,
+        core: &str,
+        terminals: &[serde_json::Value],
+    ) -> Vec<serde_json::Value> {
+        let first = self.core.as_deref() != Some(core);
+        if first {
+            self.core = Some(core.to_owned());
+            self.addresses.clear();
+        }
+        terminals
+            .iter()
+            .filter(|record| {
+                record
+                    .get("address")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|address| self.addresses.insert(address.to_owned()))
+                    && !first
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// A `created`/`restarted` event: whether its address is new.
+    pub(crate) fn created(&mut self, address: &str) -> bool {
+        self.core.is_some() && self.addresses.insert(address.to_owned())
+    }
+}
+
+// Started only by production startup; fake-core unit tests never subscribe.
+#[cfg_attr(test, allow(dead_code))]
+fn listed(value: &serde_json::Value) -> Vec<serde_json::Value> {
+    value
+        .get("terminals")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+// Started only by production startup; fake-core unit tests never subscribe.
+#[cfg_attr(test, allow(dead_code))]
+async fn follow_programs(
+    client: &Client,
+    generation: u64,
+    known: &mut KnownPrograms,
+    events: &tokio::sync::mpsc::Sender<AppEvent>,
+) -> io::Result<()> {
+    if !client.hello.methods.contains("events.subscribe") {
+        return Ok(());
+    }
+    let core = client.hello.core.id.clone();
+    let report = |records: Vec<serde_json::Value>| {
+        let terminals: Vec<crate::hc::state::Terminal> = records
+            .into_iter()
+            .filter_map(|record| serde_json::from_value(record).ok())
+            .collect();
+        (!terminals.is_empty()).then(|| AppEvent::HcProgramsAppeared {
+            generation,
+            core_id: core.clone(),
+            terminals,
+        })
+    };
+    let (reply, mut stream) = client.subscribe_core().await?;
+    let mut seq = reply
+        .get("seq")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    if let Some(event) = report(known.snapshot(&core, &listed(&reply))) {
+        events
+            .send(event)
+            .await
+            .map_err(|_| io::Error::other("app closed"))?;
+    }
+    loop {
+        let line = stream.next().await?;
+        let params = line.get("params").cloned().unwrap_or_default();
+        let new = match line.get("method").and_then(serde_json::Value::as_str) {
+            Some("missed") => {
+                seq = params
+                    .get("seq")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(seq);
+                known.snapshot(&core, &listed(&params))
+            }
+            Some("event") => {
+                let at = params.get("seq").and_then(serde_json::Value::as_u64);
+                if at.is_some_and(|at| at <= seq) {
+                    continue;
+                }
+                seq = at.unwrap_or(seq);
+                let kind = params.get("type").and_then(serde_json::Value::as_str);
+                let address = params.get("terminal").and_then(serde_json::Value::as_str);
+                match (kind, address, params.get("data")) {
+                    (Some("created" | "restarted"), Some(address), Some(data))
+                        if known.created(address) =>
+                    {
+                        let mut record = data.clone();
+                        if let Some(object) = record.as_object_mut() {
+                            object.entry("address").or_insert_with(|| address.into());
+                        }
+                        vec![record]
+                    }
+                    _ => Vec::new(),
+                }
+            }
+            _ => Vec::new(),
+        };
+        if let Some(event) = report(new) {
+            events
+                .send(event)
+                .await
+                .map_err(|_| io::Error::other("app closed"))?;
+        }
+    }
+}
+
+#[cfg(test)]
+mod program_tests {
+    use super::KnownPrograms;
+    use serde_json::json;
+
+    #[test]
+    fn programs_are_new_only_after_the_core_was_first_seen() {
+        let mut known = KnownPrograms::default();
+        assert!(!known.created("t1"));
+        let first = [json!({"address": "t1"}), json!({"address": "t2"})];
+        assert!(known.snapshot("core-a", &first).is_empty());
+        assert!(known.created("t3"));
+        assert!(!known.created("t3"));
+        assert!(!known.created("t1"));
+        // A resubscribe snapshot reports only what appeared meanwhile.
+        let later = [
+            json!({"address": "t1"}),
+            json!({"address": "t3"}),
+            json!({"address": "t4"}),
+        ];
+        assert_eq!(
+            known.snapshot("core-a", &later),
+            vec![json!({"address": "t4"})]
+        );
+        // Another core starts over: its programs are only remembered.
+        assert!(known
+            .snapshot("core-b", &[json!({"address": "t4"})])
+            .is_empty());
+        assert!(known.created("t1"));
     }
 }
