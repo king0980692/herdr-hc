@@ -9,6 +9,7 @@
 
 - `herdr`：原本 legacy release，保留不動。
 - `herdr-native`：目前已安裝的 hc-backed snapshot；**尚未安裝本次 checkpoint**。
+- `herdr-hc`（`--features hc-entry`）：只顯示本機 Local hc core，刻意不支援 `machine`／`--machine`／`--remote`／`--session`。遠端（共用機器清單、gx10／leon presenter）與下面的遠端實機驗收都屬於 `herdr-native`，herdr-hc 的驗證不能拿來勾選它們。
 - 新來源第一次開啟、且沒有既有 Native layout 時：將該 owner 現存的 live programs 各投影成一個 tab。
 - 已儲存 layout 保持原樣；不得為了同步 inventory 重排或覆蓋。
 - 明確關閉 pane：終止該 pane 精確綁定的共用 program，其他 viewer 會看到結束。
