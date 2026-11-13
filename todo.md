@@ -139,7 +139,10 @@ macOS 會排除 `tests/cli.rs`、`tests/machine_api.rs` 與部分 `tests/api_pin
   - 方式：候選版用私有 XDG（`/var/tmp/hl-WuXI7r`，含複製的 `config.toml` 與 `scripts/`，不含 plugins），PATH 上的 `hc` wrapper 以原本的 XDG 連到共用 core（`/run/user/1000/herdr-core/default.sock`），假 `ssh` 擋遠端。herdr 0.9.5（pid 1247）沒動。啟動前確認 owner 為 `6130a31a…`、0 個 program、`machine ls` 為空（leon 沒有登錄遠端機器）。
   - 結果（headless server＋CLI，非互動 TUI）：建立 workspace 後 program 建在共用 core（t18），`pane run` 輸出可讀；split 建出 t19；明確關閉 pane 只結束該 program（t19 `killed`）；`server stop` 只 detach（t18 仍 live，PID 824477）；重啟 server 後還原 layout 並重新 attach 同一 PID，畫面保留先前輸出；最後明確關閉 t18 並 `hc rm` 兩筆紀錄。
   - before／after：core ID、PID 1130、版本、live 0、`machine ls` 相同；唯一差異是 core 為第一個 program 啟動的 PTY holder（`herdr-core hold`，pid 824435，systemd 下，0 terminals），這是 core 的正常行為，保留。
-  - [ ] 尚未：互動 TUI 畫面（邊框標題、自訂快捷鍵、滑鼠）、兩個 viewer、重連 UI、真實 agent、plugin／sidebar、gx10。
+  - [x] 互動 TUI（使用者操作，2026-11-13）：邊框與自訂快捷鍵正常。第二個獨立 viewer（`/var/tmp/hl-WuXI7r-b`）首次開啟顯示 t1b，兩邊輸入同步。
+  - [x] **開著的 viewer 自動加入其他 viewer 新開的程式**（`5e938dce`，候選版 `~/.local/opt/herdr-native/046d2246d0dc`）：core-wide `events.subscribe`，只 attach、不搶焦點；放進以該資料夾開的 workspace，否則目前的 workspace；herdr-hc 不變。scratch 兩個 viewer 驗證：A 新 tab 在 B 出現一次、焦點與尺寸不變、`hc run --bg` 兩邊都出現、A 斷線期間建立的程式重連後補上一次。leon 實機：A 新增 t1m、t1n，B 自動出現、焦點不變。viewer 關閉期間建立的程式不會加入（只有首次開啟的 discovery 或 saved layout）。
+  - [ ] 待決定：被另一個 viewer 關掉（`killed`）的程式，其他 viewer 目前保留 pane 顯示結束（`exit_tests.rs` 規定）；程式自行 `exit` 才自動關 pane。
+  - [ ] 尚未：兩個 viewer 不同尺寸下的 resize／自動回覆、重開 viewer、真實 agent、plugin／sidebar、gx10。
 
 ### macOS 隔離試用結果（2026-11-11，原工作站，另一個 session 執行並回報）
 
