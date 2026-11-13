@@ -112,6 +112,197 @@ fn allowed(request: &[u8]) -> Result<(), Vec<u8>> {
 
 #[cfg(all(unix, not(test)))]
 pub(crate) use host::serve;
+/// What a plugin's manifest asks for on a remote machine (`[remote]`), read
+/// from the manifest file itself.
+#[derive(Debug, Default, serde::Deserialize)]
+struct RemoteSpec {
+    /// Release archive URL; `{version}` is the plugin's version, `{target}`
+    /// the machine's (`x86_64-unknown-linux-musl`, ...).
+    archive: Option<String>,
+    /// The release's `SHA256SUMS` URL (same placeholders).
+    sha256sums: Option<String>,
+    /// The executable's path inside the unpacked archive.
+    binary: Option<String>,
+    /// Where it goes in the plugin's copy there (default: `binary`).
+    install_as: Option<String>,
+    /// Files of the plugin copied there (besides its manifest).
+    #[serde(default)]
+    files: Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct ManifestRemote {
+    remote: Option<RemoteSpec>,
+}
+
+/// A plugin path: relative, inside the plugin, plain characters.
+fn plain_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && path
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+        && path
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'))
+}
+
+fn plain_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+/// A URL a remote shell may take inside single quotes.
+fn plain_url(url: &str) -> bool {
+    url.starts_with("https://")
+        && !url.contains('\'')
+        && !url.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
+/// One plugin to set up on a remote machine: its id, version, files
+/// (relative path and bytes) and what its manifest asks for.
+struct RemotePlugin {
+    id: String,
+    version: String,
+    files: Vec<(String, Vec<u8>)>,
+    spec: RemoteSpec,
+}
+
+// Used by the Unix presenter (`host`); Windows presenters do not bridge yet.
+#[cfg_attr(not(unix), allow(dead_code))]
+/// Reads a plugin's `[remote]` and the files to copy. `None`: not a plugin
+/// for remote machines (no `[remote]`), or one that cannot be copied.
+fn remote_plugin(
+    id: &str,
+    version: &str,
+    root: &std::path::Path,
+    manifest: &std::path::Path,
+) -> Option<RemotePlugin> {
+    if !plain_id(id) {
+        return None;
+    }
+    let text = std::fs::read_to_string(manifest).ok()?;
+    let spec = toml::from_str::<ManifestRemote>(&text).ok()?.remote?;
+    let mut names = vec!["herdr-plugin.toml".to_owned()];
+    names.extend(spec.files.iter().cloned());
+    let mut files = Vec::new();
+    for name in names {
+        if !plain_path(&name) || files.iter().any(|(seen, _)| seen == &name) {
+            continue;
+        }
+        files.push((name.clone(), std::fs::read(root.join(&name)).ok()?));
+    }
+    Some(RemotePlugin {
+        id: id.to_owned(),
+        version: version.to_owned(),
+        files,
+        spec,
+    })
+}
+
+/// The sh script that sets a remote machine up: herdr-native's own build
+/// for its architecture from `release` (`(repository, tag)`), then each
+/// plugin's copy and its release binary. Everything is verified against the
+/// release's SHA256SUMS and written under ~/.local/share/herdr-native.
+fn install_script(release: Option<(&str, &str)>, plugins: &[RemotePlugin]) -> String {
+    let mut script = String::from(
+        r#"set -u
+base="$HOME/.local/share/herdr-native"
+fail() { printf 'herdr-native install: %s\n' "$1" >&2; exit 1; }
+fetch() {
+    if command -v curl >/dev/null 2>&1; then curl -fsSL -o "$2" "$1"
+    elif command -v wget >/dev/null 2>&1; then wget -q -O "$2" "$1"
+    else fail "needs curl or wget"; fi
+}
+sha() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print tolower($1)}'
+    elif command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print tolower($1)}'
+    else fail "needs sha256sum or shasum"; fi
+}
+verified() {
+    expected=$(grep -E "^[0-9a-fA-F]{64} [ *]$2\$" "$1" | awk '{print tolower($1)}' | head -n 1)
+    [ -n "$expected" ] && [ "$(sha "$3")" = "$expected" ]
+}
+case "$(uname -m)" in
+    x86_64|amd64) arch=x86_64 ;;
+    aarch64|arm64) arch=aarch64 ;;
+    *) fail "no build for $(uname -m)" ;;
+esac
+target="$arch-unknown-linux-musl"
+tmp=$(mktemp -d) || fail "no temporary directory"
+trap 'rm -rf "$tmp"' EXIT
+mkdir -p "$base/bin" "$base/plugins"
+"#,
+    );
+    if let Some((repo, tag)) = release {
+        script.push_str(&format!(
+            r#"if [ "$(cat "$base/bin/.release" 2>/dev/null)" != '{tag}' ]; then
+    url='https://github.com/{repo}/releases/download/{tag}'
+    fetch "$url/SHA256SUMS" "$tmp/sums" || fail "SHA256SUMS of {tag} unavailable"
+    fetch "$url/herdr-native-linux-$arch" "$tmp/herdr-native" || fail "herdr-native-linux-$arch of {tag} unavailable"
+    verified "$tmp/sums" "herdr-native-linux-$arch" "$tmp/herdr-native" || fail "herdr-native-linux-$arch does not match SHA256SUMS"
+    chmod 0755 "$tmp/herdr-native" && mv -f "$tmp/herdr-native" "$base/bin/herdr-native" || fail "could not install herdr-native"
+    printf '%s' '{tag}' > "$base/bin/.release"
+fi
+"#
+        ));
+    }
+    for plugin in plugins {
+        let root = format!("\"$base/plugins/{}\"", plugin.id);
+        script.push_str(&format!("mkdir -p {root}\n"));
+        for (name, bytes) in &plugin.files {
+            if let Some(dir) = std::path::Path::new(name)
+                .parent()
+                .filter(|d| !d.as_os_str().is_empty())
+            {
+                script.push_str(&format!("mkdir -p {root}/'{}'\n", dir.display()));
+            }
+            script.push_str(&format!(
+                "printf '%s' '{}' | base64 -d > {root}/'{name}.new' && mv -f {root}/'{name}.new' {root}/'{name}' || fail 'could not write {name}'\n",
+                encode(bytes)
+            ));
+        }
+        let spec = &plugin.spec;
+        let resolve = |url: &str| {
+            url.replace("{version}", &plugin.version)
+                .replace("{target}", "$target")
+        };
+        if let (Some(archive), Some(sums), Some(binary)) =
+            (&spec.archive, &spec.sha256sums, &spec.binary)
+        {
+            let install_as = spec.install_as.clone().unwrap_or_else(|| binary.clone());
+            if !(plain_url(archive)
+                && plain_url(sums)
+                && plain_path(binary)
+                && plain_path(&install_as))
+            {
+                continue;
+            }
+            let (archive, sums) = (resolve(archive), resolve(sums));
+            script.push_str(&format!(
+                r#"archive="{archive}"
+if [ "$(cat {root}/.herdr-native-archive 2>/dev/null)" != "$archive" ]; then
+    name=$(basename "$archive")
+    fetch "{sums}" "$tmp/plugin-sums" || fail "SHA256SUMS of {id} unavailable"
+    fetch "$archive" "$tmp/$name" || fail "$name unavailable"
+    verified "$tmp/plugin-sums" "$name" "$tmp/$name" || fail "$name does not match SHA256SUMS"
+    rm -rf "$tmp/unpack" && mkdir -p "$tmp/unpack" && tar -xzf "$tmp/$name" -C "$tmp/unpack" || fail "could not unpack $name"
+    [ -f "$tmp/unpack/{binary}" ] || fail "{binary} is not in $name"
+    mkdir -p "$(dirname {root}/'{install_as}')"
+    chmod 0755 "$tmp/unpack/{binary}" && mv -f "$tmp/unpack/{binary}" {root}/'{install_as}' || fail "could not install {id}"
+    printf '%s' "$archive" > {root}/.herdr-native-archive
+fi
+"#,
+                id = plugin.id,
+            ));
+        }
+    }
+    script.push_str("printf 'herdr-native install: done\\n'\n");
+    script
+}
+
 #[cfg(unix)]
 pub(crate) use relay::run_relay;
 
@@ -296,6 +487,7 @@ mod host {
     /// its requests until the transport ends.
     pub(crate) async fn serve(client: &Client, api_socket: &Path) -> io::Result<()> {
         let core = client.hello.core.id.clone();
+        install(client).await;
         let address = match find_relay(client).await? {
             Some(address) => address,
             None => start_relay(client, &core).await?,
@@ -400,6 +592,79 @@ exec "$bin" bridge-relay --socket "$HOME/.local/state/herdr-native/run/$1.sock""
             .ok_or_else(|| io::Error::other("hc did not start the bridge relay"))
     }
 
+    /// Sets this machine up (herdr-native's build, plugin copies and their
+    /// binaries) in a hidden terminal, and waits for it. Failures are logged:
+    /// what was already there keeps working.
+    async fn install(client: &Client) {
+        let plugins: Vec<RemotePlugin> = crate::persist::plugin_registry::load()
+            .into_iter()
+            .filter(|plugin| plugin.enabled)
+            .filter_map(|plugin| {
+                remote_plugin(
+                    &plugin.plugin_id,
+                    &plugin.version,
+                    Path::new(&plugin.plugin_root),
+                    Path::new(&plugin.manifest_path),
+                )
+            })
+            .collect();
+        let release = option_env!("HERDR_RELEASE_TAG")
+            .filter(|tag| !tag.is_empty())
+            .map(|tag| {
+                (
+                    option_env!("HERDR_RELEASE_REPO").unwrap_or("king0980692/herdr-hc"),
+                    tag,
+                )
+            });
+        if release.is_none() && plugins.is_empty() {
+            return;
+        }
+        let script = install_script(release, &plugins);
+        let mut labels = serde_json::Map::new();
+        labels.insert(crate::hc_entry::HIDDEN_LABEL.into(), "1".into());
+        labels.insert(ROLE_LABEL.into(), "install".into());
+        let started = client
+            .call(
+                "terminal.run",
+                json!({
+                    "argv": ["sh", "-c", script],
+                    "size": {"rows": 24, "cols": 200},
+                    "no_parent": true, "no_notify": true, "keep": false,
+                    "labels": labels,
+                }),
+            )
+            .await;
+        let Some(address) = started
+            .ok()
+            .and_then(|reply| reply["address"].as_str().map(str::to_owned))
+        else {
+            tracing::warn!("remote plugin install could not start");
+            return;
+        };
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(300);
+        let mut record = serde_json::Value::Null;
+        while tokio::time::Instant::now() < deadline {
+            record = client
+                .call("terminal.get", json!({"terminal": address}))
+                .await
+                .unwrap_or_default();
+            if record["state"] == "finished" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        if record["exit_code"] != 0 {
+            let output = client
+                .call("terminal.read", json!({"terminal": address}))
+                .await
+                .unwrap_or_default();
+            tracing::warn!(output = %output, record = %record, "remote plugin install failed");
+        }
+        let _ = client
+            .call("terminal.rm", json!({"terminal": address}))
+            .await;
+    }
+
     /// One request line to this presenter's own API.
     async fn call_api(api_socket: &Path, request: &[u8]) -> io::Result<Vec<u8>> {
         let exchange = async {
@@ -454,5 +719,70 @@ mod tests {
             );
         }
         assert!(allowed(b"not json").is_err());
+    }
+
+    #[test]
+    fn a_remote_install_writes_the_plugin_and_verified_binaries() {
+        let plugin = RemotePlugin {
+            id: "side".into(),
+            version: "1.2.3".into(),
+            files: vec![
+                ("herdr-plugin.toml".into(), b"id = \"side\"\n".to_vec()),
+                ("run.sh".into(), b"exec bin/side\n".to_vec()),
+            ],
+            spec: RemoteSpec {
+                archive: Some("https://example.test/v{version}/side-{target}.tar.gz".into()),
+                sha256sums: Some("https://example.test/v{version}/SHA256SUMS".into()),
+                binary: Some("bin/side".into()),
+                install_as: None,
+                files: vec!["run.sh".into()],
+            },
+        };
+        let script = install_script(Some(("owner/repo", "tag-1")), &[plugin]);
+        assert!(script.contains("https://github.com/owner/repo/releases/download/tag-1"));
+        assert!(script.contains("herdr-native-linux-$arch"));
+        assert!(script.contains(r#"archive="https://example.test/v1.2.3/side-$target.tar.gz""#));
+        assert!(script.contains(&format!("'{}'", encode(b"exec bin/side\n"))));
+        assert!(script.contains(r#"mv -f "$tmp/unpack/bin/side" "$base/plugins/side"/'bin/side'"#));
+        // No release: the plugin alone.
+        assert!(!install_script(None, &[]).contains("releases/download"));
+        // sh accepts it.
+        let checked = std::process::Command::new("sh")
+            .arg("-n")
+            .arg("-c")
+            .arg(&script)
+            .status()
+            .unwrap();
+        assert!(checked.success());
+    }
+
+    #[test]
+    fn remote_paths_and_urls_stay_plain() {
+        assert!(plain_path("bin/side") && plain_path("scripts/run.sh"));
+        for bad in ["", "/etc/passwd", "../x", "a/../b", "a b", "a'b", "./x"] {
+            assert!(!plain_path(bad), "{bad}");
+        }
+        assert!(plain_url(
+            "https://github.com/a/b/releases/download/v1/x.tar.gz"
+        ));
+        assert!(!plain_url("http://x") && !plain_url("https://x/'y") && !plain_url("https://x y"));
+        assert!(plain_id("herdr-sidebar") && !plain_id("a/b") && !plain_id("a'b"));
+    }
+
+    #[test]
+    fn a_plugin_is_set_up_remotely_only_as_its_manifest_asks() {
+        let root = std::env::temp_dir().join(format!("hn-remote-spec-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("scripts")).unwrap();
+        let manifest = root.join("herdr-plugin.toml");
+        std::fs::write(&manifest, "id = \"side\"\n[remote]\nfiles = [\"scripts/run.sh\", \"../secret\"]\nbinary = \"bin/side\"\n").unwrap();
+        std::fs::write(root.join("scripts/run.sh"), "exec bin/side\n").unwrap();
+        let plugin = remote_plugin("side", "1.0.0", &root, &manifest).unwrap();
+        let names: Vec<&str> = plugin.files.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["herdr-plugin.toml", "scripts/run.sh"]);
+        assert_eq!(plugin.spec.binary.as_deref(), Some("bin/side"));
+        // No [remote]: nothing to set up there.
+        std::fs::write(&manifest, "id = \"side\"\n").unwrap();
+        assert!(remote_plugin("side", "1.0.0", &root, &manifest).is_none());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

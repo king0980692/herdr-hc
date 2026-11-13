@@ -173,6 +173,11 @@ jobs:
         run: rm -rf .zig-cache vendor/libghostty-vt/.zig-cache vendor/libghostty-vt/zig-out
 
       - name: Build
+        env:
+          # A release build installs its own Linux build on remote machines
+          # from this release (see src/bridge.rs).
+          HERDR_RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+          HERDR_RELEASE_REPO: ${{ github.repository }}
         run: cargo build --release --locked ${{ matrix.features }} --target ${{ matrix.target }}
 
       - name: Package
@@ -237,6 +242,9 @@ jobs:
           Remove-Item -Recurse -Force vendor/libghostty-vt/zig-out -ErrorAction SilentlyContinue
 
       - name: Build
+        env:
+          HERDR_RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+          HERDR_RELEASE_REPO: ${{ github.repository }}
         run: cargo build --release --locked ${{ matrix.features }} --target x86_64-pc-windows-msvc
 
       - name: Package
