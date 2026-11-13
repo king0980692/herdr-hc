@@ -130,6 +130,13 @@ macOS 會排除 `tests/cli.rs`、`tests/machine_api.rs` 與部分 `tests/api_pin
 - 同目錄的 `herdr-native-trial` 是隔離試用啟動腳本：獨立的 XDG config/state/runtime（預設 `~/.local/state/herdr-native-trial`）加上私有的 hc 0.1.20（`trial-bin/hc`），不會 attach 共用 core。已用非互動方式驗證：program 建在私有 core，共用 core 與 `t12` 不變。`herdr-native-trial-hc` 對該私有 core 下 hc 指令。
 - 尚未有人實際操作過 TUI；連接真正共用 core 的試用需要另外同意（會 attach 到工作中的 program）。
 
+### 候選版 2（此 WSL2 主機，2026-11-13）
+
+- 來源：分支 `fix/linux-hc-process-facts` 的 `774879e3`（不含 `hc-entry`），`cargo build --release --locked`，Rust 1.96.1，另一個 target dir（沒動 `target/release/herdr`）。
+- 位置：`~/.local/opt/herdr-native/5ccedd3ca84a/herdr`，SHA256 `5ccedd3ca84ab137ddd6e581320416761f0143065dcd27c391e34735b253f262`，唯讀；`BUILD_INFO` 記錄來源。舊候選版 `643df92db8e4` 保留。試用腳本與私有 hc 0.1.20（SHA256 `0e4a0c2f…53c95e`）同上。
+- 非互動 smoke（私有 core，短路徑 root；scratchpad 路徑會超過 107 bytes 的 socket 上限）：建立 workspace、split 正常；`server stop` 只 detach（兩個 program 仍 live）；共用 leon core ID／PID／版本不變。
+- 下一步：接 leon 真實共用 core 的試用，需使用者同意 attach 範圍。
+
 ### macOS 隔離試用結果（2026-11-11，原工作站，另一個 session 執行並回報）
 
 來源 `ed92d877`；`just ci` 與 `just docs-contract-test` 在 macOS 通過（4073 passed／18 skipped），未改任何 source 或測試。候選 Mach-O arm64 SHA256 `f9fc101ee686cb9c1129ac21d1dafe510b2ec309e7b51890497f2ee01b24f03c`，放在 `/var/tmp/ht-oQct5B/`（非長期儲存）。私有 hc 是 macOS 0.1.19 的複本，啟動前驗證 owner 不等於正常 Local。
