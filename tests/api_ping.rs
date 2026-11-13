@@ -421,7 +421,7 @@ contains = ["server-reload-marker"]
 
 #[cfg(target_os = "linux")]
 #[test]
-fn shutdown_clears_session_after_the_only_program_is_signaled() {
+fn shutdown_clears_session_after_the_only_program_exits() {
     let _lock = test_lock();
     let base = unique_test_dir();
     let config_home = base.join("config");
@@ -441,14 +441,19 @@ fn shutdown_clears_session_after_the_only_program_is_signaled() {
     let pane_id = created["result"]["root_pane"]["pane_id"]
         .as_str()
         .expect("root pane id");
-    // The source core owns the program, so its record is the authority for the PID.
     let terminals = support::hc::terminals(&runtime_dir);
     assert_eq!(terminals.len(), 1, "{pane_id}: {terminals:?}");
-    let shell_pid = terminals[0]["pid"].as_u64().expect("shell pid") as libc::pid_t;
 
-    assert_eq!(unsafe { libc::kill(shell_pid, libc::SIGHUP) }, 0);
+    // An exit with a code ends the program even when it is kept (programs a
+    // shared herdr.app layout shows are kept, as herdr.app keeps its own).
+    send_request(
+        &socket_path,
+        &format!(
+            r#"{{"id":"exit","method":"pane.send_input","params":{{"pane_id":"{pane_id}","text":"exit 0","keys":["Enter"]}}}}"#
+        ),
+    );
 
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let panes = send_request(
             &socket_path,
@@ -460,7 +465,10 @@ fn shutdown_clears_session_after_the_only_program_is_signaled() {
         {
             break;
         }
-        assert!(Instant::now() < deadline, "signaled pane was not removed");
+        assert!(
+            Instant::now() < deadline,
+            "the exited program's pane was not removed"
+        );
         thread::sleep(Duration::from_millis(20));
     }
 
@@ -488,6 +496,81 @@ fn shutdown_clears_session_after_the_only_program_is_signaled() {
     // that a later start could only restore as unavailable.
     assert!(!config_home.join("herdr-dev/session.json").exists());
 
+    cleanup_spawned_herdr(child, base);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_kept_program_lost_to_a_signal_is_replaced_in_its_pane() {
+    let _lock = test_lock();
+    let base = unique_test_dir();
+    let config_home = base.join("config");
+    let runtime_dir = base.join("runtime");
+    let socket_path = runtime_dir.join("herdr.sock");
+
+    let mut child = spawn_herdr_with_shell(&config_home, &runtime_dir, &socket_path, "/bin/sh");
+    wait_for_socket(&socket_path, Duration::from_secs(5));
+    send_request(
+        &socket_path,
+        &format!(
+            r#"{{"id":"create","method":"workspace.create","params":{{"cwd":"{}","focus":true}}}}"#,
+            base.display()
+        ),
+    );
+    // Placed in the shared herdr.app layout, the program is kept as herdr.app
+    // keeps its own.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let kept = loop {
+        let terminals = support::hc::terminals(&runtime_dir);
+        if let Some(kept) = terminals.iter().find(|t| t["keep"] == true) {
+            break kept.clone();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the program was not kept: {terminals:?}"
+        );
+        thread::sleep(Duration::from_millis(50));
+    };
+    let address = kept["address"].clone();
+    let old_pid = kept["pid"].as_u64().expect("shell pid") as libc::pid_t;
+
+    assert_eq!(unsafe { libc::kill(old_pid, libc::SIGHUP) }, 0);
+
+    // hc puts a shell back in the same terminal; its pane stays.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let terminals = support::hc::terminals(&runtime_dir);
+        let replaced = terminals.iter().any(|t| {
+            t["address"] == address
+                && t["state"] == "live"
+                && t["pid"]
+                    .as_u64()
+                    .is_some_and(|pid| pid as libc::pid_t != old_pid)
+        });
+        let panes = send_request(
+            &socket_path,
+            r#"{"id":"panes","method":"pane.list","params":{}}"#,
+        );
+        if replaced
+            && panes["result"]["panes"]
+                .as_array()
+                .is_some_and(|p| p.len() == 1)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the lost program was not replaced in its pane: {terminals:?} {panes}"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    let stopped = send_request(
+        &socket_path,
+        r#"{"id":"stop","method":"server.stop","params":{}}"#,
+    );
+    assert_eq!(stopped["result"]["type"], "ok");
+    child.child.wait().expect("server should stop cleanly");
     cleanup_spawned_herdr(child, base);
 }
 

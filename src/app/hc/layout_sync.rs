@@ -170,6 +170,7 @@ impl App {
         let mut spaces = Vec::new();
         for workspace in &self.state.workspaces {
             let mut tabs = Vec::new();
+            let mut placed_tabs = Vec::new();
             for tab in &workspace.tabs {
                 let address = |raw: u32| {
                     let pane = tab.panes.get(&PaneId::from_raw(raw))?;
@@ -178,12 +179,18 @@ impl App {
                 let Some(layout) = from_binary(&snapshot_of(tab.layout.root()), &address) else {
                     continue;
                 };
+                let public_tab =
+                    crate::workspace::public_tab_id_for_number(&workspace.id, tab.number);
+                let (_, labeled_tab) = self.terminal_factory.placement(&workspace.id, &public_tab);
                 let id = self
                     .layout_sync
                     .tab_ids
                     .entry((workspace.id.clone(), tab.number))
-                    .or_insert_with(|| crate::hc_entry::new_placement_id("tb"))
+                    .or_insert_with(|| {
+                        labeled_tab.unwrap_or_else(|| crate::hc_entry::new_placement_id("tb"))
+                    })
                     .clone();
+                placed_tabs.push((public_tab, id.clone()));
                 tabs.push(ShownTab {
                     id,
                     name: tab.custom_name.clone().unwrap_or_default(),
@@ -193,12 +200,20 @@ impl App {
             if tabs.is_empty() {
                 continue;
             }
+            let (labeled_space, _) = self.terminal_factory.placement(&workspace.id, "");
             let id = self
                 .layout_sync
                 .space_ids
                 .entry(workspace.id.clone())
-                .or_insert_with(|| crate::hc_entry::new_placement_id("sp"))
+                .or_insert_with(|| {
+                    labeled_space.unwrap_or_else(|| crate::hc_entry::new_placement_id("sp"))
+                })
                 .clone();
+            // Programs started here carry these ids (`herdr.space`/`herdr.tab`).
+            for (public_tab, tab_id) in placed_tabs.drain(..) {
+                self.terminal_factory
+                    .place(&workspace.id, &public_tab, &id, &tab_id);
+            }
             spaces.push(ShownSpace {
                 id,
                 name: workspace.custom_name.clone().unwrap_or_default(),

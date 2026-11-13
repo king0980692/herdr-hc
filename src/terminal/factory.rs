@@ -322,6 +322,31 @@ impl TerminalFactory {
         }
     }
 
+    /// Records which herdr.app space and tab a herdr workspace and tab are,
+    /// for the labels of programs started there.
+    pub(crate) fn place(&self, workspace: &str, tab: &str, space: &str, space_tab: &str) {
+        if let Self::Hc(host) = self {
+            if let Ok(mut placements) = host.placements.lock() {
+                placements.learn(workspace, tab, space, space_tab);
+            }
+        }
+    }
+
+    /// herdr.app's space and tab already given to a herdr tab (a program
+    /// started there carries them), if any.
+    pub(crate) fn placement(&self, workspace: &str, tab: &str) -> (Option<String>, Option<String>) {
+        let Self::Hc(host) = self else {
+            return (None, None);
+        };
+        let Ok(placements) = host.placements.lock() else {
+            return (None, None);
+        };
+        match placements.tab(workspace, tab) {
+            Some((space, space_tab)) => (Some(space), Some(space_tab)),
+            None => (placements.space(workspace), None),
+        }
+    }
+
     pub(crate) fn is_saved_source(&self) -> bool {
         matches!(self,Self::Hc(host) if host.saved)
     }
@@ -411,11 +436,12 @@ impl TerminalFactory {
                     .as_ref()
                     .map(|argv| TerminalCommand::Argv(argv, AgentDetection::Disabled))
                     .unwrap_or(command);
-                // herdr-hc shares the Local core with herdr.app, which shows only
-                // terminals placed in one of its spaces.
+                // herdr-hc, and Native sharing herdr.app's layout, label programs
+                // with their herdr.app space and tab, as herdr.app does its own.
+                let placed = crate::hc_entry::ENABLED || self.shares_herdr_app_layout();
                 let labels = env
                     .workspace_and_tab()
-                    .filter(|_| crate::hc_entry::ENABLED && !host.saved)
+                    .filter(|_| placed && !host.saved)
                     .and_then(|(workspace, tab)| {
                         let mut placements = host.placements.lock().ok()?;
                         Some(placements.labels_for_new_program(
@@ -637,6 +663,7 @@ async fn sync_layout_once(
                 (shown, sent)
             }
         };
+        let held_before = held_terminals(&document);
         if push_changes(
             &mut document,
             &base,
@@ -651,7 +678,23 @@ async fn sync_layout_once(
                 )
                 .await
             {
-                Ok(_) => {}
+                Ok(_) => {
+                    // herdr.app keeps the programs it shows (it adopts with
+                    // `keep: true`); one this viewer placed is never adopted by it.
+                    if client.hello.methods.contains("terminal.keep") {
+                        for address in held_terminals(&document)
+                            .difference(&held_before)
+                            .filter(|address| live.contains(*address))
+                        {
+                            client
+                                .call(
+                                    "terminal.keep",
+                                    json!({ "terminal": address, "keep": true }),
+                                )
+                                .await?;
+                        }
+                    }
+                }
                 Err(error) if error.to_string().contains("\"conflict\"") => continue,
                 Err(error) => return Err(error),
             }

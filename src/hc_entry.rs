@@ -237,6 +237,18 @@ impl Placements {
         );
     }
 
+    /// herdr.app's space and tab for this herdr tab, when known.
+    pub(crate) fn tab(&self, workspace: &str, tab: &str) -> Option<(String, String)> {
+        self.tabs
+            .get(&(workspace.to_owned(), tab.to_owned()))
+            .cloned()
+    }
+
+    /// herdr.app's space for this herdr workspace, when known.
+    pub(crate) fn space(&self, workspace: &str) -> Option<String> {
+        self.spaces.get(workspace).cloned()
+    }
+
     /// Labels for a new program in this herdr-hc tab: its tab's herdr.app
     /// placement, else its workspace's space with a new tab, else a new space.
     pub(crate) fn labels_for_new_program(
