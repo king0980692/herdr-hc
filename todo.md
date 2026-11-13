@@ -135,7 +135,11 @@ macOS 會排除 `tests/cli.rs`、`tests/machine_api.rs` 與部分 `tests/api_pin
 - 來源：分支 `fix/linux-hc-process-facts` 的 `774879e3`（不含 `hc-entry`），`cargo build --release --locked`，Rust 1.96.1，另一個 target dir（沒動 `target/release/herdr`）。
 - 位置：`~/.local/opt/herdr-native/5ccedd3ca84a/herdr`，SHA256 `5ccedd3ca84ab137ddd6e581320416761f0143065dcd27c391e34735b253f262`，唯讀；`BUILD_INFO` 記錄來源。舊候選版 `643df92db8e4` 保留。試用腳本與私有 hc 0.1.20（SHA256 `0e4a0c2f…53c95e`）同上。
 - 非互動 smoke（私有 core，短路徑 root；scratchpad 路徑會超過 107 bytes 的 socket 上限）：建立 workspace、split 正常；`server stop` 只 detach（兩個 program 仍 live）；共用 leon core ID／PID／版本不變。
-- 下一步：接 leon 真實共用 core 的試用，需使用者同意 attach 範圍。
+- [x] **接 leon 真實共用 core 的第一次試用（2026-11-13，使用者同意範圍：共用 core＋複製的 config，只動自己建的 program）**：
+  - 方式：候選版用私有 XDG（`/var/tmp/hl-WuXI7r`，含複製的 `config.toml` 與 `scripts/`，不含 plugins），PATH 上的 `hc` wrapper 以原本的 XDG 連到共用 core（`/run/user/1000/herdr-core/default.sock`），假 `ssh` 擋遠端。herdr 0.9.5（pid 1247）沒動。啟動前確認 owner 為 `6130a31a…`、0 個 program、`machine ls` 為空（leon 沒有登錄遠端機器）。
+  - 結果（headless server＋CLI，非互動 TUI）：建立 workspace 後 program 建在共用 core（t18），`pane run` 輸出可讀；split 建出 t19；明確關閉 pane 只結束該 program（t19 `killed`）；`server stop` 只 detach（t18 仍 live，PID 824477）；重啟 server 後還原 layout 並重新 attach 同一 PID，畫面保留先前輸出；最後明確關閉 t18 並 `hc rm` 兩筆紀錄。
+  - before／after：core ID、PID 1130、版本、live 0、`machine ls` 相同；唯一差異是 core 為第一個 program 啟動的 PTY holder（`herdr-core hold`，pid 824435，systemd 下，0 terminals），這是 core 的正常行為，保留。
+  - [ ] 尚未：互動 TUI 畫面（邊框標題、自訂快捷鍵、滑鼠）、兩個 viewer、重連 UI、真實 agent、plugin／sidebar、gx10。
 
 ### macOS 隔離試用結果（2026-11-11，原工作站，另一個 session 執行並回報）
 
