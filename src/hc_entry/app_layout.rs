@@ -20,37 +20,37 @@ pub(crate) enum SplitPlacement {
     SourceMissing,
 }
 
-fn kind(node: &Value) -> &str {
+pub(super) fn kind(node: &Value) -> &str {
     node.get("type").and_then(Value::as_str).unwrap_or_default()
 }
 
-fn is_line(node: &Value) -> bool {
+pub(super) fn is_line(node: &Value) -> bool {
     matches!(kind(node), "row" | "column")
 }
 
-fn children(node: &Value) -> Option<&Vec<Value>> {
+pub(super) fn children(node: &Value) -> Option<&Vec<Value>> {
     node.get("children").and_then(Value::as_array)
 }
 
-fn children_mut(node: &mut Value) -> Option<&mut Vec<Value>> {
+pub(super) fn children_mut(node: &mut Value) -> Option<&mut Vec<Value>> {
     node.get_mut("children").and_then(Value::as_array_mut)
 }
 
-fn terminal(node: &Value) -> Option<&str> {
+pub(super) fn terminal(node: &Value) -> Option<&str> {
     (kind(node) == "block")
         .then(|| node.pointer("/content/terminal").and_then(Value::as_str))
         .flatten()
 }
 
 /// A share in a row/column: absent means 1, pixels are not a share.
-fn weight(node: &Value) -> Option<f64> {
+pub(super) fn weight(node: &Value) -> Option<f64> {
     match node.get("size") {
         None | Some(Value::Null) => Some(1.0),
         Some(size) => size.get("weight").and_then(Value::as_f64),
     }
 }
 
-fn set_weight(node: &mut Value, weight: f64) {
+pub(super) fn set_weight(node: &mut Value, weight: f64) {
     if let Some(object) = node.as_object_mut() {
         object.insert("size".into(), json!({ "weight": weight }));
     }
@@ -66,7 +66,7 @@ fn count_terminal(node: &Value, address: &str) -> usize {
         + children(node).map_or(0, |c| c.iter().map(|n| count_terminal(n, address)).sum())
 }
 
-fn tab_roots_mut(document: &mut Value) -> impl Iterator<Item = &mut Value> {
+pub(super) fn tab_roots_mut(document: &mut Value) -> impl Iterator<Item = &mut Value> {
     document
         .get_mut("spaces")
         .and_then(Value::as_array_mut)
@@ -79,7 +79,7 @@ fn tab_roots_mut(document: &mut Value) -> impl Iterator<Item = &mut Value> {
 
 /// Removes every block showing `address`; the share goes to the neighbor it
 /// was split from (the one before it, else the next), as herdr.app does.
-fn remove_terminal(node: &mut Value, address: &str) -> bool {
+pub(super) fn remove_terminal(node: &mut Value, address: &str) -> bool {
     let line = is_line(node);
     let Some(c) = children_mut(node) else {
         return false;
@@ -104,7 +104,7 @@ fn remove_terminal(node: &mut Value, address: &str) -> bool {
 
 /// Rows and columns emptied by removals vanish; ones left with one child give
 /// way to it, which takes over their size. Stack children keep identity.
-fn collapse(node: &mut Value) {
+pub(super) fn collapse(node: &mut Value) {
     let stack = kind(node) == "stack";
     let Some(c) = children_mut(node) else {
         return;
@@ -260,21 +260,23 @@ pub(crate) fn place_split(
 }
 
 /// A herdr.app space as herdr-hc can show it on first open.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ShownSpace {
     pub(crate) id: String,
     pub(crate) name: String,
+    pub(crate) folder: String,
     pub(crate) tabs: Vec<ShownTab>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ShownTab {
+    pub(crate) id: String,
     pub(crate) name: String,
     pub(crate) layout: ShownLayout,
 }
 
 /// A tab's panes: programs side by side (`row`) or stacked, each with its share.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ShownLayout {
     Program(String),
     Split {
@@ -283,14 +285,17 @@ pub(crate) enum ShownLayout {
     },
 }
 
-fn text(node: &Value, key: &str) -> String {
+pub(super) fn text(node: &Value, key: &str) -> String {
     node.get(key)
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned()
 }
 
-fn shown_layout(node: &Value, take: &mut impl FnMut(&str) -> bool) -> Option<ShownLayout> {
+pub(super) fn shown_layout(
+    node: &Value,
+    take: &mut impl FnMut(&str) -> bool,
+) -> Option<ShownLayout> {
     match kind(node) {
         "block" => terminal(node)
             .filter(|address| take(address))
@@ -348,6 +353,7 @@ pub(crate) fn shown_spaces(
                 .iter()
                 .filter_map(|tab| {
                     Some(ShownTab {
+                        id: text(tab, "id"),
                         name: text(tab, "name"),
                         layout: shown_layout(tab.get("root")?, &mut take)?,
                     })
@@ -356,6 +362,7 @@ pub(crate) fn shown_spaces(
             (!tabs.is_empty()).then(|| ShownSpace {
                 id: text(space, "id"),
                 name: text(space, "name"),
+                folder: text(space, "folder"),
                 tabs,
             })
         })
@@ -520,7 +527,9 @@ mod tests {
                 ShownSpace {
                     id: "sp1".into(),
                     name: "Test".into(),
+                    folder: "/w".into(),
                     tabs: vec![ShownTab {
+                        id: "tb1".into(),
                         name: "tab 1".into(),
                         layout: ShownLayout::Split {
                             row: true,
@@ -535,7 +544,9 @@ mod tests {
                 ShownSpace {
                     id: "sp3".into(),
                     name: String::new(),
+                    folder: String::new(),
                     tabs: vec![ShownTab {
+                        id: "tb3".into(),
                         name: String::new(),
                         layout: ShownLayout::Program("t3".into()),
                     }],

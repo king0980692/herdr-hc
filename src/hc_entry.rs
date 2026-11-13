@@ -6,6 +6,7 @@
 use std::{collections::HashSet, io, sync::OnceLock};
 
 pub(crate) mod app_layout;
+pub(crate) mod app_sync;
 
 pub(crate) const ENABLED: bool = cfg!(feature = "hc-entry");
 
