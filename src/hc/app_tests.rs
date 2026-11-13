@@ -803,3 +803,37 @@ fn hc_app_unbound_legacy_layout_can_be_discarded_without_claiming_or_killing_a_p
     assert!(app.state.terminals.is_empty());
     assert!(!app.ensure_default_workspace());
 }
+
+#[test]
+fn hc_source_launch_names_the_pane_only_to_plugin_panes_routed_back_to_herdr() {
+    let command = vec!["/bin/cat".into()];
+    let launch = |extra: Vec<(String, String)>| {
+        crate::pane::hc_launch_command(
+            crate::terminal::TerminalCommand::Argv(&command, crate::pane::AgentDetection::Enabled),
+            &crate::pane::PaneLaunchEnv::from_extra(extra).with_identity(
+                "w1".into(),
+                "w1:t2".into(),
+                "w1:p3".into(),
+            ),
+            true,
+        )
+        .unwrap()
+    };
+    let (argv, env) = launch(vec![(
+        crate::pane::PLUGIN_ID_ENV_VAR.into(),
+        "herdr-sidebar".into(),
+    )]);
+    assert_eq!(env[crate::integration::HERDR_PANE_ID_ENV_VAR], "w1:p3");
+    assert_eq!(env[crate::integration::HERDR_TAB_ID_ENV_VAR], "w1:t2");
+    assert_eq!(env[crate::integration::HERDR_WORKSPACE_ID_ENV_VAR], "w1");
+    assert!(!argv
+        .windows(2)
+        .any(|pair| pair == ["-u", crate::integration::HERDR_PANE_ID_ENV_VAR]));
+
+    // No route back: an id would only point it at a pane it cannot reach.
+    let (argv, env) = launch(Vec::new());
+    assert!(!env.contains_key(crate::integration::HERDR_PANE_ID_ENV_VAR));
+    assert!(argv
+        .windows(2)
+        .any(|pair| pair == ["-u", crate::integration::HERDR_PANE_ID_ENV_VAR]));
+}

@@ -99,6 +99,8 @@ where
     })
 }
 
+/// Set for a plugin pane's program, naming its plugin.
+pub(crate) const PLUGIN_ID_ENV_VAR: &str = "HERDR_PLUGIN_ID";
 const HC_SOURCE_CLIENT_ENV: &[&str] = &[
     "HERDR_ENV",
     "HERDR_BIN_PATH",
@@ -2258,8 +2260,27 @@ pub(crate) fn hc_launch_command(
         for (key, value) in &launch_env.extra {
             cmd.env(key, value);
         }
-        if matches!(launch_env.identity, PaneLaunchIdentity::OmitPane) {
-            cmd.env_remove(crate::integration::HERDR_PANE_ID_ENV_VAR);
+        // A plugin pane has an API route back to herdr there (its launcher
+        // points it at the bridge), so it also needs to know which pane it is,
+        // as a local one does. Other remote programs have no route back.
+        let routed = launch_env
+            .extra
+            .iter()
+            .any(|(key, _)| key == PLUGIN_ID_ENV_VAR);
+        match &launch_env.identity {
+            PaneLaunchIdentity::Managed {
+                workspace_id,
+                tab_id,
+                pane_id,
+            } if routed => {
+                cmd.env(crate::integration::HERDR_WORKSPACE_ID_ENV_VAR, workspace_id);
+                cmd.env(crate::integration::HERDR_TAB_ID_ENV_VAR, tab_id);
+                cmd.env(crate::integration::HERDR_PANE_ID_ENV_VAR, pane_id);
+            }
+            PaneLaunchIdentity::OmitPane => {
+                cmd.env_remove(crate::integration::HERDR_PANE_ID_ENV_VAR);
+            }
+            _ => {}
         }
     } else {
         apply_pane_launch_env(&mut cmd, launch_env);

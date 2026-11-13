@@ -272,7 +272,10 @@ impl App {
             // machine (`plugin_pane_argv`).
             env.retain(|(key, _)| !plugin_pane_protected_env_key(key));
             env.push(("HERDR_ENV".to_string(), "1".to_string()));
-            env.push(("HERDR_PLUGIN_ID".to_string(), plugin.plugin_id.clone()));
+            env.push((
+                crate::pane::PLUGIN_ID_ENV_VAR.to_string(),
+                plugin.plugin_id.clone(),
+            ));
             env.push((
                 "HERDR_PLUGIN_ENTRYPOINT_ID".to_string(),
                 entrypoint.to_string(),
