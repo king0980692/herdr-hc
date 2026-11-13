@@ -144,7 +144,9 @@ macOS 會排除 `tests/cli.rs`、`tests/machine_api.rs` 與部分 `tests/api_pin
   - [ ] 待決定：被另一個 viewer 關掉（`killed`）的程式，其他 viewer 目前保留 pane 顯示結束（`exit_tests.rs` 規定）；程式自行 `exit` 才自動關 pane。
   - [ ] 尚未：兩個 viewer 不同尺寸下的 resize／自動回覆、重開 viewer、真實 agent、plugin／sidebar、gx10。
   - [x] **Native viewer 共用版面**（`9d165831`、`a873ad2c`，規劃在 `.local/prd/native-shared-layout.md`）：同一個 core 上的 Native viewer 透過 herdr.app 的 `herdr-app` 文件共用 space／tab／分割；推送與套用都是三方比對（只動自己上次同步後的變更），移除 pane 只斷開不結束程式（hc runtime 的 `shutdown()` 會送 kill，所以先把 runtime 拿掉再清 pane）。scratch 三個 viewer 驗證：分割、關閉、新增 tab、改名、比例、同時分割、晚加入、`hc run --bg` 只加一次、切斷連線後恢復、重開不多寫。
-  - [ ] 共用版面尚未：獨立審查（AGENTS.md roundtable）、leon 實機、Mac 上和真正 herdr.app 的雙向測試；workspace 順序不同步。
+  - [x] 共用版面獨立審查（2026-11-13，14 項）。已修：在 Native 關 tab／space 會帶走未顯示的程式（stack 內、浮動區塊、別人新加的）；先讀程式清單再讀文件的競態；apply 跳過的 tab 基準仍設成文件內容；stack／浮動區塊的終端被重複加入；重排會搬動 herdr.app 的 mod 和 px 尺寸（現在含 mod、stack、浮動區塊、px 的 tab 不整體重排，只做增刪）；移到另一個 tab 的 pane 會重複；移除 pane 沒清 plugin 記錄與待送通知；`missed` 不觸發同步；core 換 id 時沒重設；每次啟動都備份 session；無法解讀的文件會被覆寫。另加安全網：仍在執行、這個 viewer 也顯示的程式一定留在文件裡。審查確認「只斷開不結束」成立。
+  - [ ] 審查中未修：同步建立或拿掉的 pane／tab 不發 API 事件；沒有 App 層的 apply 測試；apply 時 attach 在 app thread 上阻塞；比例夾在 0.05–0.95、只有空白的名稱會被正規化；晚加入的 viewer 自己獨有的程式會放進新的 space；任何名稱的 doc 事件都觸發一輪；結束後又被 keep 換成 shell 的程式可能不再加回。含 mod 的 tab 比例變更不同步。
+  - [ ] 共用版面尚未：leon 實機、Mac 上和真正 herdr.app 的雙向測試；workspace 順序不同步。
   - [x] issue #4（Mac 第一階段隔離測試，9 項中 8 項通過）：晚加入的 viewer 沒套用文件裡的 tab 名稱，下一次推送就把名稱寫成空字串。已修：只保留「送出後本地才改的」名稱，其他一律用文件的。機器清單輪詢失敗時改為退避（最長 30 秒），減少 log。hc 指令在首次啟動卡住：Linux 上無法重現（`hc ls` 最慢 23 ms）。
   - [x] Mac 重測 `f2a1e340`（issue #4 comment 6850058630，隔離私有 core）：晚開的 session 一開就顯示 gamma/beta；`hc run --bg` 加入 tab 後名稱不變；三個 server 全停再開，名稱與程式都保留；`shared-machine-inventory` log 從約 15 分鐘 127 行降到每次啟動 1 行；沒有再出現 `terminal.list timed out`（但不是全新首次啟動，該項未完整重測）。
   - [ ] `client_mode::federated_launch_opens_local_directly_while_saved_ssh_is_unavailable` 在整套測試負載下偶發失敗；在共用版面與自動加入程式之前的 `f507b1f3` 也是 5 次中 2 次，與這些改動無關，原因未查。

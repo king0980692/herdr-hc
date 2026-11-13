@@ -147,12 +147,21 @@ fn tabs_mut(space: &mut Value) -> Option<&mut Vec<Value>> {
 
 /// Stacks and floating blocks keep identity Native cannot see; a tab with
 /// them is never rebuilt.
+/// Only a tab of terminal blocks in rows and columns sized by weight is
+/// rearranged whole: stacks, floating blocks, mods and pixel sizes keep
+/// places Native cannot see.
 fn rebuildable(node: &Value) -> bool {
-    kind(node) != "stack"
+    let plain = match kind(node) {
+        "block" => terminal(node).is_some(),
+        "row" | "column" => true,
+        _ => false,
+    };
+    plain
         && node
             .get("floating")
             .and_then(Value::as_array)
             .is_none_or(Vec::is_empty)
+        && node.pointer("/size/px").is_none()
         && children(node).is_none_or(|c| c.iter().all(rebuildable))
 }
 
@@ -165,13 +174,42 @@ struct Parts {
     others: Vec<Value>,
 }
 
+/// Every terminal a node holds: its blocks, inactive stack children and
+/// floating blocks included (Native shows only some of them).
 fn held(node: &Value, out: &mut Vec<String>) {
     if let Some(address) = terminal(node) {
         out.push(address.to_owned());
     }
+    for float in node
+        .get("floating")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(address) = float.pointer("/content/terminal").and_then(Value::as_str) {
+            out.push(address.to_owned());
+        }
+    }
     for child in children(node).into_iter().flatten() {
         held(child, out);
     }
+}
+
+/// Every terminal herdr.app's document places anywhere.
+pub(crate) fn held_terminals(document: &Value) -> HashSet<String> {
+    let mut out = Vec::new();
+    for root in document
+        .get("spaces")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|space| space.get("tabs").and_then(Value::as_array))
+        .flatten()
+        .filter_map(|tab| tab.get("root"))
+    {
+        held(root, &mut out);
+    }
+    out.into_iter().collect()
 }
 
 fn collect_parts(node: &Value, parts: &mut Parts, root: bool) {
@@ -266,15 +304,6 @@ fn rebuilt_root(
     };
     members.append(&mut parts.others);
     let mut root = old.and_then(Value::as_object).cloned().unwrap_or_default();
-    if is_line(&built) {
-        if let Some(fields) = built.as_object() {
-            for (key, value) in fields {
-                if key != "id" && key != "children" && key != "size" {
-                    root.insert(key.clone(), value.clone());
-                }
-            }
-        }
-    }
     root.insert("id".into(), tab_id.into());
     root.insert("type".into(), axis.into());
     root.insert("children".into(), Value::Array(members));
@@ -350,22 +379,27 @@ pub(crate) fn push_changes(
     let native_programs = all_programs(native);
     // A program new to this viewer that the document already places (another
     // viewer added it meanwhile) stays where the document has it.
-    let placed: HashSet<String> = before
-        .get("spaces")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|space| space.get("tabs").and_then(Value::as_array))
-        .flatten()
-        .filter_map(|tab| doc_layout(tab, &shown))
-        .flat_map(|layout| {
-            let mut out = Vec::new();
-            programs(&layout, &mut out);
-            out
-        })
-        .collect();
+    let placed = held_terminals(&before);
     let ours = |address: &str| base_programs.contains(address) || !placed.contains(address);
-    for address in base_programs.difference(&native_programs) {
+    // Moved here to another tab: it leaves its old place first.
+    let tab_of = |spaces: &[ShownSpace]| -> HashMap<String, String> {
+        spaces
+            .iter()
+            .flat_map(|space| &space.tabs)
+            .flat_map(|tab| {
+                let mut out = Vec::new();
+                programs(&tab.layout, &mut out);
+                out.into_iter().map(|address| (address, tab.id.clone()))
+            })
+            .collect()
+    };
+    let (base_tab, native_tab) = (tab_of(base), tab_of(native));
+    let moved: HashSet<String> = native_tab
+        .iter()
+        .filter(|(address, tab)| base_tab.get(*address).is_some_and(|old| old != *tab))
+        .map(|(address, _)| address.clone())
+        .collect();
+    for address in base_programs.difference(&native_programs).chain(&moved) {
         for root in super::app_layout::tab_roots_mut(document) {
             if remove_terminal(root, address) {
                 collapse(root);
@@ -387,14 +421,12 @@ pub(crate) fn push_changes(
         return false;
     };
     // Closed here: spaces and tabs this viewer had and no longer has. One
-    // still showing a program this viewer shows was not closed (its id is
-    // just not this viewer's): it stays.
-    let shows_ours = |node: &Value| {
+    // still holding a running program (one this viewer does not show, in a
+    // stack or floating, or one added elsewhere meanwhile) stays.
+    let holds_running = |node: &Value| {
         let mut held_here = Vec::new();
         held(node, &mut held_here);
-        held_here
-            .iter()
-            .any(|address| native_programs.contains(address))
+        held_here.iter().any(|address| shown(address))
     };
     spaces.retain(|space| {
         !base.iter().any(|b| b.id == id(space))
@@ -402,14 +434,18 @@ pub(crate) fn push_changes(
             || space
                 .get("tabs")
                 .and_then(Value::as_array)
-                .is_some_and(|tabs| tabs.iter().filter_map(|t| t.get("root")).any(&shows_ours))
+                .is_some_and(|tabs| {
+                    tabs.iter()
+                        .filter_map(|t| t.get("root"))
+                        .any(&holds_running)
+                })
     });
     for space in spaces.iter_mut() {
         if let Some(tabs) = tabs_mut(space) {
             tabs.retain(|tab| {
                 !base_tabs.contains_key(id(tab))
                     || native_tabs.contains(id(tab))
-                    || tab.get("root").is_some_and(&shows_ours)
+                    || tab.get("root").is_some_and(&holds_running)
             });
         }
     }
@@ -475,10 +511,9 @@ pub(crate) fn push_changes(
             // Changed elsewhere too: only this viewer's new programs go in.
             let mut added = Vec::new();
             programs(&tab.layout, &mut added);
-            for new in added
-                .iter()
-                .filter(|a| !base_programs.contains(a.as_str()) && ours(a))
-            {
+            for new in added.iter().filter(|a| {
+                (!base_programs.contains(a.as_str()) || moved.contains(a.as_str())) && ours(a)
+            }) {
                 let present_here = doc_layout(doc_tab, &shown).is_some_and(|layout| {
                     let mut present = Vec::new();
                     programs(&layout, &mut present);
@@ -527,6 +562,55 @@ pub(crate) fn push_changes(
             }
         }
     }
+    // Nothing this viewer shows and is running is left out: one whose place
+    // went (its tab closed elsewhere as it moved here) goes back to its tab,
+    // else to a tab of its own.
+    let now_held = held_terminals(document);
+    for space in native {
+        for tab in &space.tabs {
+            let mut here = Vec::new();
+            programs(&tab.layout, &mut here);
+            for address in here
+                .iter()
+                .filter(|a| shown(a) && ours(a) && !now_held.contains(a.as_str()))
+            {
+                let block = json!({
+                    "id": fresh_id("p"), "type": "block", "content": {"terminal": address},
+                });
+                let Some(spaces) = spaces_mut(document) else {
+                    break;
+                };
+                let existing = spaces
+                    .iter_mut()
+                    .filter_map(|s| s.get_mut("tabs").and_then(Value::as_array_mut))
+                    .flatten()
+                    .find(|t| id(t) == tab.id)
+                    .and_then(|t| t.get_mut("root"))
+                    .and_then(children_mut);
+                if let Some(members) = existing {
+                    members.push(block);
+                    continue;
+                }
+                let lone = ShownTab {
+                    id: fresh_id("tb"),
+                    name: String::new(),
+                    layout: ShownLayout::Program(address.clone()),
+                };
+                let tab_value = new_tab(&lone, &mut fresh_id);
+                match spaces
+                    .iter_mut()
+                    .find(|s| id(s) == space.id)
+                    .and_then(tabs_mut)
+                {
+                    Some(tabs) => tabs.push(tab_value),
+                    None => spaces.push(json!({
+                        "id": space.id, "name": space.name, "folder": space.folder,
+                        "tabs": [tab_value],
+                    })),
+                }
+            }
+        }
+    }
     *document != before
 }
 
@@ -569,8 +653,11 @@ pub(crate) fn restricted(spaces: &[ShownSpace], keep: impl Fn(&str) -> bool) -> 
 
 /// What a viewer syncing for the first time shows: the document's layout,
 /// then its own programs the document does not have, kept in their tabs.
-pub(crate) fn union(document: &[ShownSpace], native: &[ShownSpace]) -> Vec<ShownSpace> {
-    let in_document = all_programs(document);
+pub(crate) fn union(
+    document: &[ShownSpace],
+    native: &[ShownSpace],
+    in_document: &HashSet<String>,
+) -> Vec<ShownSpace> {
     let mut out = document.to_vec();
     for space in native {
         let tabs: Vec<ShownTab> = space
@@ -839,11 +926,21 @@ mod tests {
                 {"id": "tb2", "name": "T", "root": {"id": "tb2", "type": "row", "children": [block("p2", "t2")]}}]},
         ]});
         let base = shown(&document);
-        // sp2 closed here; sp1 was closed elsewhere meanwhile.
+        // sp2 closed here (ending t2); sp1 was closed elsewhere meanwhile (ending t1).
         document["spaces"].as_array_mut().unwrap().remove(0);
         let native = vec![space("sp1", vec![tab("tb1", p("t1"))])];
-        assert!(push_changes(&mut document, &base, &native, |_| true, ids()));
-        assert_eq!(document["spaces"], json!([]));
+        let mut closed = document.clone();
+        assert!(push_changes(&mut closed, &base, &native, |_| false, ids()));
+        assert_eq!(closed["spaces"], json!([]));
+        // A program still running is never left out of the document.
+        assert!(push_changes(
+            &mut document,
+            &base,
+            &native,
+            |a| a == "t1",
+            ids()
+        ));
+        assert_eq!(held_terminals(&document), HashSet::from(["t1".to_owned()]));
     }
 
     #[test]
@@ -862,7 +959,7 @@ mod tests {
                 tab("tbY", p("t2")),
             ],
         )];
-        let merged = union(&document, &native);
+        let merged = union(&document, &native, &all_programs(&document));
         assert_eq!(merged[0], document[0]);
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[1].id, "spX");
@@ -872,10 +969,8 @@ mod tests {
     #[test]
     fn blocks_of_ended_programs_do_not_count_as_a_change_elsewhere() {
         let mut document = app_document();
-        document["spaces"][0]["tabs"][0]["root"]["children"]
-            .as_array_mut()
-            .unwrap()
-            .push(block("p8", "t8"));
+        document["spaces"][0]["tabs"][0]["root"]["children"] =
+            json!([block("p1", "t1"), block("p8", "t8")]);
         let live = |address: &str| address != "t8";
         let base = shown_spaces(&document, |address| live(address));
         let native = vec![space(
@@ -922,19 +1017,98 @@ mod tests {
     }
 
     #[test]
-    fn a_space_this_viewer_knows_by_another_id_is_never_closed() {
+    fn a_program_under_ids_this_viewer_made_up_is_neither_lost_nor_doubled() {
         let mut document = app_document();
         let base = shown(&document);
-        // The same program under ids this viewer made up: not a close.
         let native = vec![space("spMine", vec![tab("tbMine", p("t1"))])];
         push_changes(&mut document, &base, &native, |_| true, ids());
-        let spaces: Vec<&str> = document["spaces"]
+        let mut all = Vec::new();
+        for root in document["spaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|s| s["tabs"].as_array().unwrap())
+        {
+            held(&root["root"], &mut all);
+        }
+        assert_eq!(all, ["t1"]);
+    }
+
+    #[test]
+    fn a_tab_closed_here_stays_while_it_holds_a_running_program_native_does_not_show() {
+        let mut document = json!({"spaces": [{"id": "sp1", "name": "S", "folder": "/w", "tabs": [
+            {"id": "tb1", "name": "T", "root": {"id": "tb1", "type": "row", "children": [block("p1", "t1")]}},
+            {"id": "tb2", "name": "T", "root": {"id": "tb2", "type": "row", "children": [
+                {"id": "k", "type": "stack", "active": "p2", "children": [block("p2", "t2"), block("p3", "t3")]},
+            ]}},
+        ]}]});
+        let base = shown(&document);
+        // Closed tb2 here (ending t2); t3 waits, inactive, in its stack.
+        let native = vec![space("sp1", vec![tab("tb1", p("t1"))])];
+        push_changes(&mut document, &base, &native, |a| a != "t2", ids());
+        let tabs: Vec<&str> = document["spaces"][0]["tabs"]
             .as_array()
             .unwrap()
             .iter()
             .map(id)
             .collect();
-        assert!(spaces.contains(&"sp1"));
-        assert_eq!(document["spaces"][0]["tabs"][0]["id"], "tb1");
+        assert_eq!(tabs, ["tb1", "tb2"]);
+        assert_eq!(
+            held_terminals(&document),
+            HashSet::from(["t1".to_owned(), "t3".to_owned()])
+        );
+    }
+
+    #[test]
+    fn a_pane_moved_to_another_tab_leaves_its_old_place() {
+        let mut document = json!({"spaces": [{"id": "sp1", "name": "S", "folder": "/w", "tabs": [
+            {"id": "tb1", "name": "T", "root": {"id": "tb1", "type": "row", "children": [block("p1", "t1"), block("p2", "t2")]}},
+            {"id": "tb2", "name": "T", "root": {"id": "tb2", "type": "row", "children": [block("p3", "t3")]}},
+        ]}]});
+        let base = shown(&document);
+        let native = vec![space(
+            "sp1",
+            vec![
+                tab("tb1", p("t1")),
+                tab("tb2", split(true, vec![(0.5, p("t3")), (0.5, p("t2"))])),
+            ],
+        )];
+        assert!(push_changes(&mut document, &base, &native, |_| true, ids()));
+        let synced = shown(&document);
+        assert_eq!(synced[0].tabs[0].layout, p("t1"));
+        assert_eq!(
+            canonical(&synced[0].tabs[1].layout),
+            canonical(&native[0].tabs[1].layout)
+        );
+    }
+
+    #[test]
+    fn terminals_in_stacks_and_floating_blocks_count_as_placed() {
+        let document = json!({"spaces": [{"id": "sp1", "tabs": [{"id": "tb1", "root": {"id": "tb1", "type": "row",
+            "floating": [{"id": "f1", "content": {"terminal": "t9"}}],
+            "children": [{"id": "k", "type": "stack", "active": "p1", "children": [block("p1", "t1"), block("p2", "t2")]}]}}]}]});
+        assert_eq!(
+            held_terminals(&document),
+            HashSet::from(["t1".to_owned(), "t2".to_owned(), "t9".to_owned()])
+        );
+        let mut written = document.clone();
+        let base = shown(&written);
+        // A late viewer's first open made tabs for t2 and t9: they are placed already.
+        let mut native = base.clone();
+        native[0].tabs.push(tab("tbX", p("t2")));
+        native[0].tabs.push(tab("tbY", p("t9")));
+        assert!(!push_changes(&mut written, &base, &native, |_| true, ids()));
+    }
+
+    #[test]
+    fn a_tab_with_mods_is_never_rearranged_whole() {
+        let mut document = app_document();
+        let base = shown(&document);
+        document["spaces"][0]["tabs"][0]["root"]["children"][0]["size"] = json!({"px": 300});
+        let before = document.clone();
+        // A share change here cannot be written without moving the mod.
+        let native = vec![space("sp1", vec![tab("tb1", p("t1"))])];
+        push_changes(&mut document, &base, &native, |_| true, ids());
+        assert_eq!(document, before);
     }
 }

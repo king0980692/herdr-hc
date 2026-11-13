@@ -500,6 +500,11 @@ async fn follow_programs(
                     .get("seq")
                     .and_then(serde_json::Value::as_u64)
                     .unwrap_or(seq);
+                // A doc event may be among what was missed.
+                events
+                    .send(AppEvent::HcLayoutChanged { generation })
+                    .await
+                    .map_err(|_| io::Error::other("app closed"))?;
                 known.snapshot(&core, &listed(&params))
             }
             Some("event") => {

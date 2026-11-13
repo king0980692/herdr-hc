@@ -591,9 +591,30 @@ async fn sync_layout_once(
 )> {
     use crate::hc_entry::{
         app_layout::{shown_spaces, DOCUMENT},
-        app_sync::{push_changes, restricted, union},
+        app_sync::{held_terminals, push_changes, restricted, union},
     };
     for _ in 0..4 {
+        // The document first: a program in it was started before the list
+        // below is read, so missing from that list means it ended.
+        let current = client.call("doc.get", json!({ "name": DOCUMENT })).await?;
+        let version = current["version"].as_u64().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "herdr.app layout has no version",
+            )
+        })?;
+        let mut document = current["value"].clone();
+        let decodable = document.is_null()
+            || (document.is_object()
+                && document
+                    .get("spaces")
+                    .is_none_or(serde_json::Value::is_array));
+        if !decodable {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "herdr.app layout is not one this build can read; it was left as it is",
+            ));
+        }
         let list = client.call("terminal.list", json!({"all": false})).await?;
         let live: std::collections::HashSet<String> = list["terminals"]
             .as_array()
@@ -604,14 +625,6 @@ async fn sync_layout_once(
             .filter(|address| !address.contains('/'))
             .map(str::to_owned)
             .collect();
-        let current = client.call("doc.get", json!({ "name": DOCUMENT })).await?;
-        let version = current["version"].as_u64().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "herdr.app layout has no version",
-            )
-        })?;
-        let mut document = current["value"].clone();
         let mut left = live.clone();
         let shown = shown_spaces(&document, |address| left.remove(address));
         // Panes of programs that ended stay open here; they are not layout.
@@ -620,7 +633,7 @@ async fn sync_layout_once(
             // The base keeps programs that ended since: closing one here is a change.
             Some(base) => (base.clone(), native),
             None => {
-                let sent = union(&shown, &native);
+                let sent = union(&shown, &native, &held_terminals(&document));
                 (shown, sent)
             }
         };

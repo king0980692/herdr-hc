@@ -895,12 +895,17 @@ impl AppState {
         self.session_dirty = true;
     }
 
-    /// Old pane ids that pointed at panes no longer shown are dropped.
-    pub(crate) fn forget_pane_aliases(&mut self, panes: &[PaneId]) {
+    /// What referred to panes no longer shown here is dropped, as when a
+    /// pane dies: old pane ids, plugin records, pending notifications.
+    pub(crate) fn forget_panes(&mut self, panes: &[PaneId]) {
         self.pane_id_aliases
             .retain(|_, alias| !panes.contains(alias));
         self.public_pane_id_aliases
             .retain(|_, alias| !panes.contains(alias));
+        for pane in panes {
+            self.pending_agent_notifications.remove(pane);
+        }
+        self.remove_plugin_pane_records(panes.iter().copied());
     }
 
     pub(crate) fn remove_alias_shadowed_by_new_pane(&mut self, pane_id: PaneId) {

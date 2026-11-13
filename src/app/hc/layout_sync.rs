@@ -36,6 +36,11 @@ pub(crate) struct LayoutSync {
     /// Names of this viewer's spaces and tabs (by id) when the running round
     /// was sent: one changed here since keeps its new name.
     sent_names: HashMap<String, String>,
+    /// Tabs (by id) the last apply left as they were: their synced layout
+    /// stays what it was before, so the next push does not undo the document.
+    skipped: HashSet<String>,
+    /// The core these ids and this base belong to.
+    core: Option<String>,
     again: bool,
     backed_up: bool,
     reported: Option<String>,
@@ -242,6 +247,15 @@ impl App {
         let Some(source) = self.terminal_factory.source_state() else {
             return;
         };
+        // Another core (its addresses may repeat the old one's): start over.
+        let core = self.shared_core();
+        if core != self.layout_sync.core {
+            self.layout_sync = LayoutSync {
+                core,
+                backed_up: self.layout_sync.backed_up,
+                ..LayoutSync::default()
+            };
+        }
         let native = self.project_shared_layout();
         let names: HashMap<String, String> = native
             .iter()
@@ -341,7 +355,32 @@ impl App {
                     .flat_map(|space| &space.tabs)
                     .flat_map(|tab| programs_of(&tab.layout))
                     .collect();
-                self.layout_sync.base = Some(restricted(&view, |address| shown.contains(address)));
+                let mut base = restricted(&view, |address| shown.contains(address));
+                if !self.layout_sync.skipped.is_empty() {
+                    let before: HashMap<String, ShownTab> = self
+                        .layout_sync
+                        .base
+                        .iter()
+                        .flatten()
+                        .flat_map(|space| &space.tabs)
+                        .map(|tab| (tab.id.clone(), tab.clone()))
+                        .collect();
+                    for space in &mut base {
+                        let skipped = &self.layout_sync.skipped;
+                        space.tabs = std::mem::take(&mut space.tabs)
+                            .into_iter()
+                            .filter_map(|tab| {
+                                if skipped.contains(&tab.id) {
+                                    before.get(&tab.id).cloned()
+                                } else {
+                                    Some(tab)
+                                }
+                            })
+                            .collect();
+                    }
+                    base.retain(|space| !space.tabs.is_empty());
+                }
+                self.layout_sync.base = Some(base);
                 if changed {
                     self.state.session_dirty = true;
                     self.render_dirty.request_generic();
@@ -365,6 +404,7 @@ impl App {
     fn apply_shared_layout(&mut self, view: &[ShownSpace], known: &HashSet<String>) -> bool {
         // A name renamed here since the round was sent stays; any other takes
         // the document's (a viewer that just joined has none of its own).
+        self.layout_sync.skipped.clear();
         let sent_names = std::mem::take(&mut self.layout_sync.sent_names);
         let renamed_here = |id: &str, now: &Option<String>| {
             sent_names
@@ -424,7 +464,8 @@ impl App {
                     workspace.tabs[tab_idx].custom_name = name;
                     changed = true;
                 }
-                changed |= self.rearrange_shared_tab(ws_idx, tab_idx, &tab.layout, &core, known);
+                changed |=
+                    self.rearrange_shared_tab(ws_idx, tab_idx, &tab.id, &tab.layout, &core, known);
             }
             // Tabs the document no longer has here: detached.
             let dropped: Vec<PaneId> = self
@@ -670,6 +711,7 @@ impl App {
         &mut self,
         ws_idx: usize,
         tab_idx: usize,
+        tab_id: &str,
         layout: &ShownLayout,
         core: &str,
         known: &HashSet<String>,
@@ -688,6 +730,7 @@ impl App {
         for (pane, state) in &tab.panes {
             // A pane this round cannot place: leave the tab as it is.
             let Some(address) = addresses.get(&state.attached_terminal_id) else {
+                self.layout_sync.skipped.insert(tab_id.to_owned());
                 return false;
             };
             by_address.insert(address.clone(), *pane);
@@ -711,6 +754,7 @@ impl App {
             .keys()
             .any(|address| !wanted.contains(address) && !known.contains(address))
         {
+            self.layout_sync.skipped.insert(tab_id.to_owned());
             return false;
         }
         let removed: Vec<PaneId> = by_address
@@ -764,6 +808,7 @@ impl App {
             }
         }
         let Some(root) = fold(layout, &by_address) else {
+            self.layout_sync.skipped.insert(tab_id.to_owned());
             return false;
         };
         let gone: Vec<_> = removed
@@ -771,9 +816,10 @@ impl App {
             .filter_map(|p| terminal_of.get(p).cloned())
             .collect();
         if !self.state.workspaces[ws_idx].rearrange_tab(tab_idx, root, added, &removed) {
+            self.layout_sync.skipped.insert(tab_id.to_owned());
             return false;
         }
-        self.state.forget_pane_aliases(&removed);
+        self.state.forget_panes(&removed);
         self.detach_terminals(&gone);
         self.state.remove_unattached_terminal_ids(gone);
         true
