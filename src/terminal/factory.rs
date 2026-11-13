@@ -347,6 +347,12 @@ impl TerminalFactory {
         }
     }
 
+    /// Programs start on a shared remote machine (a `hcs-` presenter), not
+    /// on the machine this process runs on.
+    pub(crate) fn runs_on_shared_machine(&self) -> bool {
+        matches!(self, Self::Hc(host) if host.saved && host.shared)
+    }
+
     pub(crate) fn is_saved_source(&self) -> bool {
         matches!(self,Self::Hc(host) if host.saved)
     }

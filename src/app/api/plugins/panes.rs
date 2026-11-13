@@ -24,8 +24,9 @@ impl App {
             };
         let width = params.width.or(pane.width);
         let height = params.height.or(pane.height);
+        let argv = self.plugin_pane_argv(plugin, &pane.command);
         if let Err(err) = self.spawn_popup_argv_command(
-            &pane.command,
+            &argv,
             Some(cwd),
             extra_env,
             crate::app::popup::PopupGeometry { width, height },
@@ -55,15 +56,12 @@ impl App {
                 Ok(env) => env,
                 Err((code, message)) => return encode_error(id, &code, message),
             };
-        let (ws_idx, new_pane) = match self.spawn_overlay_argv_command(
-            &pane.command,
-            Some(cwd),
-            extra_env,
-            Vec::new(),
-        ) {
-            Ok(result) => result,
-            Err(err) => return encode_error(id, "plugin_pane_open_failed", err.to_string()),
-        };
+        let argv = self.plugin_pane_argv(plugin, &pane.command);
+        let (ws_idx, new_pane) =
+            match self.spawn_overlay_argv_command(&argv, Some(cwd), extra_env, Vec::new()) {
+                Ok(result) => result,
+                Err(err) => return encode_error(id, "plugin_pane_open_failed", err.to_string()),
+            };
         let layout_tab_idx = self
             .overlay_panes
             .get(&new_pane.pane_id)
@@ -127,6 +125,7 @@ impl App {
         };
         let (rows, cols) = self.state.new_pane_size(new_pane_placement);
         let previous_focus = self.state.current_pane_focus_target();
+        let argv = self.plugin_pane_argv(plugin, &pane.command);
         let host_terminal_appearance = self.pane_host_terminal_appearance();
         let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
             return encode_error(id, "workspace_not_found", "workspace not found");
@@ -145,7 +144,7 @@ impl App {
             extra_env,
             params.focus || placement == PluginPanePlacement::Zoomed,
             Some(crate::terminal::TerminalCommand::Argv(
-                &pane.command,
+                &argv,
                 crate::pane::AgentDetection::Enabled,
             )),
             &self.terminal_factory,
@@ -217,6 +216,7 @@ impl App {
             };
         let (rows, cols) = self.state.new_pane_size(crate::ui::NewPanePlacement::Alone);
         let host_terminal_appearance = self.pane_host_terminal_appearance();
+        let argv = self.plugin_pane_argv(plugin, &pane.command);
         let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
             return encode_error(id, "workspace_not_found", "workspace not found");
         };
@@ -228,7 +228,7 @@ impl App {
             self.state.host_terminal_theme,
             host_terminal_appearance,
             crate::pane::PaneShellConfig::new("", crate::config::ShellModeConfig::NonLogin),
-            Some(&pane.command),
+            Some(&argv),
             extra_env,
             &self.terminal_factory,
         ) {
@@ -265,9 +265,22 @@ impl App {
         context: &PluginInvocationContext,
     ) -> Result<Vec<(String, String)>, (String, String)> {
         let mut env = super::super::env::normalize_launch_env(env)?;
-        crate::platform::set_default_plugin_pane_pwd(&mut env, cwd);
         let context_json = serde_json::to_string(&context)
             .map_err(|err| ("invalid_plugin_context".to_string(), err.to_string()))?;
+        if self.terminal_factory.runs_on_shared_machine() {
+            // Paths here mean nothing there: the launcher sets them on that
+            // machine (`plugin_pane_argv`).
+            env.retain(|(key, _)| !plugin_pane_protected_env_key(key));
+            env.push(("HERDR_ENV".to_string(), "1".to_string()));
+            env.push(("HERDR_PLUGIN_ID".to_string(), plugin.plugin_id.clone()));
+            env.push((
+                "HERDR_PLUGIN_ENTRYPOINT_ID".to_string(),
+                entrypoint.to_string(),
+            ));
+            env.push(("HERDR_PLUGIN_CONTEXT_JSON".to_string(), context_json));
+            return Ok(env);
+        }
+        crate::platform::set_default_plugin_pane_pwd(&mut env, cwd);
         super::env::ensure_plugin_user_dirs(plugin)
             .map_err(|err| ("plugin_user_dir_create_failed".to_string(), err.to_string()))?;
         env.retain(|(key, _)| !plugin_pane_protected_env_key(key));
@@ -354,9 +367,28 @@ impl App {
         plugin: &InstalledPluginInfo,
         override_cwd: Option<String>,
     ) -> std::path::PathBuf {
-        override_cwd
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| std::path::PathBuf::from(&plugin.plugin_root))
+        // On a shared machine the launcher moves into the plugin's copy there.
+        let root = if self.terminal_factory.runs_on_shared_machine() {
+            std::path::PathBuf::new()
+        } else {
+            std::path::PathBuf::from(&plugin.plugin_root)
+        };
+        override_cwd.map(std::path::PathBuf::from).unwrap_or(root)
+    }
+
+    /// The command a plugin pane runs. On a shared machine it runs from the
+    /// plugin's copy on that machine, with that machine's paths.
+    fn plugin_pane_argv(&self, plugin: &InstalledPluginInfo, command: &[String]) -> Vec<String> {
+        if !self.terminal_factory.runs_on_shared_machine() {
+            return command.to_vec();
+        }
+        let core = self
+            .terminal_factory
+            .source_state()
+            .and_then(|source| source.client)
+            .map(|client| client.hello.core.id.clone())
+            .unwrap_or_default();
+        remote_plugin_argv(&plugin.plugin_id, &core, command)
     }
 
     fn current_public_pane_id(&self) -> Option<String> {
@@ -379,4 +411,85 @@ fn plugin_pane_protected_env_key(key: &str) -> bool {
             | "HERDR_PLUGIN_CONTEXT_JSON"
             | "HERDR_BIN_PATH"
     )
+}
+
+/// Where herdr-native keeps a plugin on a shared machine, and how a plugin
+/// pane starts there: from that copy, with that machine's directories and
+/// the bridge socket for this core. A plugin not installed there says so in
+/// its pane instead of failing to start.
+const REMOTE_PLUGIN_LAUNCHER: &str = r#"id=$1; core=$2; shift 2
+root="$HOME/.local/share/herdr-native/plugins/$id"
+if [ ! -d "$root" ]; then
+    printf 'herdr-native: plugin %s is not installed on this machine (%s)\n' "$id" "$root" >&2
+    printf 'Press Enter to close.\n' >&2
+    read -r _
+    exit 127
+fi
+export HERDR_PLUGIN_ROOT="$root"
+export HERDR_PLUGIN_CONFIG_DIR="$HOME/.config/herdr-native/plugins/$id"
+export HERDR_PLUGIN_STATE_DIR="$HOME/.local/state/herdr-native/plugins/$id"
+export HERDR_BIN_PATH="$HOME/.local/share/herdr-native/bin/herdr-native"
+export HERDR_SOCKET_PATH="$HOME/.local/state/herdr-native/run/$core.sock"
+mkdir -p "$HERDR_PLUGIN_CONFIG_DIR" "$HERDR_PLUGIN_STATE_DIR"
+cd "$root" && export PWD="$root" && exec "$@""#;
+
+fn remote_plugin_argv(plugin_id: &str, core: &str, command: &[String]) -> Vec<String> {
+    let mut argv = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        REMOTE_PLUGIN_LAUNCHER.to_string(),
+        "herdr-native-plugin".to_string(),
+        plugin_id.to_string(),
+        core.to_string(),
+    ];
+    argv.extend(command.iter().cloned());
+    argv
+}
+
+#[cfg(test)]
+mod remote_plugin_tests {
+    use super::*;
+
+    fn run(home: &std::path::Path, id: &str, command: &[&str]) -> std::process::Output {
+        let argv = remote_plugin_argv(
+            id,
+            "corex",
+            &command.iter().map(|s| (*s).to_string()).collect::<Vec<_>>(),
+        );
+        std::process::Command::new(&argv[0])
+            .args(&argv[1..])
+            .env("HOME", home)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_remote_plugin_pane_runs_from_its_copy_on_that_machine() {
+        let home = std::env::temp_dir().join(format!("hn-remote-plugin-{}", std::process::id()));
+        let root = home.join(".local/share/herdr-native/plugins/side");
+        std::fs::create_dir_all(&root).unwrap();
+        let out = run(
+            &home,
+            "side",
+            &["sh", "-c", "printf '%s|%s|%s|%s' \"$PWD\" \"$HERDR_PLUGIN_ROOT\" \"$HERDR_SOCKET_PATH\" \"$HERDR_BIN_PATH\""],
+        );
+        let printed = String::from_utf8_lossy(&out.stdout).to_string();
+        let parts: Vec<&str> = printed.split('|').collect();
+        assert_eq!(parts[0], root.display().to_string());
+        assert_eq!(parts[1], root.display().to_string());
+        assert!(
+            parts[2].ends_with(".local/state/herdr-native/run/corex.sock"),
+            "{printed}"
+        );
+        assert!(
+            parts[3].ends_with(".local/share/herdr-native/bin/herdr-native"),
+            "{printed}"
+        );
+        assert!(home.join(".config/herdr-native/plugins/side").is_dir());
+        let missing = run(&home, "absent", &["true"]);
+        assert_eq!(missing.status.code(), Some(127));
+        assert!(String::from_utf8_lossy(&missing.stderr).contains("plugin absent is not installed"));
+        let _ = std::fs::remove_dir_all(&home);
+    }
 }
