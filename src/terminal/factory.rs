@@ -441,7 +441,8 @@ impl TerminalFactory {
                 let placed = crate::hc_entry::ENABLED || self.shares_herdr_app_layout();
                 let labels = env
                     .workspace_and_tab()
-                    .filter(|_| placed && !host.saved)
+                    // A shared machine's programs are placed in its own document.
+                    .filter(|_| placed && (!host.saved || host.shared))
                     .and_then(|(workspace, tab)| {
                         let mut placements = host.placements.lock().ok()?;
                         Some(placements.labels_for_new_program(
