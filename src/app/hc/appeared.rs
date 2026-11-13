@@ -17,6 +17,7 @@ pub(super) fn programs_to_add(
 ) -> Vec<(TerminalBinding, PathBuf)> {
     terminals
         .into_iter()
+        .filter(|terminal| !crate::hc_entry::is_hidden(&terminal.facts))
         .filter(|terminal| {
             terminal
                 .facts
@@ -193,6 +194,11 @@ mod tests {
                 terminal("gx10/t4", "live", 40, "/d"),
                 terminal("t5", "live", 50, "/e"),
                 terminal("t06", "live", 60, "/f"),
+                serde_json::from_value(serde_json::json!({
+                    "address": "t7", "state": "live", "pid": 70, "cwd": "/g",
+                    "labels": {"herdr-native.hidden": "1"}
+                }))
+                .unwrap(),
             ],
             &shown,
             &HashSet::from([50]),

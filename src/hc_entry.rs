@@ -210,6 +210,18 @@ pub(crate) fn prepare_tui_launch(server_running: bool) -> Result<(), String> {
 /// herdr.app shows a core terminal only when it carries `herdr.space=<id>`;
 /// `herdr.tab=<id>` picks its tab, and ids it does not know become a new space
 /// or tab (herdr-app `defaults/AGENTS.md`, "Every terminal is a core terminal").
+/// A terminal herdr-native runs for itself (a remote plugin bridge): never
+/// shown as a program, nor placed in a layout.
+pub(crate) const HIDDEN_LABEL: &str = "herdr-native.hidden";
+
+/// Whether a terminal record carries [`HIDDEN_LABEL`].
+pub(crate) fn is_hidden(facts: &serde_json::Map<String, serde_json::Value>) -> bool {
+    facts
+        .get("labels")
+        .and_then(|labels| labels.get(HIDDEN_LABEL))
+        .is_some_and(|value| value == "1")
+}
+
 pub(crate) const SPACE_LABEL: &str = "herdr.space";
 pub(crate) const TAB_LABEL: &str = "herdr.tab";
 /// herdr.app starts its own terminals at `herdr.seen=0` (herdr-app `docs/labels.md`).

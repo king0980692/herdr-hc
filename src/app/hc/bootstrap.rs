@@ -214,6 +214,10 @@ fn initial_layout(
                 "unknown hc lifecycle; initial layout was not created",
             ));
         }
+        // herdr-native's own helpers are not programs.
+        if crate::hc_entry::is_hidden(&terminal.facts) {
+            continue;
+        }
         // The terminal a launching client runs in is never shown inside itself.
         if terminal
             .facts
@@ -559,5 +563,35 @@ mod tests {
         assert_eq!(rest.tabs.len(), 1);
         let pane = rest.tabs[0].root_pane.unwrap();
         assert_eq!(address(&rest.tabs[0], pane), "t6");
+    }
+
+    #[test]
+    fn first_open_leaves_out_herdr_natives_hidden_helpers() {
+        let hidden: Terminal = serde_json::from_value(serde_json::json!({
+            "address": "t2", "state": "live", "cwd": "/source",
+            "labels": {"herdr-native.hidden": "1"}
+        }))
+        .unwrap();
+        let snapshot = initial_layout(
+            "owner",
+            vec![terminal("t1", "live"), hidden],
+            &HashSet::new(),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        let tabs = &snapshot.workspaces[0].tabs;
+        assert_eq!(tabs.len(), 1);
+        assert_eq!(
+            tabs[0]
+                .panes
+                .values()
+                .next()
+                .unwrap()
+                .hc_binding
+                .as_ref()
+                .unwrap()["address"],
+            "t1"
+        );
     }
 }
