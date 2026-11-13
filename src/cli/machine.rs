@@ -25,15 +25,22 @@ Saved machines contain a label, SSH target, hc source session, optional source-l
 SSH credentials and key material remain owned by OpenSSH.";
 
 #[derive(Serialize)]
-struct MachineListRow<'a> {
-    id: &'a str,
-    label: &'a str,
-    target: &'a str,
-    session: &'a str,
+struct MachineListRow {
+    /// For an hc machine, the endpoint id a jump request and the client's
+    /// endpoint selection use (`hc:<registry core>/<machine core>`).
+    id: String,
+    label: String,
+    target: String,
+    session: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    hc_path: Option<&'a str>,
+    hc_path: Option<String>,
     enabled: bool,
     selected: bool,
+    /// `ssh` (saved here) or `hc` (from the hc machine registry).
+    kind: &'static str,
+    /// hc's state for an hc machine (`connected`, ...).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    state: Option<String>,
 }
 
 pub(super) fn run_machine_command(args: &[String]) -> std::io::Result<i32> {
@@ -67,19 +74,28 @@ fn list(args: &[String]) -> std::io::Result<i32> {
         }
     };
     let catalog = load_catalog()?;
-    let rows = catalog
+    let mut rows = catalog
         .ssh
         .iter()
         .map(|profile| MachineListRow {
-            id: profile.id.as_str(),
-            label: &profile.label,
-            target: &profile.target,
-            session: &profile.session,
-            hc_path: profile.hc_path.as_deref(),
+            id: profile.id.as_str().to_owned(),
+            label: profile.label.clone(),
+            target: profile.target.clone(),
+            session: profile.session.clone(),
+            hc_path: profile.hc_path.clone(),
             enabled: profile.enabled,
             selected: catalog.selected_profile.as_ref() == Some(&profile.id),
+            kind: "ssh",
+            state: None,
         })
         .collect::<Vec<_>>();
+    // The machines hc reaches (its registry) are the Native client's machines
+    // too; without hc only the saved ones are listed.
+    if !crate::hc_entry::ENABLED {
+        if let Ok(graph) = crate::hc::shared::registry_graph() {
+            rows.extend(hc_machine_rows(graph));
+        }
+    }
     if json {
         println!(
             "{}",
@@ -92,13 +108,38 @@ fn list(args: &[String]) -> std::io::Result<i32> {
         return Ok(0);
     }
     for row in rows {
-        let state = if row.enabled { "enabled" } else { "disabled" };
+        let state = row
+            .state
+            .clone()
+            .unwrap_or_else(|| if row.enabled { "enabled" } else { "disabled" }.to_owned());
         println!(
             "{}\t{}\t{}\t{}\t{}",
             row.id, row.label, row.target, row.session, state
         );
     }
     Ok(0)
+}
+
+fn hc_machine_rows(graph: crate::hc::machines::MachineGraph) -> Vec<MachineListRow> {
+    graph
+        .machines
+        .into_iter()
+        .map(|machine| MachineListRow {
+            id: crate::client::endpoint::ClientEndpointId::Hc(crate::hc::shared::SharedCoreKey {
+                registry_core_id: graph.core.id.clone(),
+                core_id: machine.id.clone(),
+            })
+            .storage_key(),
+            label: machine.name,
+            target: machine.target,
+            session: machine.session.unwrap_or_else(|| "default".to_owned()),
+            hc_path: None,
+            enabled: true,
+            selected: false,
+            kind: "hc",
+            state: Some(machine.state),
+        })
+        .collect()
 }
 
 #[derive(Serialize)]
@@ -741,16 +782,41 @@ mod tests {
     #[test]
     fn list_rows_do_not_have_credential_fields() {
         let encoded = serde_json::to_string(&MachineListRow {
-            id: "0123456789abcdef0123456789abcdef",
-            label: "Build",
-            target: "dev@build",
-            session: "agents",
+            id: "0123456789abcdef0123456789abcdef".into(),
+            label: "Build".into(),
+            target: "dev@build".into(),
+            session: "agents".into(),
             hc_path: None,
             enabled: true,
             selected: false,
+            kind: "ssh",
+            state: None,
         })
         .unwrap();
         assert!(!encoded.contains("password"));
         assert!(!encoded.contains("key"));
+    }
+
+    #[test]
+    fn hc_machines_are_listed_by_the_endpoint_id_a_jump_request_takes() {
+        let graph = crate::hc::machines::MachineGraph::from_reply(
+            crate::hc::CoreInfo {
+                id: "registry".into(),
+                name: "local".into(),
+            },
+            serde_json::json!({"machines": [{"id": "gx10core", "name": "gx10", "target": "gx10",
+                "host": "gx10", "version": "0.1.20", "state": "connected", "session": null}]}),
+        )
+        .unwrap();
+        let rows = hc_machine_rows(graph);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "hc:registry/gx10core");
+        assert_eq!(rows[0].label, "gx10");
+        assert_eq!(rows[0].session, "default");
+        assert_eq!(rows[0].state.as_deref(), Some("connected"));
+        assert!(matches!(
+            crate::client::endpoint::ClientEndpointId::parse_storage_key(&rows[0].id),
+            Ok(crate::client::endpoint::ClientEndpointId::Hc(_))
+        ));
     }
 }

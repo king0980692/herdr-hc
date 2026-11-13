@@ -289,6 +289,7 @@ impl App {
             crate::api::SOCKET_PATH_ENV_VAR.to_string(),
             crate::api::socket_path().display().to_string(),
         ));
+        env.push(crate::api::state_dir_env());
         env.push(("HERDR_ENV".to_string(), "1".to_string()));
         env.push(("HERDR_PLUGIN_ID".to_string(), plugin.plugin_id.clone()));
         env.push((
@@ -402,6 +403,7 @@ fn plugin_pane_protected_env_key(key: &str) -> bool {
     matches!(
         key,
         crate::api::SOCKET_PATH_ENV_VAR
+            | crate::api::STATE_DIR_ENV_VAR
             | "HERDR_ENV"
             | "HERDR_PLUGIN_ID"
             | "HERDR_PLUGIN_ROOT"

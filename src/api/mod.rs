@@ -18,6 +18,17 @@ use tokio::sync::mpsc;
 use crate::api::schema::Request;
 
 pub const SOCKET_PATH_ENV_VAR: &str = "HERDR_SOCKET_PATH";
+/// This app's state directory, for tools beside it: where a client watches
+/// `client/jump-request.json` and keeps `client/endpoint-selection.json`.
+pub const STATE_DIR_ENV_VAR: &str = "HERDR_STATE_DIR";
+
+/// The `HERDR_STATE_DIR` entry a child process of this app gets.
+pub(crate) fn state_dir_env() -> (String, String) {
+    (
+        STATE_DIR_ENV_VAR.to_string(),
+        crate::config::state_dir().display().to_string(),
+    )
+}
 
 pub(crate) fn request_changes_ui(request: &Request) -> bool {
     request.method.operation().changes_ui

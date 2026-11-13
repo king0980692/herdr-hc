@@ -19,6 +19,7 @@ const HOST_PID_ENV: &str = "HERDR_HC_ENTRY_HOST_PID";
 const INHERITED_SELECTORS: &[&str] = &[
     crate::session::SESSION_ENV_VAR,
     crate::api::SOCKET_PATH_ENV_VAR,
+    crate::api::STATE_DIR_ENV_VAR,
     crate::server::socket_paths::CLIENT_SOCKET_PATH_ENV_VAR,
     crate::config::CONFIG_PATH_ENV_VAR,
     crate::remote::REMOTE_KEYBINDINGS_ENV_VAR,
