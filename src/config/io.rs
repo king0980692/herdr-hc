@@ -23,6 +23,9 @@ pub fn app_dir_name() -> &'static str {
     if crate::hc_entry::ENABLED {
         return crate::hc_entry::app_dir_name(cfg!(debug_assertions));
     }
+    if crate::native_entry::ENABLED {
+        return crate::native_entry::app_dir_name(cfg!(debug_assertions));
+    }
     if cfg!(debug_assertions) {
         "herdr-dev"
     } else {

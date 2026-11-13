@@ -88,6 +88,9 @@ jobs:
       - name: Lint the hc-entry build
         run: cargo clippy --all-targets --locked --features hc-entry -- -D warnings
 
+      - name: Lint the native-entry build
+        run: cargo clippy --all-targets --locked --features native-entry -- -D warnings
+
       - name: Tests
         run: just ci-tests '${{ matrix.filter }}'
 
@@ -125,11 +128,12 @@ jobs:
             os: macos-latest
             platform: macos-aarch64
           # herdr-hc: this machine's Local core only. herdr-native: the full
-          # Native frontend (shared machine catalog, shared herdr.app layout).
+          # Native frontend as its own app (shared machine catalog, shared
+          # herdr.app layout).
           - variant: hc
             features: --features hc-entry
           - variant: native
-            features: ''
+            features: --features native-entry
     env:
       NAME: herdr-${{ matrix.variant }}-${{ matrix.platform }}
     steps:
@@ -206,7 +210,7 @@ jobs:
           - variant: hc
             features: --features hc-entry
           - variant: native
-            features: ''
+            features: --features native-entry
     env:
       NAME: herdr-${{ matrix.variant }}-windows-x86_64
     steps:
@@ -290,8 +294,10 @@ jobs:
 
           - \`herdr-hc-*\` (\`--features hc-entry\`): a Native view of this machine's
             Local hc core only.
-          - \`herdr-native-*\`: the full Native frontend (shared machine catalog;
-            Native viewers on one core share herdr.app's \`herdr-app\` layout).
+          - \`herdr-native-*\` (\`--features native-entry\`): the full Native frontend
+            as its own app (own app directory, beside an installed herdr; shared
+            machine catalog; Native viewers on one core share herdr.app's
+            \`herdr-app\` layout).
 
           Both need an hc core with \`automatic_input\` (hc 0.1.18 or newer).
           macOS binaries are unsigned.

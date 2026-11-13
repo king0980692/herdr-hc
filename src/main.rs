@@ -27,6 +27,10 @@ use ghostty_vt as ghostty;
 mod handoff_runtime;
 pub mod hc;
 mod hc_entry;
+mod native_entry;
+
+#[cfg(all(feature = "hc-entry", feature = "native-entry"))]
+compile_error!("`hc-entry` and `native-entry` build different apps; enable one");
 mod input;
 mod integration;
 mod ipc;
@@ -520,6 +524,9 @@ fn main() -> io::Result<()> {
             std::process::exit(2);
         }
     };
+    if native_entry::ENABLED {
+        native_entry::drop_foreign_pane_env();
+    }
     if hc_entry::ENABLED {
         if let Err(err) = hc_entry::prepare_process(&raw_args) {
             eprintln!("error: {err}");
