@@ -143,6 +143,9 @@ macOS 會排除 `tests/cli.rs`、`tests/machine_api.rs` 與部分 `tests/api_pin
   - [x] **開著的 viewer 自動加入其他 viewer 新開的程式**（`5e938dce`，候選版 `~/.local/opt/herdr-native/046d2246d0dc`）：core-wide `events.subscribe`，只 attach、不搶焦點；放進以該資料夾開的 workspace，否則目前的 workspace；herdr-hc 不變。scratch 兩個 viewer 驗證：A 新 tab 在 B 出現一次、焦點與尺寸不變、`hc run --bg` 兩邊都出現、A 斷線期間建立的程式重連後補上一次。leon 實機：A 新增 t1m、t1n，B 自動出現、焦點不變。viewer 關閉期間建立的程式不會加入（只有首次開啟的 discovery 或 saved layout）。
   - [ ] 待決定：被另一個 viewer 關掉（`killed`）的程式，其他 viewer 目前保留 pane 顯示結束（`exit_tests.rs` 規定）；程式自行 `exit` 才自動關 pane。
   - [ ] 尚未：兩個 viewer 不同尺寸下的 resize／自動回覆、重開 viewer、真實 agent、plugin／sidebar、gx10。
+  - [x] **Native viewer 共用版面**（`9d165831`、`a873ad2c`，規劃在 `.local/prd/native-shared-layout.md`）：同一個 core 上的 Native viewer 透過 herdr.app 的 `herdr-app` 文件共用 space／tab／分割；推送與套用都是三方比對（只動自己上次同步後的變更），移除 pane 只斷開不結束程式（hc runtime 的 `shutdown()` 會送 kill，所以先把 runtime 拿掉再清 pane）。scratch 三個 viewer 驗證：分割、關閉、新增 tab、改名、比例、同時分割、晚加入、`hc run --bg` 只加一次、切斷連線後恢復、重開不多寫。
+  - [ ] 共用版面尚未：獨立審查（AGENTS.md roundtable）、leon 實機、Mac 上和真正 herdr.app 的雙向測試；workspace 順序不同步。
+  - [x] release `herdr-hc-20261113-311441da` 起同時發佈 `herdr-native-*`（五個平台）；第一次 macOS 測試 `federated_launch_opens_local_directly_while_saved_ssh_is_unavailable` 失敗一次（Local shell 啟動 0.67 秒後 exit 0），重跑通過，原因未查。
 
 ### macOS 隔離試用結果（2026-11-11，原工作站，另一個 session 執行並回報）
 
