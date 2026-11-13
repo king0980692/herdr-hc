@@ -66,8 +66,20 @@ impl App {
                 generation,
                 core_id,
                 terminals,
+                deferred,
             } => {
-                self.add_appeared_hc_programs(generation, core_id, terminals);
+                self.add_appeared_hc_programs(generation, core_id, terminals, deferred);
+                true
+            }
+            AppEvent::HcLayoutChanged { generation } => {
+                self.layout_changed_elsewhere(generation);
+                true
+            }
+            AppEvent::HcLayoutSynced {
+                generation,
+                outcome,
+            } => {
+                self.finish_layout_sync(generation, outcome);
                 true
             }
             AppEvent::HcTerminalUpdated {
@@ -202,8 +214,20 @@ impl App {
                 generation,
                 core_id,
                 terminals,
+                deferred,
             } => {
-                self.add_appeared_hc_programs(generation, core_id, terminals);
+                self.add_appeared_hc_programs(generation, core_id, terminals, deferred);
+                return Vec::new();
+            }
+            AppEvent::HcLayoutChanged { generation } => {
+                self.layout_changed_elsewhere(generation);
+                return Vec::new();
+            }
+            AppEvent::HcLayoutSynced {
+                generation,
+                outcome,
+            } => {
+                self.finish_layout_sync(generation, outcome);
                 return Vec::new();
             }
             AppEvent::HcTerminalUpdated {

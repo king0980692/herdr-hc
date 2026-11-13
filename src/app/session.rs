@@ -16,6 +16,8 @@ impl App {
             self.pane_exit_checkpoint_pending = false;
             self.session_save_deadline = Some(Instant::now() + SESSION_SAVE_DEBOUNCE);
         }
+        // Every layout change here passes through; the shared layout follows.
+        self.layout_changed_here();
     }
 
     pub(crate) fn sync_session_save_schedule(&mut self) {

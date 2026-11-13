@@ -1,9 +1,11 @@
 //! hc source updates are fenced runtime events, not inferred pane exits or hooks.
 mod appeared;
 mod bootstrap;
+mod layout_sync;
 mod reconnect;
 use super::{actions::PaneStateUpdate, App};
 use crate::{events::AppEvent, hc::state::RuntimeSnapshot, terminal::TerminalId};
+pub(crate) use layout_sync::LayoutSync;
 pub(crate) use reconnect::Recovery;
 use std::sync::Arc;
 

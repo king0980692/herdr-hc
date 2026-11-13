@@ -72,7 +72,23 @@ impl App {
         generation: u64,
         core: String,
         terminals: Vec<Terminal>,
+        deferred: bool,
     ) {
+        // With a shared layout, the viewer that started it places it there;
+        // only a program still unplaced after a while (a shell's) is added.
+        if !deferred && self.terminal_factory.shares_herdr_app_layout() {
+            self.terminal_factory.send_later(
+                AppEvent::HcProgramsAppeared {
+                    generation,
+                    core_id: core,
+                    terminals,
+                    deferred: true,
+                },
+                std::time::Duration::from_secs(2),
+                self.event_tx.clone(),
+            );
+            return;
+        }
         let Some(source) = self.terminal_factory.source_state() else {
             return;
         };

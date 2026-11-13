@@ -895,6 +895,14 @@ impl AppState {
         self.session_dirty = true;
     }
 
+    /// Old pane ids that pointed at panes no longer shown are dropped.
+    pub(crate) fn forget_pane_aliases(&mut self, panes: &[PaneId]) {
+        self.pane_id_aliases
+            .retain(|_, alias| !panes.contains(alias));
+        self.public_pane_id_aliases
+            .retain(|_, alias| !panes.contains(alias));
+    }
+
     pub(crate) fn remove_alias_shadowed_by_new_pane(&mut self, pane_id: PaneId) {
         self.pane_id_aliases.remove(&pane_id.raw());
     }

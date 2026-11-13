@@ -88,6 +88,28 @@ pub enum AppEvent {
         generation: u64,
         core_id: String,
         terminals: Vec<crate::hc::state::Terminal>,
+        /// Asked again after a grace period: another viewer had time to
+        /// place it in the shared layout.
+        deferred: bool,
+    },
+    /// herdr.app's shared layout document changed on the source's core.
+    // Sent only by production startup's subscription; fake-core unit tests never subscribe.
+    #[cfg_attr(test, allow(dead_code))]
+    HcLayoutChanged {
+        generation: u64,
+    },
+    /// One round of keeping the shared layout in step finished: the document
+    /// as it now is, the core's live programs, and the layout this viewer sent.
+    HcLayoutSynced {
+        generation: u64,
+        outcome: Result<
+            (
+                serde_json::Value,
+                Vec<String>,
+                Vec<crate::hc_entry::app_layout::ShownSpace>,
+            ),
+            String,
+        >,
     },
     HcTerminalEffects {
         enabled: std::sync::Arc<std::sync::atomic::AtomicBool>,

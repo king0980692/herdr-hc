@@ -108,6 +108,16 @@ impl WorkspaceGitStatusSnapshot {
 static NEXT_WORKSPACE_ID: AtomicU64 = AtomicU64::new(1);
 const PUBLIC_ID_ALPHABET: &[u8; 32] = b"123456789ABCDEFGHJKMNPQRSTVWXYZ0";
 
+fn collect_node_panes(node: &crate::layout::Node, out: &mut Vec<PaneId>) {
+    match node {
+        crate::layout::Node::Pane(pane) => out.push(*pane),
+        crate::layout::Node::Split { first, second, .. } => {
+            collect_node_panes(first, out);
+            collect_node_panes(second, out);
+        }
+    }
+}
+
 pub(crate) fn generate_workspace_id() -> String {
     let counter = NEXT_WORKSPACE_ID.fetch_add(1, Ordering::Relaxed);
     format!("w{}", encode_public_number(counter as usize))
@@ -320,6 +330,57 @@ impl Workspace {
             argv,
             factory,
         )?;
+        let workspace = Self::with_first_tab(id, initial_cwd, tab, &terminal, factory);
+        Ok((workspace, terminal, runtime))
+    }
+
+    /// A workspace whose first tab shows a program already running on the
+    /// source: attach only, never a launch.
+    #[allow(clippy::too_many_arguments)] // geometry, host context and the binding
+    pub(crate) fn new_attached(
+        initial_cwd: PathBuf,
+        rows: u16,
+        cols: u16,
+        scrollback_limit_bytes: usize,
+        host_terminal_theme: crate::terminal_theme::TerminalTheme,
+        host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
+        events: mpsc::Sender<AppEvent>,
+        render_notify: Arc<Notify>,
+        render_dirty: Arc<RenderSignal>,
+        binding: &crate::hc::state::TerminalBinding,
+        factory: &crate::terminal::TerminalFactory,
+    ) -> std::io::Result<(Self, TerminalState, TerminalRuntime)> {
+        let (tab, terminal, runtime) = Tab::new_attached(
+            1,
+            initial_cwd.clone(),
+            rows,
+            cols,
+            scrollback_limit_bytes,
+            host_terminal_theme,
+            host_terminal_appearance,
+            events,
+            render_notify,
+            render_dirty,
+            binding,
+            factory,
+        )?;
+        let workspace = Self::with_first_tab(
+            generate_workspace_id(),
+            initial_cwd,
+            tab,
+            &terminal,
+            factory,
+        );
+        Ok((workspace, terminal, runtime))
+    }
+
+    fn with_first_tab(
+        id: String,
+        initial_cwd: PathBuf,
+        tab: Tab,
+        terminal: &TerminalState,
+        factory: &crate::terminal::TerminalFactory,
+    ) -> Self {
         let mut public_pane_numbers = HashMap::new();
         public_pane_numbers.insert(tab.root_pane, 1);
         let filesystem_local = !factory.is_saved_source();
@@ -330,7 +391,7 @@ impl Workspace {
         };
         let (cached_git_space, cached_auto_label, cached_git_status_key) =
             discover_workspace_git_identity(&initial_cwd, filesystem_local);
-        Ok((
+        {
             Self {
                 id,
                 custom_name: None,
@@ -355,10 +416,54 @@ impl Workspace {
                 active_tab: 0,
                 #[cfg(test)]
                 test_runtimes: HashMap::new(),
-            },
-            terminal,
-            runtime,
-        ))
+            }
+        }
+    }
+
+    /// Arranges tab `tab_idx` as `root`: `added` panes join it (taking new
+    /// public numbers), `removed` ones leave it. Focus stays on its pane
+    /// while that pane stays, else moves to the first one.
+    pub(crate) fn rearrange_tab(
+        &mut self,
+        tab_idx: usize,
+        root: crate::layout::Node,
+        added: Vec<(PaneId, PaneState)>,
+        removed: &[PaneId],
+    ) -> bool {
+        let mut present = Vec::new();
+        collect_node_panes(&root, &mut present);
+        let Some(first) = present.first().copied() else {
+            return false;
+        };
+        let Some(tab) = self.tabs.get_mut(tab_idx) else {
+            return false;
+        };
+        for pane in removed {
+            tab.panes.remove(pane);
+        }
+        let new_panes: Vec<PaneId> = added.iter().map(|(pane, _)| *pane).collect();
+        tab.panes.extend(added);
+        let focused = tab.layout.focused();
+        let focus = if present.contains(&focused) {
+            focused
+        } else {
+            first
+        };
+        if tab.zoomed && !present.contains(&focused) {
+            tab.zoomed = false;
+        }
+        if !present.contains(&tab.root_pane) {
+            tab.root_pane = first;
+        }
+        tab.layout = crate::layout::TileLayout::from_saved(root, focus);
+        for pane in removed {
+            self.unregister_pane(*pane);
+        }
+        for pane in new_panes {
+            let number = self.next_public_pane_number;
+            self.register_new_pane_with_number(pane, number);
+        }
+        true
     }
 
     pub fn active_tab(&self) -> Option<&Tab> {

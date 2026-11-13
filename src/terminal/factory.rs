@@ -199,6 +199,67 @@ impl TerminalFactory {
             }
         }
     }
+    /// Whether this viewer keeps its layout in step with herdr.app's shared
+    /// document on its core (Native builds; herdr-hc writes splits only).
+    pub(crate) fn shares_herdr_app_layout(&self) -> bool {
+        let Self::Hc(host) = self else {
+            return false;
+        };
+        !crate::hc_entry::ENABLED
+            && self.discovers_existing_programs()
+            && host.client().is_ok_and(|client| {
+                ["doc.get", "doc.set", "terminal.list"]
+                    .iter()
+                    .all(|method| client.hello.methods.contains(*method))
+            })
+    }
+
+    /// One round off the app thread: read the core's live programs and the
+    /// document, apply this viewer's changes since `base` (on a first sync,
+    /// `None`: the document's layout plus what only this viewer shows), and
+    /// write it back. Reports `HcLayoutSynced`.
+    pub(crate) fn sync_herdr_app_layout(
+        &self,
+        generation: u64,
+        base: Option<Vec<crate::hc_entry::app_layout::ShownSpace>>,
+        native: Vec<crate::hc_entry::app_layout::ShownSpace>,
+        events: tokio::sync::mpsc::Sender<AppEvent>,
+    ) -> bool {
+        let Self::Hc(host) = self else {
+            return false;
+        };
+        let Ok(client) = host.client() else {
+            return false;
+        };
+        host.executor.spawn(async move {
+            let outcome = sync_layout_once(&client, base, native)
+                .await
+                .map_err(|error| error.to_string());
+            let _ = events
+                .send(AppEvent::HcLayoutSynced {
+                    generation,
+                    outcome,
+                })
+                .await;
+        });
+        true
+    }
+
+    /// Delivers `event` to the app after `delay`, off its thread.
+    pub(crate) fn send_later(
+        &self,
+        event: AppEvent,
+        delay: std::time::Duration,
+        events: tokio::sync::mpsc::Sender<AppEvent>,
+    ) {
+        if let Self::Hc(host) = self {
+            host.executor.spawn(async move {
+                tokio::time::sleep(delay).await;
+                let _ = events.send(event).await;
+            });
+        }
+    }
+
     pub(crate) fn discovers_existing_programs(&self) -> bool {
         matches!(self, Self::Hc(host) if !host.saved || host.shared)
     }
@@ -519,6 +580,76 @@ async fn kill(client: &Client, address: &str) -> io::Result<()> {
 }
 
 /// One read-modify-write of herdr.app's layout, retried on a version conflict.
+async fn sync_layout_once(
+    client: &crate::hc::Client,
+    base: Option<Vec<crate::hc_entry::app_layout::ShownSpace>>,
+    native: Vec<crate::hc_entry::app_layout::ShownSpace>,
+) -> io::Result<(
+    Value,
+    Vec<String>,
+    Vec<crate::hc_entry::app_layout::ShownSpace>,
+)> {
+    use crate::hc_entry::{
+        app_layout::{shown_spaces, DOCUMENT},
+        app_sync::{push_changes, restricted, union},
+    };
+    for _ in 0..4 {
+        let list = client.call("terminal.list", json!({"all": false})).await?;
+        let live: std::collections::HashSet<String> = list["terminals"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|terminal| terminal["state"] == "live")
+            .filter_map(|terminal| terminal["address"].as_str())
+            .filter(|address| !address.contains('/'))
+            .map(str::to_owned)
+            .collect();
+        let current = client.call("doc.get", json!({ "name": DOCUMENT })).await?;
+        let version = current["version"].as_u64().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "herdr.app layout has no version",
+            )
+        })?;
+        let mut document = current["value"].clone();
+        let mut left = live.clone();
+        let shown = shown_spaces(&document, |address| left.remove(address));
+        // Panes of programs that ended stay open here; they are not layout.
+        let native = restricted(&native, |address| live.contains(address));
+        let (base, sent) = match &base {
+            // The base keeps programs that ended since: closing one here is a change.
+            Some(base) => (base.clone(), native),
+            None => {
+                let sent = union(&shown, &native);
+                (shown, sent)
+            }
+        };
+        if push_changes(
+            &mut document,
+            &base,
+            &sent,
+            |address| live.contains(address),
+            crate::hc_entry::new_placement_id,
+        ) {
+            match client
+                .call(
+                    "doc.set",
+                    json!({ "name": DOCUMENT, "version": version, "value": document }),
+                )
+                .await
+            {
+                Ok(_) => {}
+                Err(error) if error.to_string().contains("\"conflict\"") => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        let mut live: Vec<String> = live.into_iter().collect();
+        live.sort();
+        return Ok((document, live, sent));
+    }
+    Err(io::Error::other("herdr.app layout kept changing"))
+}
+
 async fn place_split_once(
     client: &crate::hc::Client,
     source: &str,

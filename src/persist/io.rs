@@ -12,6 +12,21 @@ pub(super) fn session_path() -> PathBuf {
     crate::session::data_dir().join("session.json")
 }
 
+/// Keeps a copy of the saved session before a shared layout replaces it
+/// for the first time; where it went, if there was one.
+pub(crate) fn backup_session(reason: &str) -> std::io::Result<Option<PathBuf>> {
+    let path = session_path();
+    if !path.exists() {
+        return Ok(None);
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    let backup = path.with_file_name(format!("session.json.{reason}-{stamp}"));
+    std::fs::copy(&path, &backup)?;
+    Ok(Some(backup))
+}
+
 fn session_history_path() -> PathBuf {
     crate::session::data_dir().join("session-history.json")
 }

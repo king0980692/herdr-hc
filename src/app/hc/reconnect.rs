@@ -140,6 +140,10 @@ impl App {
         if source.client.is_some() && self.hc_recovery.initial_inventory_due.is_some() {
             self.hc_recovery.initial_inventory_due = Some(Instant::now());
         }
+        if source.client.is_some() {
+            // Connected (again): the shared layout is synced once now.
+            self.request_layout_sync();
+        }
         let initial = self.hc_recovery.generation == 0;
         self.hc_recovery.generation = generation;
         self.hc_recovery.pending.clear();

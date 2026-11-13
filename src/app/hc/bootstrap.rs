@@ -319,6 +319,7 @@ impl App {
         }
         if !self.state.workspaces.is_empty() {
             self.hc_recovery.initial_inventory_due = None;
+            self.request_layout_sync();
             return;
         }
         let discovery =
@@ -347,6 +348,7 @@ impl App {
             if self.terminal_factory.is_saved_source() {
                 self.hc_recovery.initial_inventory_due = Some(now + Duration::from_secs(30));
             }
+            self.request_layout_sync();
             return;
         };
         let (workspaces, terminals, runtimes) = crate::persist::restore_with_factory(

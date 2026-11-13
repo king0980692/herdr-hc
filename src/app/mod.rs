@@ -106,6 +106,7 @@ pub struct App {
     pub state: AppState,
     pub(crate) pixel_mouse_available: bool,
     pub(crate) hc_recovery: hc::Recovery,
+    pub(crate) layout_sync: hc::LayoutSync,
     pub(crate) terminal_runtimes: crate::terminal::TerminalRuntimeRegistry,
     // Drop the source executor after attachment runtimes; stopping it never kills hc programs.
     pub(crate) terminal_factory: crate::terminal::TerminalFactory,
@@ -668,6 +669,7 @@ impl App {
             terminal_factory,
             default_workspace_initialized,
             hc_recovery: hc::Recovery::default(),
+            layout_sync: hc::LayoutSync::default(),
             event_tx,
             event_rx,
             last_git_remote_status_refresh: Instant::now() - GIT_REMOTE_STATUS_REFRESH_INTERVAL,

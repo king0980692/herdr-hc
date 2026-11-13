@@ -10,6 +10,7 @@ mod restore;
 mod snapshot;
 mod writer;
 
+pub(crate) use self::io::backup_session;
 pub use self::io::{clear_history, load, load_history};
 #[cfg(unix)]
 pub use self::restore::{handoff_pane_aliases, restore_handoff};

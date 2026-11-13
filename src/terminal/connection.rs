@@ -477,6 +477,7 @@ async fn follow_programs(
             generation,
             core_id: core.clone(),
             terminals,
+            deferred: false,
         })
     };
     let (reply, mut stream) = client.subscribe_core().await?;
@@ -508,6 +509,13 @@ async fn follow_programs(
                 }
                 seq = at.unwrap_or(seq);
                 let kind = params.get("type").and_then(serde_json::Value::as_str);
+                if kind == Some("doc") {
+                    events
+                        .send(AppEvent::HcLayoutChanged { generation })
+                        .await
+                        .map_err(|_| io::Error::other("app closed"))?;
+                    continue;
+                }
                 let address = params.get("terminal").and_then(serde_json::Value::as_str);
                 match (kind, address, params.get("data")) {
                     (Some("created" | "restarted"), Some(address), Some(data))
