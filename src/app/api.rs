@@ -1137,7 +1137,9 @@ impl App {
         let report_target = match &request.method {
             Method::PaneReportAgent(p) => Some(&p.pane_id),
             Method::PaneReportAgentSession(p) => Some(&p.pane_id),
-            Method::PaneReportMetadata(p) => Some(&p.pane_id),
+            // Tokens alone are Herdr's own marks on a pane (a plugin finding
+            // the pane it opened), not facts about the program in it.
+            Method::PaneReportMetadata(p) if !tokens_only(p) => Some(&p.pane_id),
             Method::PaneClearAgentAuthority(p) => Some(&p.pane_id),
             Method::PaneReleaseAgent(p) => Some(&p.pane_id),
             _ => None,
@@ -2791,4 +2793,17 @@ mod tests {
             Some("__herdr_original__ · 1")
         );
     }
+}
+
+/// A metadata report that only sets or clears tokens.
+fn tokens_only(params: &crate::api::schema::PaneReportMetadataParams) -> bool {
+    !params.tokens.is_empty()
+        && params.agent.is_none()
+        && params.applies_to_source.is_none()
+        && params.title.is_none()
+        && params.display_agent.is_none()
+        && params.state_labels.is_empty()
+        && !params.clear_title
+        && !params.clear_display_agent
+        && !params.clear_state_labels
 }

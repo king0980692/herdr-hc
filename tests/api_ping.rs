@@ -1907,6 +1907,58 @@ fn assert_hc_pane_rejects_legacy_methods(calls: Vec<(&str, serde_json::Value)>) 
 }
 
 #[cfg(not(target_os = "macos"))]
+#[test]
+fn hc_pane_keeps_tokens_a_plugin_reports() {
+    let _lock = test_lock();
+    let base = unique_test_dir();
+    let config_home = base.join("config");
+    let runtime_dir = base.join("runtime");
+    let socket_path = runtime_dir.join("herdr.sock");
+
+    let child = spawn_herdr(&config_home, &runtime_dir, &socket_path);
+    wait_for_socket(&socket_path, Duration::from_secs(5));
+    let created = send_request(
+        &socket_path,
+        &format!(
+            r#"{{"id":"tokens_ws","method":"workspace.create","params":{{"cwd":"{}","focus":true}}}}"#,
+            base.display()
+        ),
+    );
+    let pane_id = created["result"]["root_pane"]["pane_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // A plugin marks the pane it opened so it can find it again.
+    let reported = support::hc::request(
+        &socket_path,
+        "pane.report_metadata",
+        serde_json::json!({"pane_id": pane_id, "source": "herdr-sidebar-explorer",
+            "tokens": {"herdr-sidebar-explorer": "1"}}),
+    );
+    assert!(reported["error"].is_null(), "{reported}");
+    let panes = support::hc::request(&socket_path, "pane.list", serde_json::json!({}));
+    let pane = panes["result"]["panes"]
+        .as_array()
+        .and_then(|panes| panes.iter().find(|p| p["pane_id"] == pane_id.as_str()))
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(pane["tokens"]["herdr-sidebar-explorer"], "1", "{panes}");
+    // Facts about the program stay hc's: a token report with them is refused.
+    let with_agent = support::hc::request(
+        &socket_path,
+        "pane.report_metadata",
+        serde_json::json!({"pane_id": pane_id, "source": "x", "agent": "pi",
+            "tokens": {"x": "1"}}),
+    );
+    assert_eq!(
+        with_agent["error"]["code"], "unsupported_runtime",
+        "{with_agent}"
+    );
+
+    cleanup_spawned_herdr(child, base);
+}
+
+#[cfg(not(target_os = "macos"))]
 #[cfg(not(target_os = "macos"))]
 #[test]
 fn hc_pane_rejects_legacy_agent_and_metadata_reports() {
