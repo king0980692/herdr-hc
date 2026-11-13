@@ -145,6 +145,8 @@ macOS 會排除 `tests/cli.rs`、`tests/machine_api.rs` 與部分 `tests/api_pin
   - [ ] 尚未：兩個 viewer 不同尺寸下的 resize／自動回覆、重開 viewer、真實 agent、plugin／sidebar、gx10。
   - [x] **Native viewer 共用版面**（`9d165831`、`a873ad2c`，規劃在 `.local/prd/native-shared-layout.md`）：同一個 core 上的 Native viewer 透過 herdr.app 的 `herdr-app` 文件共用 space／tab／分割；推送與套用都是三方比對（只動自己上次同步後的變更），移除 pane 只斷開不結束程式（hc runtime 的 `shutdown()` 會送 kill，所以先把 runtime 拿掉再清 pane）。scratch 三個 viewer 驗證：分割、關閉、新增 tab、改名、比例、同時分割、晚加入、`hc run --bg` 只加一次、切斷連線後恢復、重開不多寫。
   - [ ] 共用版面尚未：獨立審查（AGENTS.md roundtable）、leon 實機、Mac 上和真正 herdr.app 的雙向測試；workspace 順序不同步。
+  - [x] issue #4（Mac 第一階段隔離測試，9 項中 8 項通過）：晚加入的 viewer 沒套用文件裡的 tab 名稱，下一次推送就把名稱寫成空字串。已修：只保留「送出後本地才改的」名稱，其他一律用文件的。機器清單輪詢失敗時改為退避（最長 30 秒），減少 log。hc 指令在首次啟動卡住：Linux 上無法重現（`hc ls` 最慢 23 ms）。
+  - [ ] `client_mode::federated_launch_opens_local_directly_while_saved_ssh_is_unavailable` 在整套測試負載下偶發失敗；在共用版面與自動加入程式之前的 `f507b1f3` 也是 5 次中 2 次，與這些改動無關，原因未查。
   - [x] release `herdr-hc-20261113-311441da` 起同時發佈 `herdr-native-*`（五個平台）；第一次 macOS 測試 `federated_launch_opens_local_directly_while_saved_ssh_is_unavailable` 失敗一次（Local shell 啟動 0.67 秒後 exit 0），重跑通過，原因未查。
 
 ### macOS 隔離試用結果（2026-11-11，原工作站，另一個 session 執行並回報）

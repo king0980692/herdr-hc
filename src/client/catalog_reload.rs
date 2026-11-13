@@ -9,6 +9,10 @@ pub(super) fn watch_profiles(
         let mut previous = None;
         let mut previous_shared = None;
         let source_api = crate::api::client::ApiClient::local();
+        // A server without a machine inventory answers with an error each
+        // time; asking less often until it has one keeps its log readable.
+        let mut inventory_delay = Duration::from_secs(1);
+        let mut inventory_due = std::time::Instant::now();
         while !should_quit.load(Ordering::Acquire) {
             let current = endpoint::EndpointCatalog::load_profiles();
             if previous.as_ref() != Some(&current) {
@@ -26,11 +30,23 @@ pub(super) fn watch_profiles(
                     crate::api::schema::EmptyParams {},
                 ),
             };
-            if let Ok(value) = source_api.request_value_cancellable(
-                &discovery,
-                Duration::from_millis(500),
-                &should_quit,
-            ) {
+            let now = std::time::Instant::now();
+            let reply = if now >= inventory_due {
+                let reply = source_api
+                    .request_value_cancellable(&discovery, Duration::from_millis(500), &should_quit)
+                    .ok()
+                    .filter(|value| value.get("error").is_none());
+                inventory_delay = if reply.is_some() {
+                    Duration::from_secs(1)
+                } else {
+                    (inventory_delay * 2).min(Duration::from_secs(30))
+                };
+                inventory_due = now + inventory_delay;
+                reply
+            } else {
+                None
+            };
+            if let Some(value) = reply {
                 let graph = serde_json::from_value(value["result"]["core"].clone())
                     .map_err(io::Error::other)
                     .and_then(|core| {

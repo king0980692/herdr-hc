@@ -33,6 +33,9 @@ pub(crate) struct LayoutSync {
     /// until the first round.
     base: Option<Vec<ShownSpace>>,
     in_flight: bool,
+    /// Names of this viewer's spaces and tabs (by id) when the running round
+    /// was sent: one changed here since keeps its new name.
+    sent_names: HashMap<String, String>,
     again: bool,
     backed_up: bool,
     reported: Option<String>,
@@ -240,6 +243,17 @@ impl App {
             return;
         };
         let native = self.project_shared_layout();
+        let names: HashMap<String, String> = native
+            .iter()
+            .flat_map(|space| {
+                std::iter::once((space.id.clone(), space.name.clone())).chain(
+                    space
+                        .tabs
+                        .iter()
+                        .map(|tab| (tab.id.clone(), tab.name.clone())),
+                )
+            })
+            .collect();
         if self.terminal_factory.sync_herdr_app_layout(
             source.generation,
             self.layout_sync.base.clone(),
@@ -247,6 +261,7 @@ impl App {
             self.event_tx.clone(),
         ) {
             self.layout_sync.in_flight = true;
+            self.layout_sync.sent_names = names;
             self.layout_sync.again = false;
         }
     }
@@ -317,7 +332,7 @@ impl App {
                         .collect();
                     known.extend(ended);
                 }
-                let changed = self.apply_shared_layout(&view, &sent, &known);
+                let changed = self.apply_shared_layout(&view, &known);
                 // In step with the document, less what this viewer could not
                 // show (its next round must not drop those from the document).
                 let shown: HashSet<String> = self
@@ -344,23 +359,18 @@ impl App {
     /// panes), missing ones are made by attaching, and ones the document no
     /// longer has are detached. Focus, active tab and zoom stay.
     ///
-    /// Three-way like a push: only what this viewer `sent` can be taken away
-    /// or renamed by the document; what it made since stays for its next round.
-    fn apply_shared_layout(
-        &mut self,
-        view: &[ShownSpace],
-        sent: &[ShownSpace],
-        known: &HashSet<String>,
-    ) -> bool {
-        let sent_space_names: HashMap<&str, &str> = sent
-            .iter()
-            .map(|space| (space.id.as_str(), space.name.as_str()))
-            .collect();
-        let sent_tab_names: HashMap<&str, &str> = sent
-            .iter()
-            .flat_map(|space| &space.tabs)
-            .map(|tab| (tab.id.as_str(), tab.name.as_str()))
-            .collect();
+    /// Three-way like a push: only programs in `known` can be
+    /// taken away, and only names it has not changed since sending are taken;
+    /// what it made since stays for its next round.
+    fn apply_shared_layout(&mut self, view: &[ShownSpace], known: &HashSet<String>) -> bool {
+        // A name renamed here since the round was sent stays; any other takes
+        // the document's (a viewer that just joined has none of its own).
+        let sent_names = std::mem::take(&mut self.layout_sync.sent_names);
+        let renamed_here = |id: &str, now: &Option<String>| {
+            sent_names
+                .get(id)
+                .is_some_and(|at_send| at_send != now.as_deref().unwrap_or_default())
+        };
         let Some(core) = self.shared_core() else {
             return false;
         };
@@ -383,9 +393,8 @@ impl App {
                 continue;
             };
             let name = named(&space.name);
-            let renamed_there =
-                sent_space_names.get(space.id.as_str()) != Some(&space.name.as_str());
-            if renamed_there && self.state.workspaces[ws_idx].custom_name != name {
+            let workspace = &self.state.workspaces[ws_idx];
+            if !renamed_here(&space.id, &workspace.custom_name) && workspace.custom_name != name {
                 self.state.workspaces[ws_idx].custom_name = name;
                 changed = true;
             }
@@ -409,9 +418,9 @@ impl App {
                     continue;
                 };
                 let name = named(&tab.name);
-                let renamed_there = sent_tab_names.get(tab.id.as_str()) != Some(&tab.name.as_str());
                 let workspace = &mut self.state.workspaces[ws_idx];
-                if renamed_there && workspace.tabs[tab_idx].custom_name != name {
+                let current = &workspace.tabs[tab_idx].custom_name;
+                if !renamed_here(&tab.id, current) && *current != name {
                     workspace.tabs[tab_idx].custom_name = name;
                     changed = true;
                 }
