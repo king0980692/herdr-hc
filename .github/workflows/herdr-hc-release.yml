@@ -1,8 +1,9 @@
 name: herdr-hc release
 
-# Private-fork release of the `hc-entry` build. A `herdr-hc-*` tag runs the
-# Linux and macOS checks first; only then are the platform binaries (Windows
-# included, untested) built and published as a prerelease of this repository.
+# Private-fork release of the `hc-entry` (herdr-hc) and Native (herdr-native)
+# builds. A `herdr-hc-*` tag runs the Linux and macOS checks first; only then
+# are the platform binaries (Windows included, untested) built and published
+# as a prerelease of this repository.
 # Never matches the upstream `preview-*`/`v*` tags.
 on:
   push:
@@ -104,19 +105,33 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        variant: [hc, native]
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
         include:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
-            name: herdr-hc-linux-x86_64
+            platform: linux-x86_64
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
-            name: herdr-hc-linux-aarch64
+            platform: linux-aarch64
           - target: x86_64-apple-darwin
             os: macos-latest
-            name: herdr-hc-macos-x86_64
+            platform: macos-x86_64
           - target: aarch64-apple-darwin
             os: macos-latest
-            name: herdr-hc-macos-aarch64
+            platform: macos-aarch64
+          # herdr-hc: this machine's Local core only. herdr-native: the full
+          # Native frontend (shared machine catalog, shared herdr.app layout).
+          - variant: hc
+            features: --features hc-entry
+          - variant: native
+            features: ''
+    env:
+      NAME: herdr-${{ matrix.variant }}-${{ matrix.platform }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -154,35 +169,46 @@ jobs:
         run: rm -rf .zig-cache vendor/libghostty-vt/.zig-cache vendor/libghostty-vt/zig-out
 
       - name: Build
-        run: cargo build --release --locked --features hc-entry --target ${{ matrix.target }}
+        run: cargo build --release --locked ${{ matrix.features }} --target ${{ matrix.target }}
 
       - name: Package
         run: |
-          cp target/${{ matrix.target }}/release/herdr ${{ matrix.name }}
-          file ${{ matrix.name }} > ${{ matrix.name }}.BUILD_INFO.txt
+          cp target/${{ matrix.target }}/release/herdr "$NAME"
+          file "$NAME" > "$NAME.BUILD_INFO.txt"
           if [ "$RUNNER_OS" = Linux ]; then
-            ldd ${{ matrix.name }} 2>&1 | tee -a ${{ matrix.name }}.BUILD_INFO.txt
-            grep -q "statically linked" ${{ matrix.name }}.BUILD_INFO.txt
+            ldd "$NAME" 2>&1 | tee -a "$NAME.BUILD_INFO.txt"
+            grep -q "statically linked" "$NAME.BUILD_INFO.txt"
           fi
           {
             echo "commit=$GITHUB_SHA"
             echo "target=${{ matrix.target }}"
-            echo "features=hc-entry"
-          } >> ${{ matrix.name }}.BUILD_INFO.txt
+            echo "variant=${{ matrix.variant }}"
+            echo "features=${{ matrix.features }}"
+          } >> "$NAME.BUILD_INFO.txt"
 
       - name: Upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: ${{ matrix.name }}
+          name: ${{ env.NAME }}
           path: |
-            ${{ matrix.name }}
-            ${{ matrix.name }}.BUILD_INFO.txt
+            ${{ env.NAME }}
+            ${{ env.NAME }}.BUILD_INFO.txt
           retention-days: 14
 
   build-windows:
     needs: test
     runs-on: windows-latest
     timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: hc
+            features: --features hc-entry
+          - variant: native
+            features: ''
+    env:
+      NAME: herdr-${{ matrix.variant }}-windows-x86_64
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -207,30 +233,31 @@ jobs:
           Remove-Item -Recurse -Force vendor/libghostty-vt/zig-out -ErrorAction SilentlyContinue
 
       - name: Build
-        run: cargo build --release --locked --features hc-entry --target x86_64-pc-windows-msvc
+        run: cargo build --release --locked ${{ matrix.features }} --target x86_64-pc-windows-msvc
 
       - name: Package
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $package = Join-Path $env:RUNNER_TEMP "Microsoft.Windows.Console.ConPTY.nupkg"
-          $stage = Join-Path $env:RUNNER_TEMP "herdr-hc-windows-x86_64"
+          $stage = Join-Path $env:RUNNER_TEMP $env:NAME
           .\scripts\package_windows_conpty.ps1 `
             -HerdrExe target\x86_64-pc-windows-msvc\release\herdr.exe `
             -PackagePath $package `
             -StageDir $stage `
-            -OutputPath herdr-hc-windows-x86_64.zip
-          "commit=$env:GITHUB_SHA" | Out-File -Encoding utf8 herdr-hc-windows-x86_64.BUILD_INFO.txt
-          "target=x86_64-pc-windows-msvc" | Out-File -Encoding utf8 -Append herdr-hc-windows-x86_64.BUILD_INFO.txt
-          "features=hc-entry" | Out-File -Encoding utf8 -Append herdr-hc-windows-x86_64.BUILD_INFO.txt
+            -OutputPath "$env:NAME.zip"
+          "commit=$env:GITHUB_SHA" | Out-File -Encoding utf8 "$env:NAME.BUILD_INFO.txt"
+          "target=x86_64-pc-windows-msvc" | Out-File -Encoding utf8 -Append "$env:NAME.BUILD_INFO.txt"
+          "variant=${{ matrix.variant }}" | Out-File -Encoding utf8 -Append "$env:NAME.BUILD_INFO.txt"
+          "features=${{ matrix.features }}" | Out-File -Encoding utf8 -Append "$env:NAME.BUILD_INFO.txt"
 
       - name: Upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: herdr-hc-windows-x86_64
+          name: ${{ env.NAME }}
           path: |
-            herdr-hc-windows-x86_64.zip
-            herdr-hc-windows-x86_64.BUILD_INFO.txt
+            ${{ env.NAME }}.zip
+            ${{ env.NAME }}.BUILD_INFO.txt
           retention-days: 14
 
   release:
@@ -250,7 +277,7 @@ jobs:
       - name: Checksums
         working-directory: dist
         run: |
-          sha256sum herdr-hc-* | grep -v BUILD_INFO > SHA256SUMS
+          sha256sum herdr-hc-* herdr-native-* | grep -v BUILD_INFO > SHA256SUMS
           cat SHA256SUMS
 
       - name: Publish prerelease
@@ -259,11 +286,15 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           cat > notes.md <<EOF
-          herdr-hc build of \`$GITHUB_SHA\` (\`--features hc-entry\`), after the Linux and macOS
-          test suites passed.
+          Builds of \`$GITHUB_SHA\`, after the Linux and macOS test suites passed.
 
-          A Native view of this machine's Local hc core only; needs an hc core with
-          \`automatic_input\` (hc 0.1.18 or newer). macOS binaries are unsigned.
+          - \`herdr-hc-*\` (\`--features hc-entry\`): a Native view of this machine's
+            Local hc core only.
+          - \`herdr-native-*\`: the full Native frontend (shared machine catalog;
+            Native viewers on one core share herdr.app's \`herdr-app\` layout).
+
+          Both need an hc core with \`automatic_input\` (hc 0.1.18 or newer).
+          macOS binaries are unsigned.
           Windows is built but untested: its CI has no hc yet, so neither the
           test suite nor a live run has exercised it.
           EOF
