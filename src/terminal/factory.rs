@@ -349,6 +349,16 @@ impl TerminalFactory {
 
     /// Programs start on a shared remote machine (a `hcs-` presenter), not
     /// on the machine this process runs on.
+    /// On a shared remote machine's presenter: serve the plugin bridge there.
+    #[cfg(all(unix, not(test)))]
+    pub(crate) fn watch_bridge(&self, api_socket: std::path::PathBuf) {
+        if let Self::Hc(host) = self {
+            if self.runs_on_shared_machine() {
+                host.watch_bridge(api_socket);
+            }
+        }
+    }
+
     pub(crate) fn runs_on_shared_machine(&self) -> bool {
         matches!(self, Self::Hc(host) if host.saved && host.shared)
     }

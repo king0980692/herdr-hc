@@ -518,6 +518,9 @@ fn connect_once(
             (connected.stream, Box::new(connected.bridge))
         }
         ConnectTarget::Hc(source) => {
+            // The presenter reaches a `--via` machine itself (Unix); Windows
+            // does not yet.
+            #[cfg(not(unix))]
             if source.machine.via {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::Unsupported,

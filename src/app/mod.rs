@@ -657,6 +657,8 @@ impl App {
         // Fake-core unit tests script every request; they never see this subscription.
         #[cfg(not(test))]
         terminal_factory.watch_programs(event_tx.clone());
+        #[cfg(all(unix, not(test)))]
+        terminal_factory.watch_bridge(crate::api::socket_path());
         let mut app = Self {
             plugin_installation_leases,
             plugin_installation_cleanup_allowed,

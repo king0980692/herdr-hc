@@ -65,11 +65,12 @@ pub(crate) struct CoreHost {
     stop: Option<oneshot::Sender<()>>,
     watcher: Mutex<Option<tokio::task::AbortHandle>>,
     programs: Mutex<Option<tokio::task::AbortHandle>>,
+    bridge: Mutex<Option<tokio::task::AbortHandle>>,
     pub(crate) placements: Mutex<crate::hc_entry::Placements>,
 }
 impl Drop for CoreHost {
     fn drop(&mut self) {
-        for watcher in [&mut self.watcher, &mut self.programs] {
+        for watcher in [&mut self.watcher, &mut self.programs, &mut self.bridge] {
             if let Ok(watcher) = watcher.get_mut() {
                 if let Some(task) = watcher.take() {
                     task.abort();
@@ -156,6 +157,37 @@ impl CoreHost {
             }
         }
     }
+    /// Serves the plugin bridge on this (remote) core while connected: the
+    /// relay there forwards plugin panes' API calls to `api_socket`.
+    #[cfg(all(unix, not(test)))]
+    pub(crate) fn watch_bridge(&self, api_socket: std::path::PathBuf) {
+        let mut source = self.source.clone();
+        let task = self.executor.spawn(async move {
+            loop {
+                let client = source.borrow_and_update().client.clone();
+                let serve = async {
+                    let Some(client) = client else {
+                        return std::future::pending::<()>().await;
+                    };
+                    loop {
+                        if let Err(error) = crate::bridge::serve(&client, &api_socket).await {
+                            tracing::info!(%error, "plugin bridge paused; retrying");
+                        }
+                        tokio::time::sleep(Duration::from_secs(30)).await;
+                    }
+                };
+                tokio::select! {
+                    () = serve => {}
+                    changed = source.changed() => if changed.is_err() { break },
+                }
+            }
+        });
+        if let Ok(mut bridge) = self.bridge.lock() {
+            if let Some(old) = bridge.replace(task.abort_handle()) {
+                old.abort();
+            }
+        }
+    }
     #[cfg(test)]
     pub(crate) fn test(client: Client) -> Self {
         Self::test_source(Some(client), false).0
@@ -183,6 +215,7 @@ impl CoreHost {
                 stop: None,
                 watcher: Mutex::new(None),
                 programs: Mutex::new(None),
+                bridge: Mutex::new(None),
                 placements: Mutex::default(),
             },
             send,
@@ -351,6 +384,7 @@ impl CoreHost {
             stop: Some(stop),
             watcher: Mutex::new(None),
             programs: Mutex::new(None),
+            bridge: Mutex::new(None),
             placements: Mutex::default(),
         })
     }

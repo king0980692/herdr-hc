@@ -24,6 +24,7 @@ mod copy_mode;
 mod detect;
 mod events;
 use ghostty_vt as ghostty;
+mod bridge;
 mod handoff_runtime;
 pub mod hc;
 mod hc_entry;
@@ -573,6 +574,11 @@ fn main() -> io::Result<()> {
 
     finish_cli(cli::maybe_run(&args))?;
 
+    #[cfg(unix)]
+    if args.get(1).map(String::as_str) == Some("bridge-relay") {
+        return bridge::run_relay(&args[2..]);
+    }
+
     if args.get(1).map(String::as_str) == Some("remote-api-bridge") {
         return remote::run_remote_api_bridge(&args[2..]);
     }
@@ -781,6 +787,7 @@ fn main() -> io::Result<()> {
                 "server",
                 "client",
                 "remote-client-bridge",
+                "bridge-relay",
                 "update",
                 "status",
                 "config",

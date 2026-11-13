@@ -165,7 +165,7 @@ impl Source {
                 let Some(SourceLocator::Shared(locator)) = locator else {
                     return Err(io::Error::other("shared hc source is unavailable"));
                 };
-                shared_ssh_command(locator).map(|(command, policy)| (command, Some(policy)))
+                shared_command(locator)
             }
         }
     }
@@ -199,24 +199,16 @@ pub(crate) fn ssh_command(
     Ok((command, ssh))
 }
 
-fn shared_ssh_command(
+/// How this machine reaches a shared machine's core: ssh to its target, or
+/// (registered with `hc machine add --via`) its own command, given the line
+/// to run there as its last argument, as hc does.
+fn shared_command(
     locator: &super::shared::SharedLocator,
-) -> io::Result<(Command, crate::remote::RemoteSsh)> {
-    if locator.via {
-        // shortcut: provider transports stay unavailable until platform-isolated provider execution is needed.
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "shared hc provider transport is unavailable; no SSH fallback was used",
-        ));
-    }
-    crate::remote::validate_remote_target(&locator.target)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+) -> io::Result<(Command, Option<crate::remote::RemoteSsh>)> {
     if let Some(session) = &locator.session {
         crate::session::validate_name(session)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     }
-    let policy = crate::remote::RemoteSsh::new_noninteractive(locator.target.clone());
-    let mut command = Command::from(policy.command());
     let session = locator
         .session
         .as_ref()
@@ -227,8 +219,43 @@ fn shared_ssh_command(
             )
         })
         .unwrap_or_default();
-    command.arg(format!("unset HC_SOCKET HC_SESSION HC_TERMINAL_ID HERDR_HC_SOURCE_PROFILE HERDR_HC_SHARED_CORE HERDR_HC_SHARED_REGISTRY_CORE; {session}p=$(command -v herdr-core) || p=$HOME/.local/bin/herdr-core; [ -x \"$p\" ] || exit 127; exec \"$p\" connect"));
-    Ok((command, policy))
+    let line = format!("unset HC_SOCKET HC_SESSION HC_TERMINAL_ID HERDR_HC_SOURCE_PROFILE HERDR_HC_SHARED_CORE HERDR_HC_SHARED_REGISTRY_CORE; {session}p=$(command -v herdr-core) || p=$HOME/.local/bin/herdr-core; [ -x \"$p\" ] || exit 127; exec \"$p\" connect");
+    if locator.via {
+        return via_command(&locator.target, &line).map(|command| (command, None));
+    }
+    crate::remote::validate_remote_target(&locator.target)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    let policy = crate::remote::RemoteSsh::new_noninteractive(locator.target.clone());
+    let mut command = Command::from(policy.command());
+    command.arg(line);
+    Ok((command, Some(policy)))
+}
+
+/// hc's `--via` on Unix: an sh line, with the remote line appended as one
+/// argument.
+#[cfg(unix)]
+fn via_command(via: &str, line: &str) -> io::Result<Command> {
+    if via.trim().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "shared hc machine has no --via command",
+        ));
+    }
+    let mut command = Command::new("sh");
+    command
+        .arg("-c")
+        .arg(format!("{via} {}", crate::remote::shell_quote(line)));
+    Ok(command)
+}
+
+/// hc's `--via` on Windows splits a program line its own way; not reached
+/// from here yet.
+#[cfg(not(unix))]
+fn via_command(_via: &str, _line: &str) -> io::Result<Command> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "shared hc provider transport is unavailable; no SSH fallback was used",
+    ))
 }
 
 struct CancelSshRepair(std::sync::Arc<std::sync::atomic::AtomicBool>);
@@ -303,7 +330,7 @@ mod tests {
             via: false,
             session: None,
         };
-        let (command, _policy) = shared_ssh_command(&locator).unwrap();
+        let (command, _policy) = shared_command(&locator).unwrap();
         let script = command
             .as_std()
             .get_args()
@@ -318,7 +345,7 @@ mod tests {
         assert!(!script.contains("/Users/"));
         assert!(!script.contains("exec hc connect"));
         locator.session = Some("agents".into());
-        let (command, _policy) = shared_ssh_command(&locator).unwrap();
+        let (command, _policy) = shared_command(&locator).unwrap();
         assert!(command
             .as_std()
             .get_args()
@@ -328,7 +355,21 @@ mod tests {
             .unwrap()
             .contains("export HC_SESSION=agents;"));
         locator.via = true;
-        assert!(shared_ssh_command(&locator).is_err());
+        locator.target = "wsl.exe -d Ubuntu -e sh -c".into();
+        #[cfg(unix)]
+        {
+            let (command, policy) = shared_command(&locator).unwrap();
+            assert!(policy.is_none());
+            let args: Vec<_> = command.as_std().get_args().collect();
+            assert_eq!(command.as_std().get_program(), "sh");
+            let line = args[1].to_str().unwrap();
+            assert!(line.starts_with("wsl.exe -d Ubuntu -e sh -c '"), "{line}");
+            assert!(line.contains("export HC_SESSION=agents;"));
+            locator.target = "  ".into();
+            assert!(shared_command(&locator).is_err());
+        }
+        #[cfg(not(unix))]
+        assert!(shared_command(&locator).is_err());
     }
 
     #[test]
