@@ -232,6 +232,19 @@ pub(super) fn apply_client_terminal_input_events(
     host_page_keys: bool,
     keyboard_forwarded: &mut bool,
 ) -> Result<(), String> {
+    // Keys and text from one batch go to the pane as one write. One write per
+    // key would let a burst (a fast unbracketed paste) outrun an hc pane's
+    // bounded input queue, which then detaches rather than deliver a line
+    // with its end missing.
+    let mut typed: Vec<u8> = Vec::new();
+    let flush = |typed: &mut Vec<u8>| -> Result<(), String> {
+        if typed.is_empty() {
+            return Ok(());
+        }
+        runtime
+            .try_send_bytes(Bytes::from(std::mem::take(typed)))
+            .map_err(|err| format!("targeted pane key input failed: {err}"))
+    };
     for event in events {
         if let ClientPaneInputEvent::Mouse {
             kind,
@@ -241,6 +254,7 @@ pub(super) fn apply_client_terminal_input_events(
             ..
         } = event
         {
+            flush(&mut typed)?;
             let kind = kind.to_crossterm();
             let modifiers = KeyModifiers::from_bits_truncate(*modifiers);
             let position = match position {
@@ -312,6 +326,7 @@ pub(super) fn apply_client_terminal_input_events(
                     match key_event.kind {
                         KeyEventKind::Release => continue,
                         KeyEventKind::Press | KeyEventKind::Repeat => {
+                            flush(&mut typed)?;
                             let lines = runtime.current_size().0.max(1) as usize;
                             if key_event.code == KeyCode::PageUp {
                                 runtime.scroll_up(lines);
@@ -326,20 +341,17 @@ pub(super) fn apply_client_terminal_input_events(
                 runtime.scroll_reset();
                 let bytes = runtime.encode_terminal_key(key);
                 if !bytes.is_empty() {
-                    runtime
-                        .try_send_bytes(Bytes::from(bytes))
-                        .map_err(|err| format!("targeted pane key input failed: {err}"))?;
+                    typed.extend_from_slice(&bytes);
                     *keyboard_forwarded |= key_event.kind != KeyEventKind::Release;
                 }
             }
             crate::raw_input::RawInputEvent::Text(text) => {
                 runtime.scroll_reset();
-                runtime
-                    .try_send_bytes(Bytes::copy_from_slice(text.as_str().as_bytes()))
-                    .map_err(|err| format!("targeted pane text input failed: {err}"))?;
+                typed.extend_from_slice(text.as_str().as_bytes());
                 *keyboard_forwarded |= !text.as_str().is_empty();
             }
             crate::raw_input::RawInputEvent::Paste(text) => {
+                flush(&mut typed)?;
                 runtime.scroll_reset();
                 runtime
                     .try_send_paste(text)
@@ -353,16 +365,45 @@ pub(super) fn apply_client_terminal_input_events(
             | crate::raw_input::RawInputEvent::HostColorSchemeChanged(_)
             | crate::raw_input::RawInputEvent::HostCellSizeReport { .. }
             | crate::raw_input::RawInputEvent::Unsupported => {
+                flush(&mut typed)?;
                 return Err("non-pane input reached targeted pane input".to_owned());
             }
         }
     }
-    Ok(())
+    flush(&mut typed)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_batch_of_keys_reaches_the_pane_as_one_write() {
+        // Fewer slots than keys: one write per key would overflow it.
+        let (runtime, mut rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_capacity(80, 24, 4);
+        let line = "printf 'REMOTE_%s_INPUT_2\\n' \"$reconnect_survivor\"";
+        let mut events: Vec<ClientPaneInputEvent> = line
+            .chars()
+            .map(|c| {
+                let key: crate::input::TerminalKey =
+                    crossterm::event::KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE).into();
+                ClientPaneInputEvent::from_terminal_key(key).expect("a typed key")
+            })
+            .collect();
+        events.push(ClientPaneInputEvent::TextCommit("!".into()));
+        let enter: crate::input::TerminalKey =
+            crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE).into();
+        events.push(ClientPaneInputEvent::from_terminal_key(enter).expect("enter"));
+        assert!(events.len() > 4);
+
+        let mut forwarded = false;
+        apply_client_terminal_input_events(&runtime, &events, true, &mut forwarded).unwrap();
+        assert!(forwarded);
+        let write = rx.try_recv().expect("one write");
+        assert_eq!(write.as_ref(), format!("{line}!\r").as_bytes());
+        assert!(rx.try_recv().is_err(), "a single write");
+    }
 
     #[tokio::test]
     async fn terminal_attach_stale_geometry_falls_back_to_the_canonical_cell() {

@@ -2917,13 +2917,12 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
             ],
         })
     );
+    // Keys of one batch arrive as one write, before the mouse click.
     assert_eq!(
-        input_rx.try_recv().expect("targeted pane interrupt"),
-        Bytes::from_static(&[0x03])
-    );
-    assert_eq!(
-        input_rx.try_recv().expect("targeted pane alt key"),
-        Bytes::from_static(b"\x1bx")
+        input_rx
+            .try_recv()
+            .expect("targeted pane interrupt and alt key"),
+        Bytes::from_static(b"\x03\x1bx")
     );
     assert_eq!(
         input_rx.try_recv().expect("targeted pane mouse click"),
@@ -3747,7 +3746,8 @@ async fn client_shell_split_echo_bypasses_cadence_with_bounded_visible_burst() {
     for _ in 0..3 {
         assert_eq!(input_rx.try_recv().unwrap(), Bytes::from_static(b"queued"));
     }
-    assert_eq!(input_rx.try_recv().unwrap(), Bytes::from_static(b"A"));
+    // One batch, one write: it fits whole instead of losing its end.
+    assert_eq!(input_rx.try_recv().unwrap(), Bytes::from_static(b"AB"));
     assert!(input_rx.try_recv().is_err());
     assert!(server.interactive_input_deadlines.contains_key(&pane_id));
 
