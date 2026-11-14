@@ -157,11 +157,14 @@ macOS 會排除 `tests/cli.rs`、`tests/machine_api.rs` 與部分 `tests/api_pin
   - [x] issue #5 切片 4、5：轉接器（`herdr-native bridge-relay`，隱藏終端 role=bridge、allowlist、0700／0600、重送與依 id 去重）與自動安裝（plugin manifest 的 `[remote]`，下載 release 比對 SHA256SUMS；Linux 的 herdr-native 從公開 release 安裝）。leon rig（scratch core B 當遠端）通過：自動安裝、`pane.list` 1–2 ms、`server.stop` 被拒、sidebar 回報 token。
   - [x] 遠端 sidebar 切 tab 會被換掉：遠端 plugin pane 沒有 `HERDR_PANE_ID`，sidebar 的 heartbeat 沒送，`--ensure` 認為過期就換掉。已修（`0abef02f`）：遠端 plugin pane 也帶 workspace／tab／pane id。rig 重測：切 6 次 tab，B 上 kill 0 次（修正前 2 次），token 時間戳持續更新。
   - [ ] 未驗證：同一個遠端 core 只有一個轉接器、由一個 presenter 服務；兩台 presenter 同時接同一 core 時，sidebar 拿到的 pane id 與轉接器另一端是否一致。
+  - [x] issue #7（分割時版面跑掉）：直欄裡分割的新 pane 被 herdr.app 先收編到最後一個 pane 旁 → Native 記得自己開的程式，未同步過的改放回實際分割的位置（`0ed0b974`）；送出同步後才本地 resize 的 tab 保留本地排列（`1f409949`，新 tab 的 sidebar 不再半寬）。待 Mac 實測（leon 沒有 herdr.app）。
+  - [x] issue #8 Local（`e321e0d6`、`a6d56d02`）：hc pane 的 agent session 記在 terminal label，程式遺失被換成 shell 後接回（presenter 在線／重開都可），多 viewer 用 doc claim 只打一次。遠端、herdr.app 協調、錯開延遲未做；計畫與限制在 `.local/prd/agent-resume-hc.md`。
+  - [x] `federated_launch_opens_local_directly_while_saved_ssh_is_unavailable` 偶發失敗的原因：測試先丟 PTY writer（會送 EOF）再停 client，EOF 被轉給 Local 的 shell → 改成先停 client（`9d451c5e`）。
   - [ ] issue #5 待 Mac 實測 gx10（需 build ≥ `0abef02f`，`--features native-entry`；本機 mise 版 sidebar plugin 要加 `[remote]` 與 run.sh fallback）。
   - [x] **GitHub Actions 額度用完（2026-11-13）**（repo 已公開，Actions 免費）：`herdr-hc-20261113-5ac63997` 的測試與 10 個建置都跑完了，但建 release 的 job 因「付款失敗或 spending limit」沒有啟動；改用 run 43412745157 的 artifacts 手動發佈。之後的 CI 要先到 GitHub Settings → Billing & plans 處理。每次 release 有 13 個 job，其中 macOS 以 10 倍計時，可考慮減少平台。
   - [x] issue #4（Mac 第一階段隔離測試，9 項中 8 項通過）：晚加入的 viewer 沒套用文件裡的 tab 名稱，下一次推送就把名稱寫成空字串。已修：只保留「送出後本地才改的」名稱，其他一律用文件的。機器清單輪詢失敗時改為退避（最長 30 秒），減少 log。hc 指令在首次啟動卡住：Linux 上無法重現（`hc ls` 最慢 23 ms）。
   - [x] Mac 重測 `f2a1e340`（issue #4 comment 6850058630，隔離私有 core）：晚開的 session 一開就顯示 gamma/beta；`hc run --bg` 加入 tab 後名稱不變；三個 server 全停再開，名稱與程式都保留；`shared-machine-inventory` log 從約 15 分鐘 127 行降到每次啟動 1 行；沒有再出現 `terminal.list timed out`（但不是全新首次啟動，該項未完整重測）。
-  - [ ] `client_mode::federated_launch_opens_local_directly_while_saved_ssh_is_unavailable` 在整套測試負載下偶發失敗；在共用版面與自動加入程式之前的 `f507b1f3` 也是 5 次中 2 次，與這些改動無關，原因未查。
+  - [x] `client_mode::federated_launch_opens_local_directly_while_saved_ssh_is_unavailable` 偶發失敗：已查明並修正（見上）。
   - [x] release `herdr-hc-20261113-311441da` 起同時發佈 `herdr-native-*`（五個平台）；第一次 macOS 測試 `federated_launch_opens_local_directly_while_saved_ssh_is_unavailable` 失敗一次（Local shell 啟動 0.67 秒後 exit 0），重跑通過，原因未查。
 
 ### macOS 隔離試用結果（2026-11-11，原工作站，另一個 session 執行並回報）
