@@ -1019,8 +1019,10 @@ fn federated_launch_opens_local_directly_while_saved_ssh_is_unavailable() {
             let text = read_output(&output);
             assert!(!text.contains("Local: connecting"), "{text}");
             assert!(!text.contains("Local: reconnecting"), "{text}");
-            drop(input);
+            // The client goes first: a dropped PTY writer sends EOF, which a
+            // still-running client would pass to Local's shell and end it.
             drop(client);
+            drop(input);
         }
         let _ = send_json_request(
             &api_socket,
