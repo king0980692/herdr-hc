@@ -1015,7 +1015,15 @@ fn federated_launch_opens_local_directly_while_saved_ssh_is_unavailable() {
                     .write_all(b"printf 'LOCAL_%s\\n' DIRECT_READY\r")
                     .unwrap();
                 false
-            }), "Local must accept input without waiting for SSH (remote selected: {select_remote}, args: {args:?}): {}\nsource: {}\npanes: {}\ncore terminals: {:?}", read_output(&output), support::hc::request(&api_socket, "runtime.source", serde_json::json!({})), support::hc::request(&api_socket, "pane.list", serde_json::json!({})), support::hc::terminals(&runtime_dir));
+            }), "Local must accept input without waiting for SSH (remote selected: {select_remote}, args: {args:?}): {}\n{}\ncore terminals: {:?}", read_output(&output), if api_socket.exists() {
+                format!(
+                    "source: {}\npanes: {}",
+                    support::hc::request(&api_socket, "runtime.source", serde_json::json!({})),
+                    support::hc::request(&api_socket, "pane.list", serde_json::json!({}))
+                )
+            } else {
+                "the Local server's API socket is gone (the server exited)".to_owned()
+            }, support::hc::terminals(&runtime_dir));
             let text = read_output(&output);
             assert!(!text.contains("Local: connecting"), "{text}");
             assert!(!text.contains("Local: reconnecting"), "{text}");
