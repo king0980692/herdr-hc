@@ -9,7 +9,11 @@ use crate::hc::{
 use serde_json::{json, Value};
 use tokio::sync::watch;
 
-const INPUT_QUEUE: usize = 32;
+/// Input writes a pane holds while its runtime is busy. Each is one batch of
+/// keys, so a few dozen fill quickly while a re-attach replays scrollback on a
+/// loaded machine; past this the source counts as stalled and the pane
+/// detaches (it never drops part of the input).
+const INPUT_QUEUE: usize = 256;
 /// Scrollback the core replays when a viewer re-attaches an existing program
 /// (after a restart or reconnect). A fresh parser has none of its own; a new
 /// program has none to replay.
