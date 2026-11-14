@@ -589,6 +589,10 @@ fn main() -> io::Result<()> {
     }
 
     if args.get(1).map(|s| s.as_str()) == Some("server") {
+        if let Err(error) = remote::shared::check_server_session() {
+            eprintln!("herdr: {error}");
+            std::process::exit(2);
+        }
         return server::headless::run_server();
     }
 

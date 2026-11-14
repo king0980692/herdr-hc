@@ -4,7 +4,7 @@ mod host;
 mod process;
 mod restart_policy;
 mod saved;
-mod shared;
+pub(crate) mod shared;
 #[cfg(unix)]
 mod ssh_agent;
 

@@ -39,6 +39,51 @@ fn shared_session(key: &SharedCoreKey) -> io::Result<String> {
     ))
 }
 
+/// A shared machine's presentation keeps its own session (`hcs-…`, named
+/// after its cores). Started by hand without those cores, it would present
+/// Local instead and save Local's workspaces as the machine's; started with
+/// them under another name, it would save the machine's into that session.
+/// Either way it must not start.
+fn check_session_source(
+    session: Option<&str>,
+    core: Option<&str>,
+    registry: Option<&str>,
+) -> Result<(), String> {
+    let shared = session.filter(|name| name.starts_with("hcs-"));
+    match (shared, core, registry) {
+        (None, None, _) => Ok(()),
+        (Some(name), Some(core), Some(registry)) => {
+            let key = SharedCoreKey {
+                registry_core_id: registry.to_owned(),
+                core_id: core.to_owned(),
+            };
+            match shared_session(&key) {
+                Ok(expected) if expected == name => Ok(()),
+                _ => Err(format!(
+                    "session {name} belongs to another shared machine than the one given; it was not started"
+                )),
+            }
+        }
+        (Some(name), _, _) => Err(format!(
+            "session {name} presents a shared machine and starts only from herdr, which names its machine; it was not started"
+        )),
+        (None, Some(_), _) => Err(format!(
+            "a shared machine is presented only in its own session, not {}; it was not started",
+            session.unwrap_or("the default session")
+        )),
+    }
+}
+
+/// [`check_session_source`] for this server process.
+pub(crate) fn check_server_session() -> Result<(), String> {
+    let var = |key| std::env::var(key).ok().filter(|value| !value.is_empty());
+    check_session_source(
+        crate::session::active_name().as_deref(),
+        var(crate::hc::shared::CORE_ENV).as_deref(),
+        var(crate::hc::shared::REGISTRY_ENV).as_deref(),
+    )
+}
+
 fn matching_shared_source(result: &serde_json::Value, key: &SharedCoreKey) -> bool {
     result["type"].as_str() == Some("runtime_source")
         && result
@@ -164,6 +209,29 @@ pub(crate) fn shared_core_api_client(key: &SharedCoreKey) -> io::Result<ApiClien
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_shared_machine_session_starts_only_with_its_own_cores() {
+        let key = SharedCoreKey {
+            registry_core_id: "registry".into(),
+            core_id: "machine".into(),
+        };
+        let name = shared_session(&key).unwrap();
+        let name = Some(name.as_str());
+        assert!(check_session_source(name, Some("machine"), Some("registry")).is_ok());
+        // Started by hand: it would present Local and save it as the machine's.
+        assert!(check_session_source(name, None, None).is_err());
+        assert!(check_session_source(name, Some("machine"), None).is_err());
+        // Another machine's cores under this machine's session.
+        assert!(check_session_source(name, Some("other"), Some("registry")).is_err());
+        // The machine's cores under an ordinary session.
+        assert!(check_session_source(Some("work"), Some("machine"), Some("registry")).is_err());
+        assert!(check_session_source(None, Some("machine"), Some("registry")).is_err());
+        // Ordinary sessions are unaffected.
+        assert!(check_session_source(None, None, None).is_ok());
+        assert!(check_session_source(Some("work"), None, None).is_ok());
+    }
+
     use super::*;
     #[test]
     fn shared_presenter_names_and_preflight_preserve_both_owner_and_registry() {
