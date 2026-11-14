@@ -67,6 +67,9 @@ pub(crate) struct CoreHost {
     programs: Mutex<Option<tokio::task::AbortHandle>>,
     bridge: Mutex<Option<tokio::task::AbortHandle>>,
     pub(crate) placements: Mutex<crate::hc_entry::Placements>,
+    /// Programs this viewer started for its layout that herdr.app's
+    /// document has not yet had from it (see `push_changes_started`).
+    pub(crate) started: Arc<Mutex<std::collections::HashSet<String>>>,
 }
 impl Drop for CoreHost {
     fn drop(&mut self) {
@@ -217,6 +220,7 @@ impl CoreHost {
                 programs: Mutex::new(None),
                 bridge: Mutex::new(None),
                 placements: Mutex::default(),
+                started: Arc::default(),
             },
             send,
         )
@@ -386,6 +390,7 @@ impl CoreHost {
             programs: Mutex::new(None),
             bridge: Mutex::new(None),
             placements: Mutex::default(),
+            started: Arc::default(),
         })
     }
     pub(crate) fn block_on<T: Send>(

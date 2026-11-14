@@ -114,7 +114,8 @@ fn programs(layout: &ShownLayout, out: &mut Vec<String>) {
     }
 }
 
-fn all_programs(spaces: &[ShownSpace]) -> HashSet<String> {
+/// Every program the spaces show.
+pub(crate) fn all_programs(spaces: &[ShownSpace]) -> HashSet<String> {
     let mut out = Vec::new();
     for tab in spaces.iter().flat_map(|space| &space.tabs) {
         programs(&tab.layout, &mut out);
@@ -351,10 +352,25 @@ fn new_tab(tab: &ShownTab, fresh_id: &mut impl FnMut(&str) -> String) -> Value {
 /// meanwhile keeps those changes: removed programs and closed tabs go,
 /// new programs are placed beside their neighbor (or at the end of their
 /// tab), and a tab is rearranged only while nobody else changed it.
+#[cfg(test)]
 pub(crate) fn push_changes(
     document: &mut Value,
     base: &[ShownSpace],
     native: &[ShownSpace],
+    shown: impl Fn(&str) -> bool,
+    fresh_id: impl FnMut(&str) -> String,
+) -> bool {
+    push_changes_started(document, base, native, &HashSet::new(), shown, fresh_id)
+}
+
+/// As [`push_changes`]; `started` are programs this viewer started itself.
+/// One not yet synced goes where this viewer split it, even when herdr.app
+/// has meanwhile adopted it elsewhere (beside the last pane).
+pub(crate) fn push_changes_started(
+    document: &mut Value,
+    base: &[ShownSpace],
+    native: &[ShownSpace],
+    started: &HashSet<String>,
     shown: impl Fn(&str) -> bool,
     mut fresh_id: impl FnMut(&str) -> String,
 ) -> bool {
@@ -380,7 +396,9 @@ pub(crate) fn push_changes(
     // A program new to this viewer that the document already places (another
     // viewer added it meanwhile) stays where the document has it.
     let placed = held_terminals(&before);
-    let ours = |address: &str| base_programs.contains(address) || !placed.contains(address);
+    let ours = |address: &str| {
+        base_programs.contains(address) || !placed.contains(address) || started.contains(address)
+    };
     // Moved here to another tab: it leaves its old place first.
     let tab_of = |spaces: &[ShownSpace]| -> HashMap<String, String> {
         spaces
@@ -394,11 +412,23 @@ pub(crate) fn push_changes(
             .collect()
     };
     let (base_tab, native_tab) = (tab_of(base), tab_of(native));
-    let moved: HashSet<String> = native_tab
+    let mut moved: HashSet<String> = native_tab
         .iter()
         .filter(|(address, tab)| base_tab.get(*address).is_some_and(|old| old != *tab))
         .map(|(address, _)| address.clone())
         .collect();
+    // Started here and adopted by herdr.app before this push: it leaves the
+    // place herdr.app gave it, to go where this viewer split it.
+    moved.extend(
+        started
+            .iter()
+            .filter(|address| {
+                !base_programs.contains(*address)
+                    && native_programs.contains(*address)
+                    && placed.contains(*address)
+            })
+            .cloned(),
+    );
     for address in base_programs.difference(&native_programs).chain(&moved) {
         for root in super::app_layout::tab_roots_mut(document) {
             if remove_terminal(root, address) {
@@ -788,6 +818,79 @@ mod tests {
             ))
         );
         assert_ne!(canonical(&app), canonical(&native));
+    }
+
+    #[test]
+    fn a_split_started_here_stays_in_its_column_when_herdr_app_adopted_it_first() {
+        // `[column(t1, t2) | sidebar t3]`; t2 split right here into t4.
+        let document_with = |adopted: bool| {
+            // As herdr.app adopts a labeled program: it splits the last pane.
+            let mut sidebar = block("p3", "t3");
+            sidebar["size"] = json!({"weight": if adopted { 0.1 } else { 0.2 }});
+            let mut children = vec![
+                json!({"id": "c1", "type": "column", "size": {"weight": 0.8},
+                    "children": [block("p1", "t1"), block("p2", "t2")]}),
+                sidebar,
+            ];
+            if adopted {
+                let mut new = block("p4", "t4");
+                new["size"] = json!({"weight": 0.1});
+                children.push(new);
+            }
+            json!({"spaces": [{"id": "sp1", "name": "S", "folder": "/w",
+                "tabs": [{"id": "tb1", "name": "T",
+                    "root": {"id": "tb1", "type": "row", "children": children}}]}]})
+        };
+        let base = shown(&document_with(false));
+        let split_here = split(
+            true,
+            vec![
+                (
+                    0.8,
+                    split(
+                        false,
+                        vec![
+                            (0.5, p("t1")),
+                            (0.5, split(true, vec![(0.5, p("t2")), (0.5, p("t4"))])),
+                        ],
+                    ),
+                ),
+                (0.2, p("t3")),
+            ],
+        );
+        let native = vec![space("sp1", vec![tab("tb1", split_here.clone())])];
+        let started: HashSet<String> = ["t4".to_owned()].into();
+
+        let mut document = document_with(true);
+        assert!(push_changes_started(
+            &mut document,
+            &base,
+            &native,
+            &started,
+            |_| true,
+            ids()
+        ));
+        let layout = &shown(&document)[0].tabs[0].layout;
+        assert_eq!(canonical(layout), canonical(&split_here));
+        let mut held = Vec::new();
+        programs(layout, &mut held);
+        assert_eq!(held.iter().filter(|a| *a == "t4").count(), 1);
+
+        // Not started here (another viewer's, or herdr.app's): where the
+        // document has it.
+        let mut document = document_with(true);
+        push_changes_started(
+            &mut document,
+            &base,
+            &native,
+            &HashSet::new(),
+            |_| true,
+            ids(),
+        );
+        let ShownLayout::Split { parts, .. } = &shown(&document)[0].tabs[0].layout else {
+            panic!("a row");
+        };
+        assert_eq!(parts.last().map(|(_, part)| part), Some(&p("t4")));
     }
 
     #[test]

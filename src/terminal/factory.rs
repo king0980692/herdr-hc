@@ -231,8 +231,9 @@ impl TerminalFactory {
         let Ok(client) = host.client() else {
             return false;
         };
+        let started = host.started.clone();
         host.executor.spawn(async move {
-            let outcome = sync_layout_once(&client, base, native)
+            let outcome = sync_layout_once(&client, base, native, &started)
                 .await
                 .map_err(|error| error.to_string());
             let _ = events
@@ -468,6 +469,7 @@ impl TerminalFactory {
                         ))
                     })
                     .unwrap_or_default();
+                let placed_here = !labels.is_empty();
                 let (argv, env) =
                     crate::pane::hc_launch_command(command, env, self.is_saved_source())?;
                 let cwd = cwd.to_str().ok_or_else(|| {
@@ -479,6 +481,11 @@ impl TerminalFactory {
                     let address=result.get("address").and_then(Value::as_str).ok_or_else(||io::Error::new(io::ErrorKind::InvalidData,"hc run returned no address; outcome unknown"))?;
                     let binding=TerminalBinding{core_id:client.hello.core.id.clone(),address:address.to_owned()};
                     binding.validate().map_err(|e|io::Error::new(e.kind(),format!("hc run returned an invalid binding; outcome unknown: {e}")))?;
+                    if placed_here {
+                        if let Ok(mut started) = host.started.lock() {
+                            started.insert(address.to_owned());
+                        }
+                    }
                     match TerminalRuntime::attach_hc(pane,rows,cols,client.clone(),address,0,scrollback,theme,appearance,events,notify,dirty,true).await {
                         Ok(runtime)=>Ok(runtime),
                         Err(e)=>match kill(&client,address).await {Ok(())=>Err(e),Err(cleanup)=>Err(io::Error::new(e.kind(),format!("{e}; cleanup of {}/{address} failed: {cleanup}",binding.core_id)))},
@@ -627,6 +634,7 @@ async fn sync_layout_once(
     client: &crate::hc::Client,
     base: Option<Vec<crate::hc_entry::app_layout::ShownSpace>>,
     native: Vec<crate::hc_entry::app_layout::ShownSpace>,
+    started: &std::sync::Mutex<std::collections::HashSet<String>>,
 ) -> io::Result<(
     Value,
     Vec<String>,
@@ -634,7 +642,7 @@ async fn sync_layout_once(
 )> {
     use crate::hc_entry::{
         app_layout::{shown_spaces, DOCUMENT},
-        app_sync::{held_terminals, push_changes, restricted, union},
+        app_sync::{all_programs, held_terminals, push_changes_started, restricted, union},
     };
     for _ in 0..4 {
         // The document first: a program in it was started before the list
@@ -681,10 +689,12 @@ async fn sync_layout_once(
             }
         };
         let held_before = held_terminals(&document);
-        if push_changes(
+        let started_now = started.lock().map(|s| s.clone()).unwrap_or_default();
+        if push_changes_started(
             &mut document,
             &base,
             &sent,
+            &started_now,
             |address| live.contains(address),
             crate::hc_entry::new_placement_id,
         ) {
@@ -715,6 +725,16 @@ async fn sync_layout_once(
                 Err(error) if error.to_string().contains("\"conflict\"") => continue,
                 Err(error) => return Err(error),
             }
+        }
+        // Placed from this viewer's own layout now (or ended): later rounds
+        // treat them as any synced program.
+        if let Ok(mut started) = started.lock() {
+            let held = held_terminals(&document);
+            let sent_programs = all_programs(&sent);
+            started.retain(|address| {
+                live.contains(address)
+                    && !(held.contains(address) && sent_programs.contains(address))
+            });
         }
         let mut live: Vec<String> = live.into_iter().collect();
         live.sort();
