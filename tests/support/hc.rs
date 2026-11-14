@@ -168,6 +168,14 @@ fn source_json(runtime: &Path, args: &[&str]) -> serde_json::Value {
     serde_json::from_slice(&output.stdout).expect("scratch hc JSON")
 }
 
+/// A terminal's screen as text.
+pub fn screen(runtime: &Path, address: &str) -> String {
+    source_json(runtime, &["read", address, "--json"])["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned()
+}
+
 pub fn terminals(runtime: &Path) -> Vec<serde_json::Value> {
     // `ls` deliberately omits PID; `get` is the complete source record.
     source_json(runtime, &["ls", "--all", "--json"])["terminals"]

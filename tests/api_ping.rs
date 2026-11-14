@@ -1982,6 +1982,74 @@ fn hc_pane_records_an_agent_session_on_its_terminal() {
 
 #[cfg(not(target_os = "macos"))]
 #[test]
+fn hc_pane_resumes_its_agent_session_in_the_shell_replacing_a_lost_program() {
+    let _lock = test_lock();
+    let base = unique_test_dir();
+    let config_home = base.join("config");
+    let runtime_dir = base.join("runtime");
+    let socket_path = runtime_dir.join("herdr.sock");
+
+    let child = spawn_herdr(&config_home, &runtime_dir, &socket_path);
+    wait_for_socket(&socket_path, Duration::from_secs(5));
+    let created = send_request(
+        &socket_path,
+        &format!(
+            r#"{{"id":"resume_ws","method":"workspace.create","params":{{"cwd":"{}","focus":true}}}}"#,
+            base.display()
+        ),
+    );
+    let pane_id = created["result"]["root_pane"]["pane_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let session = "8df67940-1111-2222-3333-444455556666";
+    let reported = support::hc::request(
+        &socket_path,
+        "pane.report_agent_session",
+        serde_json::json!({"pane_id": pane_id, "source": "herdr:claude", "agent": "claude",
+            "seq": 1, "agent_session_id": session}),
+    );
+    assert!(reported["error"].is_null(), "{reported}");
+    let mut recorded = serde_json::Value::Null;
+    assert!(
+        support::wait_until(Duration::from_secs(5), Duration::from_millis(50), || {
+            recorded = support::hc::terminals(&runtime_dir)
+                .into_iter()
+                .find(|terminal| {
+                    terminal["labels"]["herdr-native.agent.session"] == format!("id:{session}")
+                })
+                .unwrap_or_default();
+            !recorded.is_null()
+        }),
+        "the session was never recorded"
+    );
+    // Only a kept program is replaced by a shell when it is lost.
+    assert_eq!(recorded["keep"], true, "{recorded}");
+    let address = recorded["address"].as_str().unwrap().to_owned();
+    let lost_pid = recorded["pid"].as_i64().unwrap();
+    unsafe { libc::kill(lost_pid as libc::pid_t, libc::SIGKILL) };
+
+    let mut screen = String::new();
+    assert!(
+        support::wait_until(Duration::from_secs(20), Duration::from_millis(100), || {
+            screen = support::hc::screen(&runtime_dir, &address);
+            screen.contains(&format!("--resume {session}"))
+        }),
+        "the replacement shell was not given the resume: {screen}"
+    );
+    let replaced = support::hc::terminals(&runtime_dir)
+        .into_iter()
+        .find(|terminal| terminal["address"] == address.as_str())
+        .unwrap_or_default();
+    assert_ne!(replaced["pid"].as_i64(), Some(lost_pid), "{replaced}");
+    // Typed once.
+    assert_eq!(screen.matches("--resume").count(), 1, "{screen}");
+
+    cleanup_spawned_herdr(child, base);
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
 fn hc_pane_keeps_tokens_a_plugin_reports() {
     let _lock = test_lock();
     let base = unique_test_dir();

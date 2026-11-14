@@ -60,9 +60,12 @@ impl App {
             .get(&terminal_id)?
             .hc_snapshot
             .as_ref()?;
-        let pid = recorded::live_pid(&snapshot.terminal.facts)?;
+        let facts = &snapshot.terminal.facts;
+        let pid = recorded::live_pid(facts)?;
+        // Reported while the program itself is in front: the agent is it.
+        let root = recorded::root_in_front(facts);
         let address = snapshot.binding.address.clone();
-        let labels = recorded::labels_for(source, agent, session_ref, pid);
+        let labels = recorded::labels_for(source, agent, session_ref, pid, root);
         self.hc_agent_sessions
             .touched
             .insert(address.clone(), Instant::now());
@@ -79,7 +82,13 @@ impl App {
         }
         let address = &snapshot.binding.address;
         let sessions = &self.hc_agent_sessions;
-        match recorded::decide(facts, sessions.resume_enabled, sessions.settling(address)) {
+        let seen = recorded::Seen {
+            enabled: sessions.resume_enabled,
+            settling: sessions.settling(address),
+            resumed_here: recorded::live_pid(facts)
+                .is_some_and(|pid| sessions.attempted.contains(&(address.clone(), pid))),
+        };
+        match recorded::decide(facts, seen) {
             Decision::Nothing => {}
             Decision::Clear => {
                 self.terminal_factory
