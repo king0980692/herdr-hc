@@ -119,6 +119,12 @@ fn shape(layout: &ShownLayout) -> ShownLayout {
     }
 }
 
+fn programs_of(layout: &ShownLayout) -> Vec<String> {
+    let mut out = Vec::new();
+    programs(layout, &mut out);
+    out
+}
+
 fn programs(layout: &ShownLayout, out: &mut Vec<String>) {
     match layout {
         ShownLayout::Program(address) => out.push(address.clone()),
@@ -540,15 +546,20 @@ pub(crate) fn push_changes_started(
                 continue;
             }
             let untouched = synced.is_some() && arranged.get(&tab.id) == Some(&synced);
-            // Only resized here (a sidebar opening at its width), and the
-            // document still has the same rows, columns and programs: the
-            // resize goes in even though the document changed meanwhile.
+            // The document already has this viewer's rows, columns and
+            // programs and differs only in shares, and whatever this viewer
+            // added since it synced it started itself (a sidebar it opened and
+            // then sized, which herdr.app may have adopted at 50/50 meanwhile):
+            // its shares go in even though the document changed meanwhile.
             let resized_here = synced.as_ref().is_some_and(|synced| {
-                shape(synced) == shape(&wanted)
-                    && arranged
-                        .get(&tab.id)
-                        .and_then(Option::as_ref)
-                        .is_some_and(|now| shape(now) == shape(&wanted))
+                let before: HashSet<String> = programs_of(synced).into_iter().collect();
+                arranged
+                    .get(&tab.id)
+                    .and_then(Option::as_ref)
+                    .is_some_and(|now| shape(now) == shape(&wanted))
+                    && programs_of(&wanted)
+                        .iter()
+                        .all(|address| before.contains(address) || started.contains(address))
             });
             if (untouched || resized_here) && doc_tab.get("root").is_some_and(rebuildable) {
                 let Some(layout) = only(&tab.layout, &ours) else {
@@ -959,6 +970,61 @@ mod tests {
         let mut held = Vec::new();
         programs(&shown(&document)[0].tabs[0].layout, &mut held);
         assert!(held.contains(&"t3".to_owned()), "{held:?}");
+    }
+
+    #[test]
+    fn a_sidebar_opened_and_sized_here_keeps_its_width_when_herdr_app_adopted_it() {
+        // Synced: the tab with its shell only. Since: a sidebar opened here
+        // and sized to 0.19; herdr.app adopted it at 50/50 meanwhile.
+        let base = shown(
+            &json!({"spaces": [{"id": "sp1", "name": "S", "folder": "/w",
+            "tabs": [{"id": "tb1", "name": "T", "root": block("tb1", "t1")}]}]}),
+        );
+        let adopted = || {
+            let mut shell = block("p1", "t1");
+            shell["size"] = json!({"weight": 0.5});
+            let mut sidebar = block("p2xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "t2");
+            sidebar["size"] = json!({"weight": 0.5});
+            json!({"spaces": [{"id": "sp1", "name": "S", "folder": "/w",
+                "tabs": [{"id": "tb1", "name": "T",
+                    "root": {"id": "tb1", "type": "row", "children": [shell, sidebar]}}]}]})
+        };
+        let sized = vec![space(
+            "sp1",
+            vec![tab(
+                "tb1",
+                split(true, vec![(0.81, p("t1")), (0.19, p("t2"))]),
+            )],
+        )];
+        let started: HashSet<String> = ["t2".to_owned()].into();
+        let mut document = adopted();
+        assert!(push_changes_started(
+            &mut document,
+            &base,
+            &sized,
+            &started,
+            |_| true,
+            ids()
+        ));
+        assert_eq!(
+            canonical(&shown(&document)[0].tabs[0].layout),
+            canonical(&sized[0].tabs[0].layout)
+        );
+        // A program this viewer did not start (another viewer's): the
+        // document's shares stand.
+        let mut document = adopted();
+        push_changes_started(
+            &mut document,
+            &base,
+            &sized,
+            &HashSet::new(),
+            |_| true,
+            ids(),
+        );
+        assert_eq!(
+            canonical(&shown(&document)[0].tabs[0].layout),
+            canonical(&split(true, vec![(0.5, p("t1")), (0.5, p("t2"))]))
+        );
     }
 
     #[test]
