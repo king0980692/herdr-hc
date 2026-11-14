@@ -67,6 +67,22 @@ pub(crate) fn records_session(facts: &Map<String, Value>) -> bool {
     label(facts, SESSION_LABEL).is_some()
 }
 
+/// Whether the terminal's own program is `agent` itself (not a shell it was
+/// started from): its command, past any `env … --` wrapper, names it.
+pub(crate) fn runs_as_program(facts: &Map<String, Value>, agent: &str) -> bool {
+    let Some(argv) = facts.get("argv").and_then(Value::as_array) else {
+        return false;
+    };
+    let command = match argv.iter().rposition(|arg| arg == "--") {
+        Some(at) => argv.get(at + 1),
+        None => argv.first(),
+    };
+    command
+        .and_then(Value::as_str)
+        .and_then(|command| command.rsplit('/').next())
+        .is_some_and(|name| name == agent)
+}
+
 /// Whether the terminal's own program is the one in front.
 pub(crate) fn root_in_front(facts: &Map<String, Value>) -> bool {
     live_pid(facts).is_some_and(|pid| {
@@ -318,6 +334,28 @@ mod tests {
             ),
             Decision::Resume { pid: 200, .. }
         ));
+    }
+
+    #[test]
+    fn an_agent_is_the_program_only_when_the_terminal_runs_it() {
+        let with = |argv: Value| json!({"argv": argv}).as_object().cloned().unwrap();
+        assert!(runs_as_program(
+            &with(json!(["/usr/bin/env", "-u", "X", "--", "claude"])),
+            "claude"
+        ));
+        assert!(runs_as_program(
+            &with(json!(["/usr/local/bin/claude", "--resume", "x"])),
+            "claude"
+        ));
+        assert!(!runs_as_program(
+            &with(json!(["/usr/bin/env", "-u", "X", "--", "/bin/bash"])),
+            "claude"
+        ));
+        assert!(!runs_as_program(
+            &with(json!(["sh", "-c", "exec \"${SHELL:-/bin/sh}\" -l"])),
+            "claude"
+        ));
+        assert!(!runs_as_program(&Map::new(), "claude"));
     }
 
     #[test]

@@ -525,6 +525,25 @@ impl TerminalFactory {
                     })
                     .unwrap_or_default();
                 let placed_here = !labels.is_empty();
+                // On a shared machine with its bridge running, the program can
+                // reach herdr-native (an agent reports its session through it).
+                let bridge = self
+                    .runs_on_shared_machine()
+                    .then(|| {
+                        host.bridge_socket
+                            .lock()
+                            .ok()
+                            .and_then(|socket| socket.clone())
+                    })
+                    .flatten();
+                let routed;
+                let env = match bridge {
+                    Some(socket) => {
+                        routed = env.clone().with_route(socket);
+                        &routed
+                    }
+                    None => env,
+                };
                 let (argv, env) =
                     crate::pane::hc_launch_command(command, env, self.is_saved_source())?;
                 let cwd = cwd.to_str().ok_or_else(|| {

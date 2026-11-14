@@ -62,8 +62,8 @@ impl App {
             .as_ref()?;
         let facts = &snapshot.terminal.facts;
         let pid = recorded::live_pid(facts)?;
-        // Reported while the program itself is in front: the agent is it.
-        let root = recorded::root_in_front(facts);
+        // The terminal's own program is the agent (not a shell it runs in).
+        let root = recorded::runs_as_program(facts, agent);
         let address = snapshot.binding.address.clone();
         let labels = recorded::labels_for(source, agent, session_ref, pid, root);
         self.hc_agent_sessions

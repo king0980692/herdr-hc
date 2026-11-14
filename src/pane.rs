@@ -190,6 +190,21 @@ impl PaneLaunchEnv {
         }
     }
 
+    /// Points the program at herdr's API through `socket` (on a shared
+    /// machine: the bridge relay there).
+    pub(crate) fn with_route(mut self, socket: String) -> Self {
+        self.extra.retain(|(key, _)| {
+            key != crate::api::SOCKET_PATH_ENV_VAR && key != crate::HERDR_ENV_VAR
+        });
+        self.extra
+            .push((crate::api::SOCKET_PATH_ENV_VAR.to_owned(), socket));
+        self.extra.push((
+            crate::HERDR_ENV_VAR.to_owned(),
+            crate::HERDR_ENV_VALUE.to_owned(),
+        ));
+        self
+    }
+
     pub(crate) fn with_identity(
         mut self,
         workspace_id: String,
@@ -2260,13 +2275,14 @@ pub(crate) fn hc_launch_command(
         for (key, value) in &launch_env.extra {
             cmd.env(key, value);
         }
-        // A plugin pane has an API route back to herdr there (its launcher
-        // points it at the bridge), so it also needs to know which pane it is,
-        // as a local one does. Other remote programs have no route back.
+        // A program with an API route back to herdr there (a plugin pane,
+        // whose launcher points it at the bridge, or one given the bridge's
+        // socket) also needs to know which pane it is, as a local one does.
+        // Other remote programs have no route back.
         let routed = launch_env
             .extra
             .iter()
-            .any(|(key, _)| key == PLUGIN_ID_ENV_VAR);
+            .any(|(key, _)| key == PLUGIN_ID_ENV_VAR || key == crate::api::SOCKET_PATH_ENV_VAR);
         match &launch_env.identity {
             PaneLaunchIdentity::Managed {
                 workspace_id,

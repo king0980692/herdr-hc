@@ -805,7 +805,7 @@ fn hc_app_unbound_legacy_layout_can_be_discarded_without_claiming_or_killing_a_p
 }
 
 #[test]
-fn hc_source_launch_names_the_pane_only_to_plugin_panes_routed_back_to_herdr() {
+fn hc_source_launch_names_the_pane_only_to_programs_routed_back_to_herdr() {
     let command = vec!["/bin/cat".into()];
     let launch = |extra: Vec<(String, String)>| {
         crate::pane::hc_launch_command(
@@ -829,6 +829,22 @@ fn hc_source_launch_names_the_pane_only_to_plugin_panes_routed_back_to_herdr() {
     assert!(!argv
         .windows(2)
         .any(|pair| pair == ["-u", crate::integration::HERDR_PANE_ID_ENV_VAR]));
+
+    // Given the bridge's socket: routed too, with herdr's environment.
+    let (_, env) = crate::pane::hc_launch_command(
+        crate::terminal::TerminalCommand::Argv(&command, crate::pane::AgentDetection::Enabled),
+        &crate::pane::PaneLaunchEnv::from_extra(Vec::new())
+            .with_identity("w1".into(), "w1:t2".into(), "w1:p3".into())
+            .with_route("/home/u/.local/state/herdr-native/run/core.sock".into()),
+        true,
+    )
+    .unwrap();
+    assert_eq!(env[crate::integration::HERDR_PANE_ID_ENV_VAR], "w1:p3");
+    assert_eq!(
+        env[crate::api::SOCKET_PATH_ENV_VAR],
+        "/home/u/.local/state/herdr-native/run/core.sock"
+    );
+    assert_eq!(env[crate::HERDR_ENV_VAR], crate::HERDR_ENV_VALUE);
 
     // No route back: an id would only point it at a pane it cannot reach.
     let (argv, env) = launch(Vec::new());

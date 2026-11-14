@@ -30,6 +30,8 @@ const ALLOWED_METHODS: &[&str] = &[
     "pane.send_text",
     "pane.send_keys",
     "pane.report_metadata",
+    // An agent there reports its session, so it can be resumed after a loss.
+    "pane.report_agent_session",
     "tab.list",
     "tab.get",
     "tab.focus",
@@ -86,6 +88,17 @@ fn frame_line(kind: char, id: u64, body: &[u8], end: &str) -> Vec<u8> {
 }
 
 /// The response the presenter sends for a request it does not run.
+/// The socket a running relay listens on, from its argv
+/// (`herdr-native bridge-relay --socket <path>`).
+fn relay_socket(argv: &serde_json::Value) -> Option<String> {
+    let argv = argv.as_array()?;
+    let at = argv.iter().position(|arg| arg == "--socket")?;
+    argv.get(at + 1)?
+        .as_str()
+        .filter(|path| path.starts_with('/'))
+        .map(str::to_owned)
+}
+
 fn refusal(code: &str, message: &str) -> Vec<u8> {
     serde_json::json!({"id": null, "error": {"code": code, "message": message}})
         .to_string()
@@ -485,13 +498,31 @@ mod host {
 
     /// Starts the relay on this core, or finds the one running, and answers
     /// its requests until the transport ends.
-    pub(crate) async fn serve(client: &Client, api_socket: &Path) -> io::Result<()> {
+    pub(crate) async fn serve(
+        client: &Client,
+        api_socket: &Path,
+        socket: &std::sync::Mutex<Option<String>>,
+    ) -> io::Result<()> {
         let core = client.hello.core.id.clone();
         install(client).await;
         let address = match find_relay(client).await? {
             Some(address) => address,
             None => start_relay(client, &core).await?,
         };
+        // Where the relay listens on that machine (its path is the remote
+        // home's): programs started there from now on are pointed at it.
+        for _ in 0..20 {
+            let record = client
+                .call("terminal.get", json!({ "terminal": address }))
+                .await?;
+            if let Some(path) = relay_socket(&record["foreground"]["argv"]) {
+                if let Ok(mut socket) = socket.lock() {
+                    *socket = Some(path);
+                }
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
         let (_, mut stream) = client
             .open(
                 "terminal.attach",
@@ -685,6 +716,33 @@ exec "$bin" bridge-relay --socket "$HOME/.local/state/herdr-native/run/$1.sock""
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_relay_socket_is_read_from_its_command() {
+        let argv = serde_json::json!([
+            "/home/u/.local/share/herdr-native/bin/herdr-native",
+            "bridge-relay",
+            "--socket",
+            "/home/u/.local/state/herdr-native/run/core.sock"
+        ]);
+        assert_eq!(
+            relay_socket(&argv).as_deref(),
+            Some("/home/u/.local/state/herdr-native/run/core.sock")
+        );
+        // Not started yet (the launching shell in front), or not a path.
+        assert_eq!(relay_socket(&serde_json::json!(["sh", "-c", "x"])), None);
+        assert_eq!(
+            relay_socket(&serde_json::json!(["r", "--socket", "relative.sock"])),
+            None
+        );
+        assert_eq!(relay_socket(&serde_json::Value::Null), None);
+    }
+
+    #[test]
+    fn an_agent_on_that_machine_may_report_its_session() {
+        assert!(allowed(br#"{"id":"1","method":"pane.report_agent_session","params":{}}"#).is_ok());
+        assert!(allowed(br#"{"id":"1","method":"pane.report_agent","params":{}}"#).is_err());
+    }
 
     #[test]
     fn frames_survive_terminal_noise_and_partial_lines() {

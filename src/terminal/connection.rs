@@ -70,6 +70,9 @@ pub(crate) struct CoreHost {
     /// Programs this viewer started for its layout that herdr.app's
     /// document has not yet had from it (see `push_changes_started`).
     pub(crate) started: Arc<Mutex<std::collections::HashSet<String>>>,
+    /// The bridge relay's socket on this (remote) core once it runs: new
+    /// programs there reach herdr-native through it.
+    pub(crate) bridge_socket: Arc<Mutex<Option<String>>>,
 }
 impl Drop for CoreHost {
     fn drop(&mut self) {
@@ -165,6 +168,7 @@ impl CoreHost {
     #[cfg(all(unix, not(test)))]
     pub(crate) fn watch_bridge(&self, api_socket: std::path::PathBuf) {
         let mut source = self.source.clone();
+        let socket = self.bridge_socket.clone();
         let task = self.executor.spawn(async move {
             loop {
                 let client = source.borrow_and_update().client.clone();
@@ -173,7 +177,9 @@ impl CoreHost {
                         return std::future::pending::<()>().await;
                     };
                     loop {
-                        if let Err(error) = crate::bridge::serve(&client, &api_socket).await {
+                        if let Err(error) =
+                            crate::bridge::serve(&client, &api_socket, &socket).await
+                        {
                             tracing::info!(%error, "plugin bridge paused; retrying");
                         }
                         tokio::time::sleep(Duration::from_secs(30)).await;
@@ -221,6 +227,7 @@ impl CoreHost {
                 bridge: Mutex::new(None),
                 placements: Mutex::default(),
                 started: Arc::default(),
+                bridge_socket: Arc::default(),
             },
             send,
         )
@@ -391,6 +398,7 @@ impl CoreHost {
             bridge: Mutex::new(None),
             placements: Mutex::default(),
             started: Arc::default(),
+            bridge_socket: Arc::default(),
         })
     }
     pub(crate) fn block_on<T: Send>(
