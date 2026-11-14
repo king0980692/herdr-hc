@@ -453,17 +453,31 @@ pub(crate) fn push_changes_started(
         .map(|(address, _)| address.clone())
         .collect();
     // Started here and adopted by herdr.app before this push: it leaves the
-    // place herdr.app gave it, to go where this viewer split it.
-    moved.extend(
-        started
-            .iter()
-            .filter(|address| {
-                !base_programs.contains(*address)
-                    && native_programs.contains(*address)
-                    && placed.contains(*address)
-            })
-            .cloned(),
-    );
+    // place herdr.app gave it, to go where this viewer split it, keeping the
+    // block id herdr.app gave it (its focus and history refer to it).
+    let adopted: Vec<String> = started
+        .iter()
+        .filter(|address| {
+            !base_programs.contains(*address)
+                && native_programs.contains(*address)
+                && placed.contains(*address)
+        })
+        .cloned()
+        .collect();
+    let mut adopted_ids: HashMap<String, String> = HashMap::new();
+    for root in before
+        .get("spaces")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|space| space.get("tabs").and_then(Value::as_array))
+        .flatten()
+        .filter_map(|tab| tab.get("root"))
+    {
+        block_ids(root, &mut adopted_ids);
+    }
+    adopted_ids.retain(|address, _| adopted.contains(address));
+    moved.extend(adopted);
     for address in base_programs.difference(&native_programs).chain(&moved) {
         for root in super::app_layout::tab_roots_mut(document) {
             if remove_terminal(root, address) {
@@ -691,7 +705,48 @@ pub(crate) fn push_changes_started(
             }
         }
     }
+    if !adopted_ids.is_empty() {
+        let mut in_use = HashMap::new();
+        for root in super::app_layout::tab_roots_mut(document) {
+            block_ids(root, &mut in_use);
+        }
+        let taken: HashSet<String> = in_use.into_values().collect();
+        for root in super::app_layout::tab_roots_mut(document) {
+            restore_block_ids(root, &adopted_ids, &taken);
+        }
+    }
     *document != before
+}
+
+/// The id of each terminal's block (a terminal's own, not its container's).
+fn block_ids(node: &Value, out: &mut HashMap<String, String>) {
+    if let Some(address) = terminal(node) {
+        if let Some(id) = node.get("id").and_then(Value::as_str) {
+            out.insert(address.to_owned(), id.to_owned());
+        }
+        return;
+    }
+    for child in children(node).into_iter().flatten() {
+        block_ids(child, out);
+    }
+}
+
+/// Gives a re-placed terminal's block back its earlier id, unless something
+/// else now has that id.
+fn restore_block_ids(node: &mut Value, ids: &HashMap<String, String>, taken: &HashSet<String>) {
+    if let Some(address) = terminal(node).map(str::to_owned) {
+        if let Some(id) = ids.get(&address).filter(|id| !taken.contains(*id)) {
+            if let Some(object) = node.as_object_mut() {
+                object.insert("id".into(), id.clone().into());
+            }
+        }
+        return;
+    }
+    if let Some(children) = children_mut(node) {
+        for child in children {
+            restore_block_ids(child, ids, taken);
+        }
+    }
 }
 
 fn only(layout: &ShownLayout, keep: &impl Fn(&str) -> bool) -> Option<ShownLayout> {
@@ -925,6 +980,10 @@ mod tests {
         let mut held = Vec::new();
         programs(layout, &mut held);
         assert_eq!(held.iter().filter(|a| *a == "t4").count(), 1);
+        // The block keeps the id herdr.app gave it when adopting it.
+        let mut block_id = HashMap::new();
+        block_ids(&document["spaces"][0]["tabs"][0]["root"], &mut block_id);
+        assert_eq!(block_id["t4"], "p4");
 
         // Not started here (another viewer's, or herdr.app's): where the
         // document has it.
@@ -1027,6 +1086,9 @@ mod tests {
             canonical(&shown(&document)[0].tabs[0].layout),
             canonical(&sized[0].tabs[0].layout)
         );
+        let mut block_id = HashMap::new();
+        block_ids(&document["spaces"][0]["tabs"][0]["root"], &mut block_id);
+        assert_eq!(block_id["t2"], "p2xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx");
         // A program this viewer did not start (another viewer's): the
         // document's shares stand.
         let mut document = adopted();
