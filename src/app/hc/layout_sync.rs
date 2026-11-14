@@ -36,6 +36,9 @@ pub(crate) struct LayoutSync {
     /// Names of this viewer's spaces and tabs (by id) when the running round
     /// was sent: one changed here since keeps its new name.
     sent_names: HashMap<String, String>,
+    /// Each tab's arrangement when the running round was sent: one
+    /// rearranged here since (a resize, say) keeps its new arrangement.
+    sent_layouts: HashMap<String, ShownLayout>,
     /// Tabs (by id) the last apply left as they were: their synced layout
     /// stays what it was before, so the next push does not undo the document.
     skipped: HashSet<String>,
@@ -119,6 +122,20 @@ fn fold(layout: &ShownLayout, panes: &HashMap<String, PaneId>) -> Option<Node> {
             rest.map(|(_, node)| node)
         }
     }
+}
+
+/// Whether a tab was rearranged here after its arrangement was `sent`, with
+/// the programs `document` has: this viewer's change, not one to undo.
+fn rearranged_since_sent(
+    sent: Option<&ShownLayout>,
+    current: &ShownLayout,
+    document: &ShownLayout,
+) -> bool {
+    let Some(sent) = sent else {
+        return false;
+    };
+    let programs = |layout: &ShownLayout| programs_of(layout).into_iter().collect::<HashSet<_>>();
+    *sent != canonical(current) && programs(current) == programs(document)
 }
 
 /// The same spaces, tabs, names and arrangements, in the same order.
@@ -283,6 +300,11 @@ impl App {
                 )
             })
             .collect();
+        let layouts: HashMap<String, ShownLayout> = native
+            .iter()
+            .flat_map(|space| &space.tabs)
+            .map(|tab| (tab.id.clone(), canonical(&tab.layout)))
+            .collect();
         if self.terminal_factory.sync_herdr_app_layout(
             source.generation,
             self.layout_sync.base.clone(),
@@ -291,6 +313,7 @@ impl App {
         ) {
             self.layout_sync.in_flight = true;
             self.layout_sync.sent_names = names;
+            self.layout_sync.sent_layouts = layouts;
             self.layout_sync.again = false;
         }
     }
@@ -362,6 +385,7 @@ impl App {
                     known.extend(ended);
                 }
                 let changed = self.apply_shared_layout(&view, &known);
+                self.layout_sync.sent_layouts.clear();
                 // In step with the document, less what this viewer could not
                 // show (its next round must not drop those from the document).
                 let shown: HashSet<String> = self
@@ -763,9 +787,19 @@ impl App {
                 .find(|(_, p)| **p == pane)
                 .map(|(a, _)| a.clone())
         };
-        if from_binary(&snapshot_of(tab.layout.root()), &address)
-            .is_some_and(|current| canonical(&current) == canonical(layout))
+        let current = from_binary(&snapshot_of(tab.layout.root()), &address);
+        if current
+            .as_ref()
+            .is_some_and(|current| canonical(current) == canonical(layout))
         {
+            return false;
+        }
+        // Rearranged here since the round was sent: that stands, and the
+        // next round writes it.
+        if current.as_ref().is_some_and(|current| {
+            rearranged_since_sent(self.layout_sync.sent_layouts.get(tab_id), current, layout)
+        }) {
+            self.layout_sync.again = true;
             return false;
         }
         let wanted = programs_of(layout);
@@ -852,6 +886,35 @@ mod tests {
 
     fn p(address: &str) -> ShownLayout {
         ShownLayout::Program(address.into())
+    }
+
+    #[test]
+    fn a_tab_resized_here_while_its_round_ran_keeps_its_new_arrangement() {
+        let row = |a: f64, b: f64| ShownLayout::Split {
+            row: true,
+            parts: vec![(a, p("t1")), (b, p("t2"))],
+        };
+        let sent = canonical(&row(0.5, 0.5));
+        // Resized after sending; the document came back as sent.
+        assert!(rearranged_since_sent(
+            Some(&sent),
+            &row(0.8, 0.2),
+            &row(0.5, 0.5)
+        ));
+        // Not touched here since: the document's arrangement is shown.
+        assert!(!rearranged_since_sent(
+            Some(&sent),
+            &row(0.5, 0.5),
+            &row(0.7, 0.3)
+        ));
+        // Programs differ (added or closed elsewhere): the document's.
+        let three = ShownLayout::Split {
+            row: true,
+            parts: vec![(0.4, p("t1")), (0.4, p("t2")), (0.2, p("t3"))],
+        };
+        assert!(!rearranged_since_sent(Some(&sent), &row(0.8, 0.2), &three));
+        // Not in the round at all.
+        assert!(!rearranged_since_sent(None, &row(0.8, 0.2), &row(0.5, 0.5)));
     }
 
     #[test]
