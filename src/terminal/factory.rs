@@ -21,7 +21,7 @@ pub(crate) enum TerminalCommand<'a> {
     Line(&'a str, AgentDetection),
 }
 pub(crate) enum TerminalFactory {
-    Hc(CoreHost),
+    Hc(Box<CoreHost>),
     Unavailable(String),
     #[cfg(test)]
     Legacy,
@@ -46,7 +46,7 @@ impl TerminalFactory {
                 core_id.to_string_lossy().into_owned(),
                 registry,
             )))
-            .map(Self::Hc);
+            .map(|host| Self::Hc(Box::new(host)));
         }
         if let Some(id) = std::env::var_os(crate::hc::source::PROFILE_ENV) {
             return Self::connect_saved(id.to_string_lossy().into_owned(), CoreHost::connect);
@@ -58,29 +58,29 @@ impl TerminalFactory {
         connect: impl FnOnce(Source) -> io::Result<CoreHost>,
     ) -> io::Result<Self> {
         // Executor failure must stop startup, not fall back to client-local filesystem policy.
-        connect(Source::Saved(id)).map(Self::Hc)
+        connect(Source::Saved(id)).map(|host| Self::Hc(Box::new(host)))
     }
     #[cfg(test)]
     pub(crate) fn test_hc(client: Client) -> Self {
-        Self::Hc(CoreHost::test(client))
+        Self::Hc(Box::new(CoreHost::test(client)))
     }
     #[cfg(test)]
     pub(crate) fn test_source(
         client: Option<Client>,
     ) -> (Self, tokio::sync::watch::Sender<SourceState>) {
         let (host, send) = CoreHost::test_source(client, false);
-        (Self::Hc(host), send)
+        (Self::Hc(Box::new(host)), send)
     }
     #[cfg(test)]
     pub(crate) fn test_saved_source() -> Self {
-        Self::Hc(CoreHost::test_source(None, true).0)
+        Self::Hc(Box::new(CoreHost::test_source(None, true).0))
     }
 
     // Production startup is compiled out of tests; there only the Unix live checks use it.
     #[cfg_attr(all(test, not(unix)), allow(dead_code))]
     pub(crate) fn connect(command: tokio::process::Command) -> Self {
         match CoreHost::connect(Source::command(command)) {
-            Ok(host) => Self::Hc(host),
+            Ok(host) => Self::Hc(Box::new(host)),
             Err(e) => Self::Unavailable(e.to_string()),
         }
     }
