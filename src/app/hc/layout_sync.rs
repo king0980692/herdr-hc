@@ -410,7 +410,9 @@ impl App {
                             .into_iter()
                             .filter_map(|tab| {
                                 if skipped.contains(&tab.id) {
-                                    before.get(&tab.id).cloned()
+                                    // A tab new since the last round has no
+                                    // synced layout yet: the document's is it.
+                                    before.get(&tab.id).cloned().or(Some(tab))
                                 } else {
                                     Some(tab)
                                 }

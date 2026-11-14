@@ -721,6 +721,8 @@ async fn sync_layout_once(
                 "herdr.app layout is not one this build can read; it was left as it is",
             ));
         }
+        // Before the list: a program started after it is not judged by it.
+        let started_now = started.lock().map(|s| s.clone()).unwrap_or_default();
         let list = client.call("terminal.list", json!({"all": false})).await?;
         let live: std::collections::HashSet<String> = list["terminals"]
             .as_array()
@@ -744,7 +746,6 @@ async fn sync_layout_once(
             }
         };
         let held_before = held_terminals(&document);
-        let started_now = started.lock().map(|s| s.clone()).unwrap_or_default();
         if push_changes_started(
             &mut document,
             &base,
@@ -787,8 +788,13 @@ async fn sync_layout_once(
             let held = held_terminals(&document);
             let sent_programs = all_programs(&sent);
             started.retain(|address| {
-                live.contains(address)
-                    && !(held.contains(address) && sent_programs.contains(address))
+                crate::hc_entry::app_sync::still_unsynced(
+                    address,
+                    started_now.contains(address),
+                    &live,
+                    &held,
+                    &sent_programs,
+                )
             });
         }
         let mut live: Vec<String> = live.into_iter().collect();

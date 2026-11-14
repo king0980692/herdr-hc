@@ -132,6 +132,23 @@ fn programs(layout: &ShownLayout, out: &mut Vec<String>) {
     }
 }
 
+/// Whether a program this viewer started still waits to be placed from its
+/// own layout. Only one known when the round read the live programs can be
+/// judged by that list: one started since is not missing from it for having
+/// ended.
+pub(crate) fn still_unsynced(
+    address: &str,
+    known_at_start: bool,
+    live: &HashSet<String>,
+    held: &HashSet<String>,
+    sent: &HashSet<String>,
+) -> bool {
+    if !known_at_start {
+        return true;
+    }
+    live.contains(address) && !(held.contains(address) && sent.contains(address))
+}
+
 /// Every program the spaces show.
 pub(crate) fn all_programs(spaces: &[ShownSpace]) -> HashSet<String> {
     let mut out = Vec::new();
@@ -1025,6 +1042,23 @@ mod tests {
             canonical(&shown(&document)[0].tabs[0].layout),
             canonical(&split(true, vec![(0.5, p("t1")), (0.5, p("t2"))]))
         );
+    }
+
+    #[test]
+    fn a_program_started_during_a_round_stays_unsynced() {
+        let set = |items: &[&str]| -> HashSet<String> {
+            items.iter().map(|item| (*item).to_owned()).collect()
+        };
+        let (none, live) = (set(&[]), set(&["t1"]));
+        // Started after the round read the live list: not taken for ended.
+        assert!(still_unsynced("t2", false, &live, &none, &none));
+        // Known then and missing from it: ended.
+        assert!(!still_unsynced("t2", true, &live, &none, &none));
+        // Known, live, and now placed from what this viewer sent: synced.
+        let placed = set(&["t1"]);
+        assert!(!still_unsynced("t1", true, &live, &placed, &placed));
+        // Known, live, not yet in the document from this viewer: waits.
+        assert!(still_unsynced("t1", true, &live, &none, &placed));
     }
 
     #[test]
