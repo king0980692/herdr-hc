@@ -1908,6 +1908,80 @@ fn assert_hc_pane_rejects_legacy_methods(calls: Vec<(&str, serde_json::Value)>) 
 
 #[cfg(not(target_os = "macos"))]
 #[test]
+fn hc_pane_records_an_agent_session_on_its_terminal() {
+    let _lock = test_lock();
+    let base = unique_test_dir();
+    let config_home = base.join("config");
+    let runtime_dir = base.join("runtime");
+    let socket_path = runtime_dir.join("herdr.sock");
+
+    let child = spawn_herdr(&config_home, &runtime_dir, &socket_path);
+    wait_for_socket(&socket_path, Duration::from_secs(5));
+    let created = send_request(
+        &socket_path,
+        &format!(
+            r#"{{"id":"session_ws","method":"workspace.create","params":{{"cwd":"{}","focus":true}}}}"#,
+            base.display()
+        ),
+    );
+    let pane_id = created["result"]["root_pane"]["pane_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    support::hc::report_agent(&socket_path, &pane_id, "pi", "working");
+    let session = "8df67940-1111-2222-3333-444455556666";
+    let reported = support::hc::request(
+        &socket_path,
+        "pane.report_agent_session",
+        serde_json::json!({"pane_id": pane_id, "source": "herdr:claude", "agent": "claude",
+            "seq": 1, "agent_session_id": session}),
+    );
+    assert!(reported["error"].is_null(), "{reported}");
+    let mut labels = serde_json::Value::Null;
+    assert!(
+        support::wait_until(Duration::from_secs(5), Duration::from_millis(50), || {
+            labels = support::hc::terminals(&runtime_dir)
+                .into_iter()
+                .find(|terminal| terminal["state"] == "live")
+                .map(|terminal| terminal["labels"].clone())
+                .unwrap_or_default();
+            labels["herdr-native.agent.session"] == format!("id:{session}")
+        }),
+        "{labels}"
+    );
+    assert_eq!(labels["herdr-native.agent"], "claude", "{labels}");
+    assert_eq!(
+        labels["herdr-native.agent.source"], "herdr:claude",
+        "{labels}"
+    );
+    assert!(
+        labels["herdr-native.agent.pid"]
+            .as_str()
+            .is_some_and(|pid| pid.parse::<u64>().is_ok()),
+        "{labels}"
+    );
+    // The pane's agent and state stay hc's (OSC 7501): the session report did
+    // not change them, and reporting state is still refused.
+    let pane = support::hc::request(
+        &socket_path,
+        "pane.get",
+        serde_json::json!({ "pane_id": pane_id }),
+    );
+    assert_eq!(pane["result"]["pane"]["agent"], "pi", "{pane}");
+    assert_eq!(pane["result"]["pane"]["agent_status"], "working", "{pane}");
+    let state = support::hc::request(
+        &socket_path,
+        "pane.report_agent",
+        serde_json::json!({"pane_id": pane_id, "source": "herdr:claude", "agent": "claude",
+            "state": "idle"}),
+    );
+    assert_eq!(state["error"]["code"], "unsupported_runtime", "{state}");
+
+    cleanup_spawned_herdr(child, base);
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
 fn hc_pane_keeps_tokens_a_plugin_reports() {
     let _lock = test_lock();
     let base = unique_test_dir();
@@ -1963,15 +2037,12 @@ fn hc_pane_keeps_tokens_a_plugin_reports() {
 #[test]
 fn hc_pane_rejects_legacy_agent_and_metadata_reports() {
     // hc owns status: a hook report can neither override the source's state nor
-    // attach a session or display metadata to it.
+    // attach display metadata to it. (A session report is kept on the terminal
+    // instead: `hc_pane_records_an_agent_session_on_its_terminal`.)
     assert_hc_pane_rejects_legacy_methods(vec![
         (
             "pane.report_agent",
             serde_json::json!({"source":"herdr:pi","agent":"pi","state":"idle","message":"thinking","seq":2}),
-        ),
-        (
-            "pane.report_agent_session",
-            serde_json::json!({"source":"herdr:pi","agent":"pi","agent_session_path":"/tmp/pi-session.jsonl","session_start_source":"startup","seq":1}),
         ),
         (
             "pane.report_metadata",

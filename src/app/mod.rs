@@ -107,6 +107,7 @@ pub struct App {
     pub(crate) pixel_mouse_available: bool,
     pub(crate) hc_recovery: hc::Recovery,
     pub(crate) layout_sync: hc::LayoutSync,
+    pub(crate) hc_agent_sessions: hc::HcAgentSessions,
     pub(crate) terminal_runtimes: crate::terminal::TerminalRuntimeRegistry,
     // Drop the source executor after attachment runtimes; stopping it never kills hc programs.
     pub(crate) terminal_factory: crate::terminal::TerminalFactory,
@@ -672,6 +673,7 @@ impl App {
             default_workspace_initialized,
             hc_recovery: hc::Recovery::default(),
             layout_sync: hc::LayoutSync::default(),
+            hc_agent_sessions: hc::HcAgentSessions::new(config.session.resume_agents_on_restore),
             event_tx,
             event_rx,
             last_git_remote_status_refresh: Instant::now() - GIT_REMOTE_STATUS_REFRESH_INTERVAL,
@@ -1001,6 +1003,9 @@ impl App {
             }
         }
 
+        if !invalid_section("session") {
+            self.hc_agent_sessions.resume_enabled = config.session.resume_agents_on_restore;
+        }
         if !invalid_section("session")
             && Duration::from_millis(config.session.startup_per_agent_delay_ms.into())
                 != self.startup_per_agent_delay

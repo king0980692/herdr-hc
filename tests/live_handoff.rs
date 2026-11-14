@@ -1543,7 +1543,7 @@ fn hc_restart_accepts_canonical_pane_id_from_child_env() {
 }
 
 #[test]
-fn hc_restart_keeps_source_agent_name_despite_rejected_session_reports() {
+fn hc_restart_keeps_source_agent_name_despite_session_reports() {
     use std::os::unix::fs::PermissionsExt;
 
     let _lock = test_lock();
@@ -1590,7 +1590,8 @@ fn hc_restart_keeps_source_agent_name_despite_rejected_session_reports() {
         }),
     ));
     support::wait_for_file(&started_marker, Duration::from_secs(5));
-    let rejected = request(
+    // Kept on the terminal (for resuming it after a loss), nothing else.
+    let session = request(
         &api_socket,
         serde_json::json!({
             "id": "test:agent:session",
@@ -1605,7 +1606,7 @@ fn hc_restart_keeps_source_agent_name_despite_rejected_session_reports() {
             }
         }),
     );
-    assert_eq!(rejected["error"]["code"], "unsupported_runtime");
+    assert_ok(session);
     let rejected = request(
         &api_socket,
         serde_json::json!({
@@ -1654,7 +1655,7 @@ fn hc_restart_keeps_source_agent_name_despite_rejected_session_reports() {
         spawn_server(&config_home, &runtime_dir, &api_socket)
     });
 
-    let rejected = request(
+    let session = request(
         &api_socket,
         serde_json::json!({
             "id": "test:agent:new-session",
@@ -1669,7 +1670,7 @@ fn hc_restart_keeps_source_agent_name_despite_rejected_session_reports() {
             }
         }),
     );
-    assert_eq!(rejected["error"]["code"], "unsupported_runtime");
+    assert_ok(session);
     let named = request(
         &api_socket,
         serde_json::json!({"id":"name-after-restart","method":"agent.get","params":{"target":"reviewer"}}),

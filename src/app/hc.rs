@@ -1,10 +1,12 @@
 //! hc source updates are fenced runtime events, not inferred pane exits or hooks.
+mod agent_session;
 mod appeared;
 mod bootstrap;
 mod layout_sync;
 mod reconnect;
 use super::{actions::PaneStateUpdate, App};
 use crate::{events::AppEvent, hc::state::RuntimeSnapshot, terminal::TerminalId};
+pub(crate) use agent_session::HcAgentSessions;
 pub(crate) use layout_sync::LayoutSync;
 pub(crate) use reconnect::Recovery;
 use std::sync::Arc;
@@ -220,6 +222,10 @@ impl App {
                 return (true, updates);
             }
         }
+        self.follow_hc_agent_session(&snapshot);
+        let Some(terminal) = self.state.terminals.get(&terminal_id) else {
+            return (false, Vec::new());
+        };
         let changed = terminal.hc_snapshot.as_ref().is_none_or(|old| {
             old.connected != snapshot.connected
                 || old.attached != snapshot.attached

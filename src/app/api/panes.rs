@@ -1646,6 +1646,49 @@ impl App {
         )
     }
 
+    /// An agent in an hc pane reports its session: recorded on its terminal
+    /// (`crate::hc::agent_session`), nothing else about the pane changes.
+    pub(super) fn handle_hc_pane_report_agent_session(
+        &mut self,
+        id: String,
+        ws_idx: usize,
+        pane_id: crate::layout::PaneId,
+        params: PaneReportAgentSessionParams,
+    ) -> String {
+        let Some(agent_label) = normalize_reported_agent_label(&params.agent) else {
+            return invalid_agent(id);
+        };
+        if params.resume_argv.is_some() {
+            return encode_error(
+                id,
+                "resume_not_accepted",
+                "an hc pane resumes only sessions Herdr knows how to resume",
+            );
+        }
+        let Some(session_ref) = crate::agent_resume::session_ref_from_report(
+            &params.source,
+            &agent_label,
+            params.agent_session_id,
+            params.agent_session_path,
+        ) else {
+            return encode_success(id, ResponseResult::Ok {});
+        };
+        match self.record_hc_agent_session(
+            ws_idx,
+            pane_id,
+            &params.source,
+            &agent_label,
+            &session_ref,
+        ) {
+            Some(()) => encode_success(id, ResponseResult::Ok {}),
+            None => encode_error(
+                id,
+                "unavailable_runtime",
+                "the pane's hc program is not live",
+            ),
+        }
+    }
+
     /// A resume command belongs to the session it was reported with, so it is
     /// kept only when Herdr accepted that session.
     fn session_report_applied(

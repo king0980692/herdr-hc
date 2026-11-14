@@ -623,7 +623,13 @@ fn pane_agent_reports_accept_options_before_pane() {
             &pane_id,
         ],
     );
-    assert_legacy_report_rejected(&session_report);
+    // An hc pane accepts a session report (kept on its terminal when Herdr
+    // can resume that agent; a custom one has nothing to keep).
+    assert!(
+        session_report.status.success(),
+        "{}",
+        String::from_utf8_lossy(&session_report.stderr)
+    );
 
     cleanup_spawned_herdr(herdr, base);
 }

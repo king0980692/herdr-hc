@@ -3,6 +3,7 @@
 //! Connection/attachment lifetime never owns core's programs. Only an explicit
 //! terminal.kill request may end one. No Python bridge, PTY, or hc source dependency.
 
+pub(crate) mod agent_session;
 pub mod machines;
 pub(crate) mod shared;
 pub(crate) mod source;

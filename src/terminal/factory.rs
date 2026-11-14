@@ -246,6 +246,61 @@ impl TerminalFactory {
         true
     }
 
+    /// Sets (or, with empty values, removes) labels on one of this core's
+    /// terminals, off the app thread.
+    pub(crate) fn label_hc_terminal(&self, address: &str, labels: serde_json::Map<String, Value>) {
+        let Self::Hc(host) = self else {
+            return;
+        };
+        let Ok(client) = host.client() else {
+            return;
+        };
+        let address = address.to_owned();
+        host.executor.spawn(async move {
+            if let Err(error) = client
+                .call(
+                    "terminal.label",
+                    json!({ "terminal": address, "labels": labels }),
+                )
+                .await
+            {
+                tracing::warn!(%error, %address, "an agent session could not be recorded on its terminal");
+            }
+        });
+    }
+
+    /// Types `command` into the shell that replaced a lost program (running
+    /// as `pid`), once across every viewer of this core: the first to claim
+    /// that pid in the claims document types it.
+    pub(crate) fn resume_hc_agent(&self, address: &str, pid: u64, command: String) {
+        let Self::Hc(host) = self else {
+            return;
+        };
+        let Ok(client) = host.client() else {
+            return;
+        };
+        let address = address.to_owned();
+        host.executor.spawn(async move {
+            match claim_resume(&client, &address, pid).await {
+                Ok(true) => {
+                    if let Err(error) = client
+                        .call(
+                            "terminal.send",
+                            json!({ "terminal": address, "text": command }),
+                        )
+                        .await
+                    {
+                        tracing::warn!(%error, %address, "an agent session could not be resumed");
+                    }
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::warn!(%error, %address, "an agent resume could not be claimed");
+                }
+            }
+        });
+    }
+
     /// Delivers `event` to the app after `delay`, off its thread.
     pub(crate) fn send_later(
         &self,
@@ -741,6 +796,37 @@ async fn sync_layout_once(
         return Ok((document, live, sent));
     }
     Err(io::Error::other("herdr.app layout kept changing"))
+}
+
+/// Claims resuming the program now running as `pid` at `address`: true for
+/// the one viewer whose versioned write records it first.
+async fn claim_resume(client: &crate::hc::Client, address: &str, pid: u64) -> io::Result<bool> {
+    use crate::hc::agent_session::CLAIMS_DOCUMENT;
+    for _ in 0..4 {
+        let current = client
+            .call("doc.get", json!({ "name": CLAIMS_DOCUMENT }))
+            .await?;
+        let version = current["version"].as_u64().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "resume claims have no version")
+        })?;
+        let mut claims = current["value"].as_object().cloned().unwrap_or_default();
+        if claims.get(address).and_then(Value::as_u64) == Some(pid) {
+            return Ok(false);
+        }
+        claims.insert(address.to_owned(), pid.into());
+        match client
+            .call(
+                "doc.set",
+                json!({ "name": CLAIMS_DOCUMENT, "version": version, "value": claims }),
+            )
+            .await
+        {
+            Ok(_) => return Ok(true),
+            Err(error) if error.to_string().contains("\"conflict\"") => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::other("resume claims kept changing"))
 }
 
 async fn place_split_once(

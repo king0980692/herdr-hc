@@ -1134,9 +1134,19 @@ impl App {
                 );
             }
         }
+        // An agent's session is not an hc fact: it is kept on the terminal
+        // as this app's labels, so the agent can be resumed after a loss.
+        if let Method::PaneReportAgentSession(params) = &request.method {
+            if let Some((ws_idx, pane)) = self
+                .parse_pane_id(&params.pane_id)
+                .filter(|(_, pane)| self.state.hc_owns_pane(*pane))
+            {
+                let params = params.clone();
+                return self.handle_hc_pane_report_agent_session(request.id, ws_idx, pane, params);
+            }
+        }
         let report_target = match &request.method {
             Method::PaneReportAgent(p) => Some(&p.pane_id),
-            Method::PaneReportAgentSession(p) => Some(&p.pane_id),
             // Tokens alone are Herdr's own marks on a pane (a plugin finding
             // the pane it opened), not facts about the program in it.
             Method::PaneReportMetadata(p) if !tokens_only(p) => Some(&p.pane_id),
