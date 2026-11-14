@@ -107,6 +107,18 @@ pub(crate) fn canonical(layout: &ShownLayout) -> ShownLayout {
     }
 }
 
+/// A canonical arrangement without its shares: which rows and columns hold
+/// which programs.
+fn shape(layout: &ShownLayout) -> ShownLayout {
+    match layout {
+        ShownLayout::Program(address) => ShownLayout::Program(address.clone()),
+        ShownLayout::Split { row, parts } => ShownLayout::Split {
+            row: *row,
+            parts: parts.iter().map(|(_, part)| (0.0, shape(part))).collect(),
+        },
+    }
+}
+
 fn programs(layout: &ShownLayout, out: &mut Vec<String>) {
     match layout {
         ShownLayout::Program(address) => out.push(address.clone()),
@@ -528,7 +540,17 @@ pub(crate) fn push_changes_started(
                 continue;
             }
             let untouched = synced.is_some() && arranged.get(&tab.id) == Some(&synced);
-            if untouched && doc_tab.get("root").is_some_and(rebuildable) {
+            // Only resized here (a sidebar opening at its width), and the
+            // document still has the same rows, columns and programs: the
+            // resize goes in even though the document changed meanwhile.
+            let resized_here = synced.as_ref().is_some_and(|synced| {
+                shape(synced) == shape(&wanted)
+                    && arranged
+                        .get(&tab.id)
+                        .and_then(Option::as_ref)
+                        .is_some_and(|now| shape(now) == shape(&wanted))
+            });
+            if (untouched || resized_here) && doc_tab.get("root").is_some_and(rebuildable) {
                 let Some(layout) = only(&tab.layout, &ours) else {
                     continue;
                 };
@@ -891,6 +913,52 @@ mod tests {
             panic!("a row");
         };
         assert_eq!(parts.last().map(|(_, part)| part), Some(&p("t4")));
+    }
+
+    #[test]
+    fn a_resize_here_survives_a_concurrent_change_to_the_same_tab() {
+        let document_with = |shares: (f64, f64)| {
+            let mut left = block("p1", "t1");
+            left["size"] = json!({"weight": shares.0});
+            let mut sidebar = block("p2", "t2");
+            sidebar["size"] = json!({"weight": shares.1});
+            json!({"spaces": [{"id": "sp1", "name": "S", "folder": "/w",
+                "tabs": [{"id": "tb1", "name": "T",
+                    "root": {"id": "tb1", "type": "row", "children": [left, sidebar]}}]}]})
+        };
+        let base = shown(&document_with((0.5, 0.5)));
+        let resized = vec![space(
+            "sp1",
+            vec![tab(
+                "tb1",
+                split(true, vec![(0.78, p("t1")), (0.22, p("t2"))]),
+            )],
+        )];
+        // herdr.app rewrote the tab's shares meanwhile: the resize made here
+        // after that still lands.
+        let mut document = document_with((0.6, 0.4));
+        assert!(push_changes(
+            &mut document,
+            &base,
+            &resized,
+            |_| true,
+            ids()
+        ));
+        assert_eq!(
+            canonical(&shown(&document)[0].tabs[0].layout),
+            canonical(&resized[0].tabs[0].layout)
+        );
+        // A different arrangement there (a program added elsewhere) is not
+        // overwritten by a resize here.
+        let mut document = document_with((0.5, 0.5));
+        document["spaces"][0]["tabs"][0]["root"]["children"]
+            .as_array_mut()
+            .unwrap()
+            .push(block("p3", "t3"));
+        push_changes(&mut document, &base, &resized, |_| true, ids());
+        let mut held = Vec::new();
+        programs(&shown(&document)[0].tabs[0].layout, &mut held);
+        assert!(held.contains(&"t3".to_owned()), "{held:?}");
     }
 
     #[test]
