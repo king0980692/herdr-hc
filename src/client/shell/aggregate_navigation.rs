@@ -53,7 +53,18 @@ pub(super) struct AggregateAgentTarget {
     pub(super) pane_id: String,
 }
 
+/// Every machine's agents in the panel's order, pinned ones first.
 pub(super) fn aggregate_agent_rows<'a>(
+    endpoints: &'a [ClientShellEndpoint],
+    active_endpoint_id: &ClientEndpointId,
+    sort: crate::config::AgentPanelSortConfig,
+) -> Vec<AggregateAgentRow<'a>> {
+    let mut rows = sorted_aggregate_agent_rows(endpoints, active_endpoint_id, sort);
+    super::agent_pins::pin_first(&mut rows, |row| super::agent_pins::pinned_at(row.agent));
+    rows
+}
+
+fn sorted_aggregate_agent_rows<'a>(
     endpoints: &'a [ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
     sort: crate::config::AgentPanelSortConfig,

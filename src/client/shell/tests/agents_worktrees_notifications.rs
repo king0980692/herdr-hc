@@ -560,6 +560,91 @@ fn workspace_drag_moves_parent_worktree_as_one_block_and_rejects_child() {
 }
 
 #[test]
+fn pinned_agents_lead_the_panel_and_toggle_from_the_keyboard_and_menu() {
+    let agent = |pane: &str, pin: Option<&str>| ClientShellAgent {
+        pane_id: pane.into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        name: Some(pane.into()),
+        display_agent: None,
+        agent: None,
+        title: None,
+        terminal_title: None,
+        terminal_title_stripped: None,
+        agent_status: AgentStatus::Idle,
+        state_change_seq: 1,
+        state_labels: Vec::new(),
+        tokens: pin
+            .map(|at| vec![("herdr-pin".to_owned(), at.to_owned())])
+            .unwrap_or_default(),
+        focused: pane == "pane_1",
+    };
+    let mut initial = snapshot();
+    initial.agents = vec![
+        agent("pane_1", None),
+        agent("pane_2", Some("20")),
+        agent("pane_3", Some("10")),
+        agent("pane_4", None),
+    ];
+    // Earliest pin first; the others keep their order.
+    assert_eq!(
+        super::super::agent_sidebar::ordered_agent_pane_ids(
+            &initial,
+            crate::config::AgentPanelSortConfig::Spaces
+        ),
+        ["pane_3", "pane_2", "pane_1", "pane_4"]
+    );
+
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(initial.clone()));
+    let pin_of = |outcome: &ClientShellInput| -> Option<Option<String>> {
+        let [ClientShellAction::Endpoint { request, .. }] = &outcome.actions[..] else {
+            return None;
+        };
+        match &request.method {
+            crate::api::schema::Method::PaneReportMetadata(params)
+                if params.pane_id == "pane_1" =>
+            {
+                params.tokens.get("herdr-pin").cloned()
+            }
+            _ => None,
+        }
+    };
+    // The focused pane's agent is not pinned: the shortcut pins it.
+    let mut pin = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::ToggleAgentPin),
+        &mut pin,
+    );
+    assert!(matches!(pin_of(&pin), Some(Some(ref at)) if at.parse::<u64>().is_ok()));
+
+    // Pinned: the shortcut unpins it.
+    let mut pinned = initial;
+    pinned.revision = 2;
+    pinned.agents[0] = agent("pane_1", Some("30"));
+    state.set_snapshot(Box::new(pinned));
+    let mut unpin = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::ToggleAgentPin),
+        &mut unpin,
+    );
+    assert_eq!(pin_of(&unpin), Some(None));
+
+    // The agent row's menu says which it will do.
+    let endpoint = state.active_endpoint_id.clone();
+    for (pane, label) in [("pane_2", "Unpin"), ("pane_4", "Pin to top")] {
+        state.open_agent_context_menu(endpoint.clone(), pane.into(), 1, 1);
+        let items = match state.overlay.as_ref() {
+            Some(ClientShellOverlay::ContextMenu(menu)) => menu.items(),
+            _ => panic!("agent context menu"),
+        };
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].label, label);
+        assert_eq!(items[0].action, ClientContextMenuAction::ToggleAgentPin);
+    }
+}
+
+#[test]
 fn pane_cycle_last_and_agent_actions_resolve_to_stable_pane_ids() {
     let mut initial = snapshot();
     let mut second = initial.panes[0].clone();

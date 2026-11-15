@@ -82,6 +82,10 @@ impl ClientContextMenuOverlay {
                 ]);
                 items
             }
+            ClientContextMenuTarget::Agent { pinned, .. } => vec![item(
+                if *pinned { "Unpin" } else { "Pin to top" },
+                Action::ToggleAgentPin,
+            )],
         }
     }
 }
@@ -218,6 +222,15 @@ impl ClientShellState {
                 action,
                 outcome,
             ),
+            ClientContextMenuTarget::Agent {
+                endpoint_id,
+                pane_id,
+                ..
+            } => {
+                if action == ClientContextMenuAction::ToggleAgentPin {
+                    self.toggle_agent_pin(endpoint_id, pane_id, outcome);
+                }
+            }
         }
         outcome.repaint = true;
     }

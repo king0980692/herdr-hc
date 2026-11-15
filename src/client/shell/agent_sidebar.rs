@@ -22,16 +22,20 @@ pub(super) fn ordered_agent_pane_ids(
     sort: crate::config::AgentPanelSortConfig,
 ) -> Vec<String> {
     if snapshot.agent_view_label.is_some() {
-        return snapshot
+        let mut order = snapshot
             .agent_order
             .iter()
-            .filter(|pane_id| {
+            .filter_map(|pane_id| {
                 snapshot
                     .agents
                     .iter()
-                    .any(|agent| agent.pane_id == pane_id.as_str())
+                    .find(|agent| agent.pane_id == pane_id.as_str())
             })
-            .cloned()
+            .collect::<Vec<_>>();
+        super::agent_pins::pin_first(&mut order, |agent| super::agent_pins::pinned_at(agent));
+        return order
+            .into_iter()
+            .map(|agent| agent.pane_id.clone())
             .collect();
     }
     let mut agents = snapshot.agents.iter().collect::<Vec<_>>();
@@ -43,6 +47,7 @@ pub(super) fn ordered_agent_pane_ids(
             )
         });
     }
+    super::agent_pins::pin_first(&mut agents, |agent| super::agent_pins::pinned_at(agent));
     agents
         .into_iter()
         .map(|agent| agent.pane_id.clone())
@@ -310,6 +315,18 @@ pub(super) fn agent_row(
         },
         state_text,
     );
+    let mut rows = rows;
+    if super::agent_pins::pinned_at(agent).is_some() {
+        if let Some(first) = rows.first_mut() {
+            first.insert(
+                0,
+                crate::ui::ResolvedToken {
+                    kind: crate::ui::ResolvedTokenKind::Custom("📌".into()),
+                    style: Default::default(),
+                },
+            );
+        }
+    }
     Some(AgentRow {
         pane_id: agent.pane_id.clone(),
         status: agent.agent_status,

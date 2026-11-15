@@ -526,6 +526,7 @@ pub(super) enum ClientContextMenuAction {
     ToggleRightClickPassthrough,
     ClosePane,
     PasteFromClipboard,
+    ToggleAgentPin,
 }
 
 #[derive(Debug)]
@@ -548,6 +549,12 @@ pub(super) enum ClientContextMenuTarget {
         source_pane_id: Option<String>,
         has_manual_label: bool,
         right_click_passthrough: bool,
+    },
+    /// A row of the agents panel: the agent's pane on its machine.
+    Agent {
+        endpoint_id: ClientEndpointId,
+        pane_id: String,
+        pinned: bool,
     },
 }
 

@@ -1835,6 +1835,24 @@ impl ClientShellState {
                 if !self.config.mouse_capture {
                     return;
                 }
+                let agent = self
+                    .hits
+                    .endpoint_agents
+                    .iter()
+                    .find(|(rect, _, _)| super::contains(*rect, point))
+                    .map(|(_, endpoint_id, pane_id)| (endpoint_id.clone(), pane_id.clone()))
+                    .or_else(|| {
+                        self.hits
+                            .agents
+                            .iter()
+                            .find(|(rect, _)| super::contains(*rect, point))
+                            .map(|(_, pane_id)| (self.active_endpoint_id.clone(), pane_id.clone()))
+                    });
+                if let Some((endpoint_id, pane_id)) = agent {
+                    self.open_agent_context_menu(endpoint_id, pane_id, mouse.column, mouse.row);
+                    outcome.repaint = true;
+                    return;
+                }
                 let workspace_id = (!self.sidebar_collapsed)
                     .then(|| self.active_endpoint_workspace_at(point))
                     .flatten();

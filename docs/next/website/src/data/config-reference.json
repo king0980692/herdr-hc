@@ -842,6 +842,12 @@
           "description": "Toggle sidebar collapse."
         },
         {
+          "key": "keys.toggle_agent_pin",
+          "type": "keybinding",
+          "default": "\"prefix+shift+a\"",
+          "description": "Pin the focused pane's agent to the top of the agents panel, or unpin it. Pinned agents stay first, earliest pin on top, on every screen showing that pane."
+        },
+        {
           "key": "keys.indexed.tabs",
           "type": "string",
           "default": "unset",
