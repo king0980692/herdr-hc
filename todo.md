@@ -158,12 +158,13 @@ macOS 會排除 `tests/cli.rs`、`tests/machine_api.rs` 與部分 `tests/api_pin
   - [x] 遠端 sidebar 切 tab 會被換掉：遠端 plugin pane 沒有 `HERDR_PANE_ID`，sidebar 的 heartbeat 沒送，`--ensure` 認為過期就換掉。已修（`0abef02f`）：遠端 plugin pane 也帶 workspace／tab／pane id。rig 重測：切 6 次 tab，B 上 kill 0 次（修正前 2 次），token 時間戳持續更新。
   - [ ] 未驗證：同一個遠端 core 只有一個轉接器、由一個 presenter 服務；兩台 presenter 同時接同一 core 時，sidebar 拿到的 pane id 與轉接器另一端是否一致。
   - [x] issue #7（分割時版面跑掉）：直欄裡分割的新 pane 被 herdr.app 先收編到最後一個 pane 旁 → Native 記得自己開的程式，未同步過的改放回實際分割的位置（`0ed0b974`）；送出同步後才本地 resize 的 tab 保留本地排列（`1f409949`，新 tab 的 sidebar 不再半寬）。待 Mac 實測（leon 沒有 herdr.app）。
+  - [x] issue #8 遠端（`fcee2eb9`）：遠端新 pane 經 bridge relay 回報 session，遺失後 `--resume` 接回；Mac 實測 gx10 通過（約 6 秒接回、對話保留）。手動啟動 `hcs-` server 被擋、server 停著時遺失後接回也已在 Mac 通過。待決定：Herdr.app 是否也接回／如何協調、接回是否錯開（`startup_per_agent_delay_ms`）。
   - [x] issue #9（新 tab 的 sidebar 被 Herdr.app 同時寫入改回 50/50）：只改份額時、文件形狀已與本地相同且新增的程式是自己開的 → 寫入本地份額（`f8460b1c`、`4b13325e`）；新 tab 的同步紀錄與 started 不再遺失（`5e0d98de`）；重新放置時保留 Herdr.app 給的 block id（`ef6d1ddb`）。Mac 實測 110 個新 tab 全部正確，已結案。
   - [x] 手動啟動 `hcs-` session server 會把 Local 寫進該 session：server 啟動時檢查 session 名稱與 shared core 變數，不符就拒絕（`b2aec02e`）。
   - [x] `federated_client_starts_without_local_and_survives_its_restart` 偶發失敗：重連時 hc pane 輸入佇列（32）被塞滿而 detach，一行被截斷 → 佇列 256（`0961ffc2`）、同一批按鍵一次寫入（`7c7fdf40`）。
   - [x] issue #8 Local（`e321e0d6`、`a6d56d02`）：hc pane 的 agent session 記在 terminal label，程式遺失被換成 shell 後接回（presenter 在線／重開都可），多 viewer 用 doc claim 只打一次。遠端、herdr.app 協調、錯開延遲未做；計畫與限制在 `.local/prd/agent-resume-hc.md`。
   - [x] `federated_launch_opens_local_directly_while_saved_ssh_is_unavailable` 偶發失敗的原因：測試先丟 PTY writer（會送 EOF）再停 client，EOF 被轉給 Local 的 shell → 改成先停 client（`9d451c5e`）。
-  - [ ] issue #5 待 Mac 實測 gx10（需 build ≥ `0abef02f`，`--features native-entry`；本機 mise 版 sidebar plugin 要加 `[remote]` 與 run.sh fallback）。
+  - [x] issue #5 Mac 實測 gx10 通過（`fcee2eb9`）：遠端切 tab、分割，sidebar 不再被重開，位置與寬度不變；遠端 pane 長段非 bracketed 貼上完整送出。
   - [x] **GitHub Actions 額度用完（2026-11-13）**（repo 已公開，Actions 免費）：`herdr-hc-20261113-5ac63997` 的測試與 10 個建置都跑完了，但建 release 的 job 因「付款失敗或 spending limit」沒有啟動；改用 run 43412745157 的 artifacts 手動發佈。之後的 CI 要先到 GitHub Settings → Billing & plans 處理。每次 release 有 13 個 job，其中 macOS 以 10 倍計時，可考慮減少平台。
   - [x] issue #4（Mac 第一階段隔離測試，9 項中 8 項通過）：晚加入的 viewer 沒套用文件裡的 tab 名稱，下一次推送就把名稱寫成空字串。已修：只保留「送出後本地才改的」名稱，其他一律用文件的。機器清單輪詢失敗時改為退避（最長 30 秒），減少 log。hc 指令在首次啟動卡住：Linux 上無法重現（`hc ls` 最慢 23 ms）。
   - [x] Mac 重測 `f2a1e340`（issue #4 comment 6850058630，隔離私有 core）：晚開的 session 一開就顯示 gamma/beta；`hc run --bg` 加入 tab 後名稱不變；三個 server 全停再開，名稱與程式都保留；`shared-machine-inventory` log 從約 15 分鐘 127 行降到每次啟動 1 行；沒有再出現 `terminal.list timed out`（但不是全新首次啟動，該項未完整重測）。
