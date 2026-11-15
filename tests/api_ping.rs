@@ -2050,6 +2050,78 @@ fn hc_pane_resumes_its_agent_session_in_the_shell_replacing_a_lost_program() {
 
 #[cfg(not(target_os = "macos"))]
 #[test]
+fn hc_pane_tokens_are_shared_with_every_viewer_of_the_terminal() {
+    let _lock = test_lock();
+    let base = unique_test_dir();
+    let config_home = base.join("config");
+    let runtime_dir = base.join("runtime");
+    let socket_path = runtime_dir.join("herdr.sock");
+
+    let child = spawn_herdr(&config_home, &runtime_dir, &socket_path);
+    wait_for_socket(&socket_path, Duration::from_secs(5));
+    let created = send_request(
+        &socket_path,
+        &format!(
+            r#"{{"id":"shared_ws","method":"workspace.create","params":{{"cwd":"{}","focus":true}}}}"#,
+            base.display()
+        ),
+    );
+    let pane_id = created["result"]["root_pane"]["pane_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // Reported here: kept on the terminal for the other viewers.
+    let reported = support::hc::request(
+        &socket_path,
+        "pane.report_metadata",
+        serde_json::json!({"pane_id": pane_id, "source": "herdr-sidebar-explorer",
+            "tokens": {"herdr-sidebar-explorer": "1794600000"}}),
+    );
+    assert!(reported["error"].is_null(), "{reported}");
+    let mut terminal = serde_json::Value::Null;
+    assert!(
+        support::wait_until(Duration::from_secs(5), Duration::from_millis(50), || {
+            terminal = support::hc::terminals(&runtime_dir)
+                .into_iter()
+                .find(|terminal| terminal["state"] == "live")
+                .unwrap_or_default();
+            terminal["labels"]["herdr-native.tokens"]
+                .as_str()
+                .is_some_and(|value| value.contains("herdr-sidebar-explorer"))
+        }),
+        "{terminal}"
+    );
+    // Shared by another viewer (written straight to the terminal): seen here.
+    let address = terminal["address"].as_str().unwrap().to_owned();
+    support::hc::label(
+        &runtime_dir,
+        &address,
+        &[r#"herdr-native.tokens={"other-plugin":"7"}"#],
+    );
+    let mut pane = serde_json::Value::Null;
+    assert!(
+        support::wait_until(Duration::from_secs(5), Duration::from_millis(50), || {
+            let panes = support::hc::request(&socket_path, "pane.list", serde_json::json!({}));
+            pane = panes["result"]["panes"]
+                .as_array()
+                .and_then(|panes| panes.iter().find(|p| p["pane_id"] == pane_id.as_str()))
+                .cloned()
+                .unwrap_or_default();
+            pane["tokens"]["other-plugin"] == "7"
+        }),
+        "{pane}"
+    );
+    // This viewer's own report still counts.
+    assert_eq!(
+        pane["tokens"]["herdr-sidebar-explorer"], "1794600000",
+        "{pane}"
+    );
+
+    cleanup_spawned_herdr(child, base);
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
 fn hc_pane_keeps_tokens_a_plugin_reports() {
     let _lock = test_lock();
     let base = unique_test_dir();

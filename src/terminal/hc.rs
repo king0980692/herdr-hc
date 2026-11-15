@@ -3,6 +3,9 @@ use super::{EffectivePresentation, EffectiveStateChange, TerminalState};
 use crate::{detect::AgentState, hc::state::RuntimeSnapshot};
 use serde_json::{json, Value};
 
+/// The hc label holding a pane's shared metadata tokens (JSON object).
+pub(crate) const SHARED_TOKENS_LABEL: &str = "herdr-native.tokens";
+
 impl TerminalState {
     pub(crate) fn with_hc_binding(mut self, binding: Option<Value>) -> Self {
         self.claim_hc_authority();
@@ -75,6 +78,19 @@ impl TerminalState {
                 state: self.state,
                 presentation,
             })
+    }
+
+    /// Tokens another viewer of this hc terminal shared (see
+    /// `app::hc::shared_tokens`); this viewer's own reports take precedence.
+    pub(crate) fn shared_tokens(&self) -> std::collections::HashMap<String, String> {
+        self.hc_snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.terminal.facts.get("labels"))
+            .and_then(|labels| labels.get(SHARED_TOKENS_LABEL))
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .and_then(|value| serde_json::from_str(value).ok())
+            .unwrap_or_default()
     }
 
     pub(crate) fn hc_status(&self) -> Option<&Value> {

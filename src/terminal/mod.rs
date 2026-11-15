@@ -9,6 +9,7 @@ pub mod state;
 mod title;
 
 pub(crate) use factory::{TerminalCommand, TerminalFactory};
+pub(crate) use hc::SHARED_TOKENS_LABEL;
 pub(crate) use history_read::{merge_scrolled_up, snapshot_text, ScreenSnapshot, UpwardMerge};
 pub use id::TerminalId;
 pub use runtime::TerminalRuntime;

@@ -1912,6 +1912,7 @@ impl App {
         if token_changed {
             self.sync_agent_metadata_deadline();
             self.emit_pane_updated(ws_idx, pane_id);
+            self.share_hc_tokens(&terminal_id);
         }
 
         encode_success(id, ResponseResult::Ok {})

@@ -4,11 +4,13 @@ mod appeared;
 mod bootstrap;
 mod layout_sync;
 mod reconnect;
+mod shared_tokens;
 use super::{actions::PaneStateUpdate, App};
 use crate::{events::AppEvent, hc::state::RuntimeSnapshot, terminal::TerminalId};
 pub(crate) use agent_session::HcAgentSessions;
 pub(crate) use layout_sync::LayoutSync;
 pub(crate) use reconnect::Recovery;
+pub(crate) use shared_tokens::SharedTokens;
 use std::sync::Arc;
 
 impl App {

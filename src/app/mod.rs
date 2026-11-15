@@ -108,6 +108,7 @@ pub struct App {
     pub(crate) hc_recovery: hc::Recovery,
     pub(crate) layout_sync: hc::LayoutSync,
     pub(crate) hc_agent_sessions: hc::HcAgentSessions,
+    pub(crate) shared_tokens: hc::SharedTokens,
     pub(crate) terminal_runtimes: crate::terminal::TerminalRuntimeRegistry,
     // Drop the source executor after attachment runtimes; stopping it never kills hc programs.
     pub(crate) terminal_factory: crate::terminal::TerminalFactory,
@@ -673,6 +674,7 @@ impl App {
             default_workspace_initialized,
             hc_recovery: hc::Recovery::default(),
             layout_sync: hc::LayoutSync::default(),
+            shared_tokens: hc::SharedTokens::default(),
             hc_agent_sessions: hc::HcAgentSessions::new(
                 config.session.resume_agents_on_restore,
                 Duration::from_millis(config.session.startup_per_agent_delay_ms.into()),

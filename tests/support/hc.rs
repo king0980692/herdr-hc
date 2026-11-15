@@ -168,6 +168,14 @@ fn source_json(runtime: &Path, args: &[&str]) -> serde_json::Value {
     serde_json::from_slice(&output.stdout).expect("scratch hc JSON")
 }
 
+/// Sets labels on a terminal, as another viewer would.
+pub fn label(runtime: &Path, address: &str, pairs: &[&str]) -> serde_json::Value {
+    let mut args = vec!["label", address];
+    args.extend_from_slice(pairs);
+    args.push("--json");
+    source_json(runtime, &args)
+}
+
 /// A terminal's screen as text.
 pub fn screen(runtime: &Path, address: &str) -> String {
     source_json(runtime, &["read", address, "--json"])["text"]
