@@ -272,7 +272,13 @@ impl TerminalFactory {
     /// Types `command` into the shell that replaced a lost program (running
     /// as `pid`), once across every viewer of this core: the first to claim
     /// that pid in the claims document types it.
-    pub(crate) fn resume_hc_agent(&self, address: &str, pid: u64, command: String) {
+    pub(crate) fn resume_hc_agent(
+        &self,
+        address: &str,
+        pid: u64,
+        command: String,
+        wait: std::time::Duration,
+    ) {
         let Self::Hc(host) = self else {
             return;
         };
@@ -281,6 +287,24 @@ impl TerminalFactory {
         };
         let address = address.to_owned();
         host.executor.spawn(async move {
+            if !wait.is_zero() {
+                tokio::time::sleep(wait).await;
+                // Waited its turn: still that shell, with nothing in front?
+                match client.call("terminal.get", json!({ "terminal": address })).await {
+                    Ok(record) => {
+                        let facts = record.as_object().cloned().unwrap_or_default();
+                        if crate::hc::agent_session::live_pid(&facts) != Some(pid)
+                            || !crate::hc::agent_session::root_in_front(&facts)
+                        {
+                            return;
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, %address, "an agent resume could not check its shell");
+                        return;
+                    }
+                }
+            }
             match claim_resume(&client, &address, pid).await {
                 Ok(true) => {
                     if let Err(error) = client

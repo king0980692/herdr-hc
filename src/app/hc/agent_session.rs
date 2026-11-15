@@ -18,15 +18,28 @@ pub(crate) struct HcAgentSessions {
     touched: HashMap<String, Instant>,
     /// (address, pid) this viewer has tried to resume: once each.
     attempted: HashSet<(String, u64)>,
+    /// Resumes start one `[session] startup_per_agent_delay_ms` apart, as a
+    /// restore's do, so many agents back at once do not start together.
+    delay: Duration,
+    next_resume: Option<Instant>,
 }
 
 impl HcAgentSessions {
-    pub(crate) fn new(resume_enabled: bool) -> Self {
+    pub(crate) fn new(resume_enabled: bool, delay: Duration) -> Self {
         Self {
             resume_enabled,
             touched: HashMap::new(),
             attempted: HashSet::new(),
+            delay,
+            next_resume: None,
         }
+    }
+
+    /// When the next resume may start: now, or one delay after the last.
+    fn schedule(&mut self, now: Instant) -> Instant {
+        let at = self.next_resume.filter(|next| *next > now).unwrap_or(now);
+        self.next_resume = Some(at + self.delay);
+        at
     }
 
     fn settling(&self, address: &str) -> bool {
@@ -106,12 +119,42 @@ impl App {
                 else {
                     return;
                 };
-                tracing::info!(%address, agent = %plan.agent, "resuming an agent session in its replacement shell");
-                self.hc_agent_sessions
-                    .touched
-                    .insert(address.clone(), Instant::now());
-                self.terminal_factory.resume_hc_agent(address, pid, command);
+                let now = Instant::now();
+                let at = self.hc_agent_sessions.schedule(now);
+                tracing::info!(%address, agent = %plan.agent, wait_ms = (at - now).as_millis() as u64, "resuming an agent session in its replacement shell");
+                // Settling counts from when it is typed, not from now.
+                self.hc_agent_sessions.touched.insert(address.clone(), at);
+                self.terminal_factory
+                    .resume_hc_agent(address, pid, command, at - now);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resumes_start_one_delay_apart() {
+        let mut sessions = HcAgentSessions::new(true, Duration::from_millis(500));
+        let start = Instant::now();
+        let times: Vec<Duration> = (0..3).map(|_| sessions.schedule(start) - start).collect();
+        assert_eq!(
+            times,
+            [
+                Duration::ZERO,
+                Duration::from_millis(500),
+                Duration::from_millis(1000)
+            ]
+        );
+        // Long after the last: no wait.
+        let later = start + Duration::from_secs(10);
+        assert_eq!(sessions.schedule(later), later);
+        // Scheduled ahead, settling holds until it is typed (and after).
+        sessions
+            .touched
+            .insert("t1".into(), Instant::now() + Duration::from_secs(60));
+        assert!(sessions.settling("t1"));
     }
 }
