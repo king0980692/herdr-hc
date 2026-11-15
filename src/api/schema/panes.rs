@@ -47,6 +47,14 @@ crate::cli::projection::cli_params! {
     }
 }
 
+/// Pins a pane's agent to the top of agent lists, or unpins it. On an hc
+/// pane the pin is hc's own (`herdr.pinned`), shown by every Herdr app.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PanePinParams {
+    pub pane_id: String,
+    pub pinned: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PaneLinkActivateParams {
     pub pane_id: String,

@@ -371,6 +371,12 @@ impl App {
             tokens: {
                 let mut tokens = terminal.shared_tokens();
                 tokens.extend(terminal.metadata_tokens.values());
+                if let Some(pin) = terminal.hc_pin() {
+                    tokens.remove(crate::terminal::PIN_TOKEN);
+                    if let Some(at) = pin {
+                        tokens.insert(crate::terminal::PIN_TOKEN.to_owned(), at);
+                    }
+                }
                 tokens
             },
             agent_session: terminal_agent_session_info(terminal),

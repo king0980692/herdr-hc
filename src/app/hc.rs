@@ -235,6 +235,16 @@ impl App {
                 || ["status", "reported", "title", "cwd", "state"]
                     .iter()
                     .any(|key| old.terminal.facts.get(*key) != snapshot.terminal.facts.get(*key))
+                // A pin set by any app: agent lists reorder. (Other label
+                // changes, such as shared heartbeats, change nothing shown.)
+                || [crate::terminal::PINNED_LABEL, crate::terminal::PINNED_AT_LABEL]
+                    .iter()
+                    .any(|key| {
+                        let label = |facts: &serde_json::Map<String, serde_json::Value>| {
+                            facts.get("labels").and_then(|labels| labels.get(*key)).cloned()
+                        };
+                        label(&old.terminal.facts) != label(&snapshot.terminal.facts)
+                    })
                 || old
                     .terminal
                     .facts

@@ -1464,6 +1464,59 @@ impl App {
         )
     }
 
+    /// Pins or unpins a pane's agent. On an hc pane the pin is the core's
+    /// (`herdr.pinned`, as Herdr.app writes it), with this app's own pin time
+    /// for the order; elsewhere it is a token on the pane.
+    pub(super) fn handle_pane_pin(
+        &mut self,
+        id: String,
+        params: crate::api::schema::PanePinParams,
+    ) -> String {
+        let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        let Some(terminal_id) = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|workspace| workspace.pane_state(pane_id))
+            .map(|pane| pane.attached_terminal_id.clone())
+        else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        let at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_millis() as u64);
+        let hc_address = self
+            .state
+            .terminals
+            .get(&terminal_id)
+            .and_then(|terminal| terminal.hc_snapshot.as_ref())
+            .map(|snapshot| snapshot.binding.address.clone());
+        if let Some(address) = hc_address {
+            self.terminal_factory
+                .pin_hc_terminal(&address, params.pinned, at);
+            return encode_success(id, ResponseResult::Ok {});
+        }
+        let Some(terminal) = self.state.terminals.get_mut(&terminal_id) else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        let patch = [(
+            crate::terminal::PIN_TOKEN.to_owned(),
+            params.pinned.then(|| at.to_string()),
+        )]
+        .into_iter()
+        .collect();
+        if terminal
+            .metadata_tokens
+            .patch(patch, None, std::time::Instant::now())
+        {
+            terminal.revision = terminal.revision.saturating_add(1);
+            self.emit_pane_updated(ws_idx, pane_id);
+        }
+        encode_success(id, ResponseResult::Ok {})
+    }
+
     pub(super) fn handle_pane_input_set(
         &mut self,
         id: String,

@@ -246,6 +246,55 @@ impl TerminalFactory {
         true
     }
 
+    /// Pins one of this core's terminals (hc's own pin, `herdr.pinned`, which
+    /// every Herdr app shows) or unpins it, keeping this app's pin time for
+    /// the order. A core without `terminal.pin` gets the label itself.
+    pub(crate) fn pin_hc_terminal(&self, address: &str, pinned: bool, at_ms: u64) {
+        let Self::Hc(host) = self else {
+            return;
+        };
+        let Ok(client) = host.client() else {
+            return;
+        };
+        let address = address.to_owned();
+        host.executor.spawn(async move {
+            let mut labels = serde_json::Map::new();
+            labels.insert(
+                crate::terminal::PINNED_AT_LABEL.into(),
+                if pinned {
+                    at_ms.to_string()
+                } else {
+                    String::new()
+                }
+                .into(),
+            );
+            let pinned_by_core = if client.hello.methods.contains("terminal.pin") {
+                client
+                    .call(
+                        "terminal.pin",
+                        json!({ "terminal": address, "pinned": pinned }),
+                    )
+                    .await
+                    .map(|_| ())
+            } else {
+                labels.insert(
+                    crate::terminal::PINNED_LABEL.into(),
+                    if pinned { "1" } else { "" }.into(),
+                );
+                Ok(())
+            };
+            let labelled = client
+                .call(
+                    "terminal.label",
+                    json!({ "terminal": address, "labels": labels }),
+                )
+                .await;
+            if let Err(error) = pinned_by_core.and(labelled.map(|_| ())) {
+                tracing::warn!(%error, %address, "an agent pin could not be set on its terminal");
+            }
+        });
+    }
+
     /// Sets (or, with empty values, removes) labels on one of this core's
     /// terminals, off the app thread.
     pub(crate) fn label_hc_terminal(&self, address: &str, labels: serde_json::Map<String, Value>) {

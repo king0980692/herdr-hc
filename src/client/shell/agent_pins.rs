@@ -1,30 +1,25 @@
 //! Pinned agents: listed first in the agents panel, in the order they were
-//! pinned. A pin is a token on the agent's pane (`herdr-pin`, the time it
-//! was pinned), so every viewer of that pane shows it: on hc panes the token
-//! is kept on the terminal for the other viewers (`app::hc::shared_tokens`).
+//! pinned. The server sets the pin (`pane.pin`: on hc panes hc's own
+//! `herdr.pinned`, shared with Herdr.app) and shows it as the pane's
+//! `herdr-pin` token, its value the pin time.
 use super::*;
 use crate::protocol::ClientShellAgent;
 
 pub(super) const PIN_TOKEN: &str = "herdr-pin";
 
-/// When the agent was pinned (Unix ms), if it is.
+/// When the agent was pinned (Unix ms), if it is; a pin of unknown time
+/// (another app's) sorts after the timed ones.
 pub(super) fn pinned_at(agent: &ClientShellAgent) -> Option<u64> {
     agent
         .tokens
         .iter()
         .find(|(key, _)| key == PIN_TOKEN)
-        .and_then(|(_, value)| value.parse().ok())
+        .map(|(_, value)| value.parse().unwrap_or(u64::MAX))
 }
 
 /// Pinned rows first, earliest pin on top; the others keep their order.
 pub(super) fn pin_first<T>(rows: &mut [T], pinned: impl Fn(&T) -> Option<u64>) {
     rows.sort_by_key(|row| pinned(row).map_or((1, 0), |at| (0, at)));
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| since.as_millis() as u64)
 }
 
 impl ClientShellState {
@@ -81,24 +76,10 @@ impl ClientShellState {
         let pinned = self
             .endpoint_agent(&endpoint_id, &pane_id)
             .is_some_and(|agent| pinned_at(agent).is_some());
-        let value = (!pinned).then(|| now_ms().to_string());
-        let method = crate::api::schema::Method::PaneReportMetadata(
-            crate::api::schema::PaneReportMetadataParams {
-                pane_id,
-                source: PIN_TOKEN.into(),
-                agent: None,
-                applies_to_source: None,
-                title: None,
-                display_agent: None,
-                state_labels: HashMap::new(),
-                tokens: [(PIN_TOKEN.to_owned(), value)].into_iter().collect(),
-                clear_title: false,
-                clear_display_agent: false,
-                clear_state_labels: false,
-                seq: None,
-                ttl_ms: None,
-            },
-        );
+        let method = crate::api::schema::Method::PanePin(crate::api::schema::PanePinParams {
+            pane_id,
+            pinned: !pinned,
+        });
         self.push_method_to_endpoint(endpoint_id, method, outcome);
     }
 

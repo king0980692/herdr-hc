@@ -2122,6 +2122,93 @@ fn hc_pane_tokens_are_shared_with_every_viewer_of_the_terminal() {
 
 #[cfg(not(target_os = "macos"))]
 #[test]
+fn hc_pane_pin_is_the_cores_herdr_pinned_both_ways() {
+    let _lock = test_lock();
+    let base = unique_test_dir();
+    let config_home = base.join("config");
+    let runtime_dir = base.join("runtime");
+    let socket_path = runtime_dir.join("herdr.sock");
+
+    let child = spawn_herdr(&config_home, &runtime_dir, &socket_path);
+    wait_for_socket(&socket_path, Duration::from_secs(5));
+    let created = send_request(
+        &socket_path,
+        &format!(
+            r#"{{"id":"pin_ws","method":"workspace.create","params":{{"cwd":"{}","focus":true}}}}"#,
+            base.display()
+        ),
+    );
+    let pane_id = created["result"]["root_pane"]["pane_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let live = || {
+        support::hc::terminals(&runtime_dir)
+            .into_iter()
+            .find(|terminal| terminal["state"] == "live")
+            .unwrap_or_default()
+    };
+    let pin_token = || {
+        let panes = support::hc::request(&socket_path, "pane.list", serde_json::json!({}));
+        panes["result"]["panes"]
+            .as_array()
+            .and_then(|panes| panes.iter().find(|p| p["pane_id"] == pane_id.as_str()))
+            .map(|pane| pane["tokens"]["herdr-pin"].clone())
+            .unwrap_or_default()
+    };
+
+    // Pinned here: hc's own pin, which Herdr.app shows too.
+    let pinned = support::hc::request(
+        &socket_path,
+        "pane.pin",
+        serde_json::json!({"pane_id": pane_id, "pinned": true}),
+    );
+    assert!(pinned["error"].is_null(), "{pinned}");
+    let mut terminal = serde_json::Value::Null;
+    assert!(
+        support::wait_until(Duration::from_secs(5), Duration::from_millis(50), || {
+            terminal = live();
+            terminal["labels"]["herdr.pinned"] == "1"
+        }),
+        "{terminal}"
+    );
+    assert!(terminal["labels"]["herdr-native.pinned_at"]
+        .as_str()
+        .is_some_and(|at| at.parse::<u64>().is_ok()));
+    assert!(support::wait_until(
+        Duration::from_secs(5),
+        Duration::from_millis(50),
+        || pin_token().as_str().is_some_and(|at| !at.is_empty())
+    ));
+
+    // Unpinned: gone everywhere.
+    support::hc::request(
+        &socket_path,
+        "pane.pin",
+        serde_json::json!({"pane_id": pane_id, "pinned": false}),
+    );
+    assert!(support::wait_until(
+        Duration::from_secs(5),
+        Duration::from_millis(50),
+        || live()["labels"]["herdr.pinned"].is_null() && pin_token().is_null()
+    ));
+
+    // Pinned by Herdr.app (only hc's label, no pin time): shown here too.
+    let address = terminal["address"].as_str().unwrap().to_owned();
+    support::hc::label(&runtime_dir, &address, &["herdr.pinned=1"]);
+    assert!(
+        support::wait_until(Duration::from_secs(5), Duration::from_millis(50), || {
+            pin_token() == ""
+        }),
+        "{}",
+        pin_token()
+    );
+
+    cleanup_spawned_herdr(child, base);
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
 fn hc_pane_keeps_tokens_a_plugin_reports() {
     let _lock = test_lock();
     let base = unique_test_dir();

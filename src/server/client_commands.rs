@@ -254,10 +254,10 @@ mod tests {
             actual.remove("pane.link.resolve").as_deref(),
             Some("f5e4a3e01453ae7b188f127ce951c12c20e0bebcc17cc364eeb6d1a01fd5bf81")
         );
-        // Advertised to the client for agent pins (its tokens).
+        // Agent pins (shared with Herdr.app through hc's `herdr.pinned`).
         assert_eq!(
-            actual.remove("pane.report_metadata").as_deref(),
-            Some("c288588cf8ee53e966fa3f060d3b03b7be2654852060d574107e93702e4ba7e7")
+            actual.remove("pane.pin").as_deref(),
+            Some("1628599b96e67cc03260620609fa67e7a184c3c43b1ca8ff94876461397912cd")
         );
 
         assert_eq!(

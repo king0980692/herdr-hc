@@ -604,15 +604,13 @@ fn pinned_agents_lead_the_panel_and_toggle_from_the_keyboard_and_menu() {
             .map(|method| (*method).to_owned())
             .collect(),
     ));
-    let pin_of = |outcome: &ClientShellInput| -> Option<Option<String>> {
+    let pin_of = |outcome: &ClientShellInput| -> Option<bool> {
         let [ClientShellAction::Endpoint { request, .. }] = &outcome.actions[..] else {
             return None;
         };
         match &request.method {
-            crate::api::schema::Method::PaneReportMetadata(params)
-                if params.pane_id == "pane_1" =>
-            {
-                params.tokens.get("herdr-pin").cloned()
+            crate::api::schema::Method::PanePin(params) if params.pane_id == "pane_1" => {
+                Some(params.pinned)
             }
             _ => None,
         }
@@ -623,19 +621,27 @@ fn pinned_agents_lead_the_panel_and_toggle_from_the_keyboard_and_menu() {
         crate::input::KeybindMatch::Action(crate::input::KeybindAction::ToggleAgentPin),
         &mut pin,
     );
-    assert!(matches!(pin_of(&pin), Some(Some(ref at)) if at.parse::<u64>().is_ok()));
+    assert_eq!(pin_of(&pin), Some(true));
 
-    // Pinned: the shortcut unpins it.
+    // Pinned (here by another app: no pin time): the shortcut unpins it.
     let mut pinned = initial;
     pinned.revision = 2;
-    pinned.agents[0] = agent("pane_1", Some("30"));
-    state.set_snapshot(Box::new(pinned));
+    pinned.agents[0] = agent("pane_1", Some(""));
+    state.set_snapshot(Box::new(pinned.clone()));
+    assert_eq!(
+        super::super::agent_sidebar::ordered_agent_pane_ids(
+            &pinned,
+            crate::config::AgentPanelSortConfig::Spaces
+        ),
+        ["pane_3", "pane_2", "pane_1", "pane_4"],
+        "a pin of unknown time follows the timed ones"
+    );
     let mut unpin = ClientShellInput::default();
     state.record_binding(
         crate::input::KeybindMatch::Action(crate::input::KeybindAction::ToggleAgentPin),
         &mut unpin,
     );
-    assert_eq!(pin_of(&unpin), Some(None));
+    assert_eq!(pin_of(&unpin), Some(false));
 
     // The agent row's menu says which it will do.
     let endpoint = state.active_endpoint_id.clone();

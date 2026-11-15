@@ -5,6 +5,14 @@ use serde_json::{json, Value};
 
 /// The hc label holding a pane's shared metadata tokens (JSON object).
 pub(crate) const SHARED_TOKENS_LABEL: &str = "herdr-native.tokens";
+/// hc's agent pin, as Herdr.app writes it (`"1"`): the authority on whether
+/// an hc pane's agent is pinned.
+pub(crate) const PINNED_LABEL: &str = "herdr.pinned";
+/// When this app pinned it (Unix ms), for the pin order.
+pub(crate) const PINNED_AT_LABEL: &str = "herdr-native.pinned_at";
+/// The token a pane's agent pin is shown to clients as (its value the pin
+/// time, empty when unknown).
+pub(crate) const PIN_TOKEN: &str = "herdr-pin";
 
 impl TerminalState {
     pub(crate) fn with_hc_binding(mut self, binding: Option<Value>) -> Self {
@@ -91,6 +99,21 @@ impl TerminalState {
             .filter(|value| !value.is_empty())
             .and_then(|value| serde_json::from_str(value).ok())
             .unwrap_or_default()
+    }
+
+    /// An hc pane's pin, from the core's labels: `None` off hc, else whether
+    /// it is pinned and when (empty when another app pinned it).
+    pub(crate) fn hc_pin(&self) -> Option<Option<String>> {
+        let labels = self.hc_snapshot.as_ref()?.terminal.facts.get("labels");
+        let label = |key: &str| {
+            labels
+                .and_then(|labels| labels.get(key))
+                .and_then(Value::as_str)
+        };
+        Some(
+            (label(PINNED_LABEL) == Some("1"))
+                .then(|| label(PINNED_AT_LABEL).unwrap_or_default().to_owned()),
+        )
     }
 
     pub(crate) fn hc_status(&self) -> Option<&Value> {

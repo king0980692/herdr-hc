@@ -114,6 +114,7 @@ operations::define_operations! {
     PaneGet(PaneTarget) => "pane.get", false, false;
     PaneFocus(PaneTarget) => "pane.focus", true, true;
     PaneInputSet(PaneInputSetParams) => "pane.input.set", true, true;
+    PanePin(PanePinParams) => "pane.pin", true, true;
     PaneLinkActivate(PaneLinkActivateParams) => "pane.link.activate", false, true;
     PaneLinkResolve(PaneLinkActivateParams) => "pane.link.resolve", false, true;
     PaneRename(PaneRenameParams) => "pane.rename", true, true;
@@ -123,7 +124,7 @@ operations::define_operations! {
     PaneRead(PaneReadParams) => "pane.read", false, false;
     PaneReportAgent(PaneReportAgentParams) => "pane.report_agent", true, false;
     PaneReportAgentSession(PaneReportAgentSessionParams) => "pane.report_agent_session", true, false;
-    PaneReportMetadata(PaneReportMetadataParams) => "pane.report_metadata", true, true;
+    PaneReportMetadata(PaneReportMetadataParams) => "pane.report_metadata", true, false;
     PaneClearAgentAuthority(PaneClearAgentAuthorityParams) => "pane.clear_agent_authority", true, false;
     PaneReleaseAgent(PaneReleaseAgentParams) => "pane.release_agent", true, false;
     PaneClose(PaneTarget) => "pane.close", true, true;

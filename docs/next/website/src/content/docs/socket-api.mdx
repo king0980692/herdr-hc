@@ -150,6 +150,7 @@ On macOS, `pane.send_input` (used by `pane run`) and `agent.start` check the ter
 {"id":"req_resize","method":"pane.resize","params":{"pane_id":"w1:p1","direction":"right","amount":0.1}}
 {"id":"req_zoom","method":"pane.zoom","params":{"pane_id":"w1:p1","mode":"toggle"}}
 {"id":"req_input","method":"pane.input.set","params":{"pane_id":"w1:p1","right_click":"pane"}}
+{"id":"req_pin","method":"pane.pin","params":{"pane_id":"w1:p1","pinned":true}}
 {"id":"req_split","method":"pane.split","params":{"direction":"right","ratio":0.333,"right_click":"pane","env":{"HERDR_ROLE":"tests"}}}
 {"id":"req_process","method":"pane.process_info","params":{"pane_id":"w1:p1"}}
 ```
@@ -164,6 +165,12 @@ when the application requests terminal mouse reporting; otherwise Herdr falls
 back to its pane menu. Right-clicking the pane frame always opens Herdr's menu.
 `pane.split` accepts the same optional `right_click` value for the newly created
 pane.
+
+`pane.pin` pins the pane's agent to the top of agent lists (`pinned: true`) or
+unpins it. Pinned agents are listed first, earliest pin on top. On a pane run
+by hc the pin is hc's own (`herdr.pinned`), so every app showing that program
+shows it; the pane's `tokens` carry it as `herdr-pin`, valued with the pin time
+(empty when another app pinned it).
 
 `PaneInfo` includes `scroll` when terminal scroll metrics are available:
 

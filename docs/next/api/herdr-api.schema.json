@@ -2797,6 +2797,22 @@
           ],
           "type": "object"
         },
+        "PanePinParams": {
+          "description": "Pins a pane's agent to the top of agent lists, or unpins it. On an hc\npane the pin is hc's own (`herdr.pinned`), shown by every Herdr app.",
+          "properties": {
+            "pane_id": {
+              "type": "string"
+            },
+            "pinned": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "pane_id",
+            "pinned"
+          ],
+          "type": "object"
+        },
         "PaneProcessInfoParams": {
           "properties": {
             "pane_id": {
@@ -5824,6 +5840,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/PaneInputSetParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.pin",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PanePinParams"
             }
           },
           "required": [
