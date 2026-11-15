@@ -597,6 +597,13 @@ fn pinned_agents_lead_the_panel_and_toggle_from_the_keyboard_and_menu() {
 
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(initial.clone()));
+    // What a real server advertises to the client (not "anything goes").
+    state.set_endpoint_methods(Some(
+        crate::server::client_commands::supported_client_shell_method_names()
+            .iter()
+            .map(|method| (*method).to_owned())
+            .collect(),
+    ));
     let pin_of = |outcome: &ClientShellInput| -> Option<Option<String>> {
         let [ClientShellAction::Endpoint { request, .. }] = &outcome.actions[..] else {
             return None;
