@@ -448,6 +448,13 @@ pub(crate) enum ServerEvent {
         extension: String,
         data: Vec<u8>,
     },
+    /// A client's clipboard image now lies on the machine of the pane it was
+    /// pasted into (another machine's): paste its path there.
+    ClientClipboardImagePlaced {
+        client_id: u64,
+        target: crate::protocol::ClientClipboardImageTarget,
+        path: String,
+    },
     /// A client requested direct attach to one terminal.
     ClientAttachTerminal {
         client_id: u64,

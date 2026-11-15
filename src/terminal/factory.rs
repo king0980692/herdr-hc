@@ -325,6 +325,51 @@ impl TerminalFactory {
         });
     }
 
+    /// Sends `data` as a file beside one of the source's terminals (on its
+    /// machine) and delivers what `done` makes of the path it landed at.
+    /// False without an hc source.
+    pub(crate) fn put_beside_terminal<E: Send + 'static>(
+        &self,
+        address: &str,
+        name: String,
+        data: Vec<u8>,
+        events: tokio::sync::mpsc::Sender<E>,
+        done: impl FnOnce(io::Result<String>) -> E + Send + 'static,
+    ) -> bool {
+        use base64::Engine as _;
+        let Self::Hc(host) = self else {
+            return false;
+        };
+        let Ok(client) = host.client() else {
+            return false;
+        };
+        let address = address.to_owned();
+        host.executor.spawn(async move {
+            let placed = async {
+                let reply = client
+                    .call(
+                        "terminal.put",
+                        json!({
+                            "terminal": address,
+                            "name": name,
+                            "data": base64::engine::general_purpose::STANDARD.encode(&data),
+                        }),
+                    )
+                    .await?;
+                reply["path"]
+                    .as_str()
+                    .filter(|path| !path.is_empty())
+                    .map(str::to_owned)
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "hc put returned no path")
+                    })
+            }
+            .await;
+            let _ = events.send(done(placed)).await;
+        });
+        true
+    }
+
     /// Runs one program on the source's machine (no terminal) and delivers
     /// what `done` makes of its stdout to the app. False without an hc source.
     pub(crate) fn exec_on_source(

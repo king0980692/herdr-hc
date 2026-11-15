@@ -49,6 +49,19 @@ pub(crate) fn stage(
     ))
 }
 
+/// The name a clipboard image is sent under to another machine (hc keeps
+/// it, so `.png` stays `.png`).
+pub(crate) fn remote_name(client_id: u64, extension: &str) -> String {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    format!(
+        "client-{client_id}-clipboard-{unique}.{}",
+        sanitize_extension(extension)
+    )
+}
+
 pub(crate) fn remove_files(paths: Vec<PathBuf>) {
     for path in paths {
         let _ = fs::remove_file(path);

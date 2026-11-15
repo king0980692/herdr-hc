@@ -1165,6 +1165,41 @@ impl HeadlessServer {
         Ok(staged)
     }
 
+    /// The hc address of the terminal a clipboard image is pasted into.
+    fn clipboard_image_target_hc_address(
+        &self,
+        client_id: u64,
+        target: &protocol::ClientClipboardImageTarget,
+    ) -> Option<String> {
+        let terminal_id = match target {
+            protocol::ClientClipboardImageTarget::DirectTerminal => {
+                let ClientConnection {
+                    mode: ClientConnectionMode::TerminalAttach { terminal_id },
+                    ..
+                } = self.clients.get(&client_id)?
+                else {
+                    return None;
+                };
+                self.terminal_id_by_string(terminal_id)?
+            }
+            protocol::ClientClipboardImageTarget::Pane(pane_id) => {
+                let (workspace_index, pane) = self.app.parse_pane_id(pane_id)?;
+                self.app
+                    .state
+                    .workspaces
+                    .get(workspace_index)?
+                    .pane_state(pane)?
+                    .attached_terminal_id
+                    .clone()
+            }
+            protocol::ClientClipboardImageTarget::Popup(terminal_id) => {
+                self.terminal_id_by_string(terminal_id)?
+            }
+        };
+        let terminal = self.app.state.terminals.get(&terminal_id)?;
+        Some(terminal.hc_snapshot.as_ref()?.binding.address.clone())
+    }
+
     fn paste_client_clipboard_image_path(
         &mut self,
         client_id: u64,
@@ -2142,6 +2177,44 @@ impl HeadlessServer {
                 if !self.client_clipboard_image_target_is_valid(client_id, &target) {
                     return false;
                 }
+                // The pane's program runs on another machine: the file must
+                // be there, so it goes beside its terminal through hc.
+                if self.app.terminal_factory.is_saved_source() {
+                    let Some(address) = self.clipboard_image_target_hc_address(client_id, &target)
+                    else {
+                        warn!(client_id, "clipboard image target has no hc terminal");
+                        return true;
+                    };
+                    let name = crate::server::clipboard_image::remote_name(client_id, &extension);
+                    let started = self.app.terminal_factory.put_beside_terminal(
+                        &address,
+                        name,
+                        data,
+                        self.server_event_tx.clone(),
+                        move |placed| match placed {
+                            Ok(path) => ServerEvent::ClientClipboardImagePlaced {
+                                client_id,
+                                target,
+                                path,
+                            },
+                            Err(error) => {
+                                warn!(client_id, %error, "failed to send a clipboard image to the pane's machine");
+                                ServerEvent::ClientClipboardImagePlaced {
+                                    client_id,
+                                    target,
+                                    path: String::new(),
+                                }
+                            }
+                        },
+                    );
+                    if !started {
+                        warn!(
+                            client_id,
+                            "clipboard image could not reach the pane's machine"
+                        );
+                    }
+                    return true;
+                }
                 match self.stage_client_clipboard_image(client_id, &extension, &data) {
                     Ok(staged) => {
                         let routed = self.paste_client_clipboard_image_path(
@@ -2166,6 +2239,18 @@ impl HeadlessServer {
                         true
                     }
                 }
+            }
+            ServerEvent::ClientClipboardImagePlaced {
+                client_id,
+                target,
+                path,
+            } => {
+                if path.is_empty()
+                    || !self.client_clipboard_image_target_is_valid(client_id, &target)
+                {
+                    return false;
+                }
+                self.paste_client_clipboard_image_path(client_id, target, path)
             }
             ServerEvent::ClientResize {
                 client_id,

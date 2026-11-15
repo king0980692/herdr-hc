@@ -2950,6 +2950,25 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
         "/tmp/wrong-target.png".into(),
     ));
     assert!(input_rx.try_recv().is_err());
+    // Placed on the pane's machine (another one): that path is pasted; a
+    // failed send pastes nothing.
+    server.handle_server_event_with_render_impact(ServerEvent::ClientClipboardImagePlaced {
+        client_id: 11,
+        target: crate::protocol::ClientClipboardImageTarget::Pane(pane_id.clone()),
+        path: "/home/remote/.local/state/herdr-core/default/files/t3/client-image.png".into(),
+    });
+    assert_eq!(
+        input_rx.try_recv().expect("pasted remote path"),
+        Bytes::from_static(
+            b"/home/remote/.local/state/herdr-core/default/files/t3/client-image.png"
+        )
+    );
+    server.handle_server_event_with_render_impact(ServerEvent::ClientClipboardImagePlaced {
+        client_id: 11,
+        target: crate::protocol::ClientClipboardImageTarget::Pane(pane_id.clone()),
+        path: String::new(),
+    });
+    assert!(input_rx.try_recv().is_err());
 
     let (workspace_index, runtime_pane_id) = server
         .app
