@@ -2245,9 +2245,14 @@ impl HeadlessServer {
                 target,
                 path,
             } => {
-                if path.is_empty()
-                    || !self.client_clipboard_image_target_is_valid(client_id, &target)
-                {
+                if path.is_empty() {
+                    return false;
+                }
+                // As staged images here are, ones put there are kept a day.
+                if let Some(argv) = crate::server::clipboard_image::remote_cleanup_argv(&path) {
+                    self.app.terminal_factory.run_on_source(argv, 30);
+                }
+                if !self.client_clipboard_image_target_is_valid(client_id, &target) {
                     return false;
                 }
                 self.paste_client_clipboard_image_path(client_id, target, path)

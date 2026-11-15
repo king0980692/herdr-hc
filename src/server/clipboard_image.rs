@@ -62,6 +62,42 @@ pub(crate) fn remote_name(client_id: u64, extension: &str) -> String {
     )
 }
 
+/// The command that removes clipboard images older than a day beside the
+/// terminals of another machine, given where one was just put there
+/// (`…/files/<terminal>/<name>`). Only herdr's own image names, only under
+/// that `files` folder; `None` when the path does not look like one hc gave.
+pub(crate) fn remote_cleanup_argv(placed: &str) -> Option<Vec<String>> {
+    let placed = Path::new(placed);
+    let name = placed.file_name()?.to_str()?;
+    if !placed.is_absolute() || !name.starts_with("client-") || !name.contains("-clipboard-") {
+        return None;
+    }
+    let files = placed.parent()?.parent()?;
+    if files.file_name()? != "files" {
+        return None;
+    }
+    Some(
+        [
+            "find",
+            files.to_str()?,
+            "-mindepth",
+            "2",
+            "-maxdepth",
+            "2",
+            "-type",
+            "f",
+            "-name",
+            "client-*-clipboard-*",
+            "-mmin",
+            &format!("+{}", STAGED_CLIPBOARD_IMAGE_MAX_AGE.as_secs() / 60),
+            "-delete",
+        ]
+        .iter()
+        .map(|arg| (*arg).to_owned())
+        .collect(),
+    )
+}
+
 pub(crate) fn remove_files(paths: Vec<PathBuf>) {
     for path in paths {
         let _ = fs::remove_file(path);
@@ -148,6 +184,28 @@ fn cleanup_stale(dir: &Path) {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn old_images_beside_another_machines_terminals_are_cleaned_and_nothing_else() {
+        let argv = remote_cleanup_argv(
+            "/home/u/.local/state/herdr-core/default/files/t3g/client-3-clipboard-17947526-0.png",
+        )
+        .expect("an hc put path");
+        assert_eq!(argv[1], "/home/u/.local/state/herdr-core/default/files");
+        assert!(argv
+            .windows(2)
+            .any(|w| w == ["-name", "client-*-clipboard-*"]));
+        assert!(argv.windows(2).any(|w| w == ["-mmin", "+1440"]));
+        assert_eq!(argv.last().map(String::as_str), Some("-delete"));
+        // Not one of herdr's images, not under hc's files folder, or relative.
+        assert!(
+            remote_cleanup_argv("/home/u/.local/state/herdr-core/default/files/t3g/t1.png")
+                .is_none()
+        );
+        assert!(remote_cleanup_argv("/home/u/Pictures/x/client-3-clipboard-1.png").is_none());
+        assert!(remote_cleanup_argv("files/t3/client-3-clipboard-1.png").is_none());
+    }
+
     use super::*;
 
     #[test]

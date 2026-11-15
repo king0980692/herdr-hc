@@ -370,6 +370,28 @@ impl TerminalFactory {
         true
     }
 
+    /// Runs one program on the source's machine and lets it finish on its own
+    /// (housekeeping whose outcome nobody waits for).
+    pub(crate) fn run_on_source(&self, argv: Vec<String>, timeout_secs: u64) {
+        let Self::Hc(host) = self else {
+            return;
+        };
+        let Ok(client) = host.client() else {
+            return;
+        };
+        host.executor.spawn(async move {
+            if let Err(error) = client
+                .call(
+                    "machine.exec",
+                    json!({ "argv": argv, "timeout": timeout_secs }),
+                )
+                .await
+            {
+                tracing::debug!(%error, "housekeeping on the source's machine failed");
+            }
+        });
+    }
+
     /// Runs one program on the source's machine (no terminal) and delivers
     /// what `done` makes of its stdout to the app. False without an hc source.
     pub(crate) fn exec_on_source(
