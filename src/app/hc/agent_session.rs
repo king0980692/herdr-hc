@@ -8,9 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// How long after recording or resuming a session an agent may take to come
-/// to the front of its shell.
-const SETTLING: Duration = Duration::from_secs(10);
+const SETTLING: Duration = Duration::from_millis(recorded::SETTLING_MS);
 
 pub(crate) struct HcAgentSessions {
     pub(crate) resume_enabled: bool,
@@ -78,7 +76,8 @@ impl App {
         // The terminal's own program is the agent (not a shell it runs in).
         let root = recorded::runs_as_program(facts, agent);
         let address = snapshot.binding.address.clone();
-        let labels = recorded::labels_for(source, agent, session_ref, pid, root);
+        let labels =
+            recorded::labels_for(source, agent, session_ref, pid, root, recorded::now_ms());
         self.hc_agent_sessions
             .touched
             .insert(address.clone(), Instant::now());
@@ -100,6 +99,7 @@ impl App {
             settling: sessions.settling(address),
             resumed_here: recorded::live_pid(facts)
                 .is_some_and(|pid| sessions.attempted.contains(&(address.clone(), pid))),
+            now_ms: recorded::now_ms(),
         };
         match recorded::decide(facts, seen) {
             Decision::Nothing => {}

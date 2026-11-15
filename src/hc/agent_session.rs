@@ -18,25 +18,34 @@ pub(crate) const PID_LABEL: &str = "herdr-native.agent.pid";
 /// Set when the agent is the terminal's own program (not run from its shell):
 /// it in front is the agent running, not the agent having ended.
 pub(crate) const ROOT_LABEL: &str = "herdr-native.agent.root";
+/// When the session was recorded (Unix ms): every viewer gives a just
+/// recorded agent the same moment to come to the front, not only the viewer
+/// that recorded it.
+pub(crate) const AT_LABEL: &str = "herdr-native.agent.at";
+/// How long after recording or resuming a session an agent may take to come
+/// to the front of its shell.
+pub(crate) const SETTLING_MS: u64 = 10_000;
 /// The document whose versioned writes decide which viewer resumes.
 pub(crate) const CLAIMS_DOCUMENT: &str = "herdr-native-resume";
 
-const LABELS: [&str; 5] = [
+const LABELS: [&str; 6] = [
     SOURCE_LABEL,
     AGENT_LABEL,
     SESSION_LABEL,
     PID_LABEL,
     ROOT_LABEL,
+    AT_LABEL,
 ];
 
 /// The labels recording `session_ref` for a terminal now running as `pid`;
-/// `root` when the agent is that program itself.
+/// `root` when the agent is that program itself, recorded at `at_ms`.
 pub(crate) fn labels_for(
     source: &str,
     agent: &str,
     session_ref: &AgentSessionRef,
     pid: u64,
     root: bool,
+    at_ms: u64,
 ) -> Map<String, Value> {
     let kind = match session_ref.kind {
         AgentSessionRefKind::Id => "id",
@@ -51,7 +60,15 @@ pub(crate) fn labels_for(
     );
     labels.insert(PID_LABEL.into(), pid.to_string().into());
     labels.insert(ROOT_LABEL.into(), if root { "1" } else { "" }.into());
+    labels.insert(AT_LABEL.into(), at_ms.to_string().into());
     labels
+}
+
+/// Now, in Unix ms.
+pub(crate) fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_millis() as u64)
 }
 
 /// The labels that remove a recorded session (`key=""` removes a label).
@@ -145,6 +162,8 @@ pub(crate) struct Seen {
     pub(crate) settling: bool,
     /// This viewer already typed the resume into the shell running now.
     pub(crate) resumed_here: bool,
+    /// Now, in Unix ms (against the recorded time).
+    pub(crate) now_ms: u64,
 }
 
 /// What a terminal's facts call for.
@@ -154,6 +173,13 @@ pub(crate) fn decide(facts: &Map<String, Value>, seen: Seen) -> Decision {
     }
     let Some(pid) = live_pid(facts) else {
         return Decision::Nothing;
+    };
+    let recorded_lately = label(facts, AT_LABEL)
+        .and_then(|at| at.parse::<u64>().ok())
+        .is_some_and(|at| seen.now_ms.saturating_sub(at) < SETTLING_MS);
+    let seen = Seen {
+        settling: seen.settling || recorded_lately,
+        ..seen
     };
     // Something the terminal's program started is in front (an agent, a tool).
     if !root_in_front(facts) {
@@ -201,6 +227,7 @@ mod tests {
         enabled: true,
         settling: false,
         resumed_here: false,
+        now_ms: 1_000_000,
     };
 
     fn claude(pid: u64) -> Map<String, Value> {
@@ -210,6 +237,7 @@ mod tests {
             &AgentSessionRef::id("8df67940-1111-2222-3333-444455556666").unwrap(),
             pid,
             false,
+            0,
         )
     }
 
@@ -356,6 +384,23 @@ mod tests {
             "claude"
         ));
         assert!(!runs_as_program(&Map::new(), "claude"));
+    }
+
+    #[test]
+    fn a_session_another_viewer_just_recorded_is_not_taken_for_ended() {
+        // Recorded a moment ago elsewhere; the agent not in front yet.
+        let mut labels = claude(100);
+        labels.insert(AT_LABEL.into(), (ON.now_ms - 2_000).to_string().into());
+        assert_eq!(
+            decide(&facts(100, 100, labels.clone()), ON),
+            Decision::Nothing
+        );
+        // Long enough ago: it ended.
+        labels.insert(
+            AT_LABEL.into(),
+            (ON.now_ms - SETTLING_MS - 1).to_string().into(),
+        );
+        assert_eq!(decide(&facts(100, 100, labels), ON), Decision::Clear);
     }
 
     #[test]
