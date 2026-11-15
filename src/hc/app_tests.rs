@@ -40,8 +40,15 @@ async fn hc_saved_source_has_no_local_worktree_or_git_fallback() {
         &saved(json!({"core_id":"offline-core","address":"t1"})),
     );
     app.refresh_restored_workspace_git_metadata();
-    app.request_git_identity_refresh(std::time::Instant::now());
-    assert!(app.git_refresh_deadline().is_none());
+    let now = std::time::Instant::now();
+    app.request_git_identity_refresh(now);
+    // Git of the source's folders runs on its machine (through hc), never on
+    // this one: no local status is read, and without hc nothing starts.
+    if let Some(deadline) = app.git_refresh_deadline() {
+        app.start_git_status_refresh_if_due(deadline.max(now));
+    }
+    assert!(app.git_status_cache.is_empty());
+    assert!(!app.git_refresh_in_flight);
     for (method, params) in [
         ("worktree.list", json!({})),
         ("worktree.open", json!({"path":"/source-only"})),

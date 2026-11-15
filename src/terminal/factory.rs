@@ -325,6 +325,46 @@ impl TerminalFactory {
         });
     }
 
+    /// Runs one program on the source's machine (no terminal) and delivers
+    /// what `done` makes of its stdout to the app. False without an hc source.
+    pub(crate) fn exec_on_source(
+        &self,
+        argv: Vec<String>,
+        input: Vec<u8>,
+        timeout_secs: u64,
+        events: tokio::sync::mpsc::Sender<AppEvent>,
+        done: impl FnOnce(io::Result<Vec<u8>>) -> AppEvent + Send + 'static,
+    ) -> bool {
+        use base64::Engine as _;
+        let Self::Hc(host) = self else {
+            return false;
+        };
+        let Ok(client) = host.client() else {
+            return false;
+        };
+        host.executor.spawn(async move {
+            let output = async {
+                let reply = client
+                    .call(
+                        "machine.exec",
+                        json!({
+                            "argv": argv,
+                            "input": base64::engine::general_purpose::STANDARD.encode(&input),
+                            "timeout": timeout_secs,
+                        }),
+                    )
+                    .await?;
+                let stdout = reply["stdout"].as_str().unwrap_or_default();
+                base64::engine::general_purpose::STANDARD
+                    .decode(stdout)
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+            }
+            .await;
+            let _ = events.send(done(output)).await;
+        });
+        true
+    }
+
     /// Delivers `event` to the app after `delay`, off its thread.
     pub(crate) fn send_later(
         &self,

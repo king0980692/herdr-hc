@@ -136,6 +136,39 @@ impl App {
         if self.git_identity_refresh_requested {
             demand.branch = true;
         }
+        // Another machine's folders: git runs there, through its core.
+        if self.terminal_factory.is_saved_source() {
+            let dirs: Vec<String> = workspaces
+                .iter()
+                .map(|item| item.resolved_identity_cwd.display().to_string())
+                .collect();
+            let started = self.terminal_factory.exec_on_source(
+                vec!["sh".into(), "-c".into(), REMOTE_GIT_SCRIPT.into()],
+                remote_git_input(&dirs),
+                REMOTE_GIT_TIMEOUT_SECS,
+                event_tx,
+                move |output| {
+                    let results = match output {
+                        Ok(stdout) => remote_git_statuses(&workspaces, &stdout, demand),
+                        Err(error) => {
+                            tracing::debug!(%error, "git status of another machine's folders unavailable");
+                            Vec::new()
+                        }
+                    };
+                    AppEvent::GitStatusRefreshed {
+                        results,
+                        cache_updates: Vec::new(),
+                    }
+                },
+            );
+            self.last_git_remote_status_refresh = now;
+            if started {
+                self.git_refresh_in_flight = true;
+            }
+            self.git_identity_refresh_requested = false;
+            self.git_refresh_spawn_retry_pending = false;
+            return;
+        }
         let spawned = crate::thread_spawn::spawn_named("herdr-git-refresh", move || {
             let output =
                 refresh_workspace_git_statuses_with_cache_and_demand(workspaces, &cache, demand);
@@ -178,8 +211,7 @@ impl App {
     }
 
     pub(crate) fn git_refresh_deadline(&self) -> Option<Instant> {
-        (!self.terminal_factory.is_saved_source()
-            && !self.git_refresh_in_flight
+        (!self.git_refresh_in_flight
             && !self.state.workspaces.is_empty()
             && (self.git_identity_refresh_requested || !self.git_refresh_demand().is_empty()))
         .then_some(self.last_git_remote_status_refresh + GIT_REMOTE_STATUS_REFRESH_INTERVAL)
@@ -217,6 +249,72 @@ impl App {
             })
             .collect()
     }
+}
+
+/// Run on another machine: for each folder read from stdin (one per line),
+/// one line `G<TAB>top<TAB>branch<TAB>ahead<TAB>behind` (ahead/behind empty
+/// without an upstream), or `N` outside a git repository.
+const REMOTE_GIT_SCRIPT: &str = r#"while IFS= read -r d; do
+  if top=$(git -C "$d" rev-parse --show-toplevel 2>/dev/null); then
+    b=$(git -C "$d" symbolic-ref --short -q HEAD 2>/dev/null || git -C "$d" rev-parse --short HEAD 2>/dev/null)
+    ab=$(git -C "$d" rev-list --left-right --count 'HEAD...@{upstream}' 2>/dev/null | tr -s ' \t' '\t')
+    printf 'G\t%s\t%s\t%s\n' "$top" "$b" "${ab:-	}"
+  else
+    printf 'N\n'
+  fi
+done"#;
+const REMOTE_GIT_TIMEOUT_SECS: u64 = 20;
+
+fn remote_git_input(dirs: &[String]) -> Vec<u8> {
+    let mut input = Vec::new();
+    for dir in dirs {
+        // A folder name with a line break cannot be sent one per line.
+        input.extend_from_slice(dir.replace('\n', "").as_bytes());
+        input.push(b'\n');
+    }
+    input
+}
+
+/// The workspaces' statuses from `REMOTE_GIT_SCRIPT`'s output, in order. A
+/// workspace keeps the name its folder gives it.
+fn remote_git_statuses(
+    items: &[WorkspaceGitRefreshItem],
+    stdout: &[u8],
+    demand: GitStatusRefreshDemand,
+) -> Vec<WorkspaceGitStatus> {
+    let text = String::from_utf8_lossy(stdout);
+    items
+        .iter()
+        .zip(text.lines())
+        .map(|(item, line)| {
+            let mut fields = line.split('\t');
+            let (top, branch, ahead_behind) = match fields.next() {
+                Some("G") => {
+                    let top = fields.next().filter(|top| !top.is_empty());
+                    let branch = fields
+                        .next()
+                        .filter(|branch| !branch.is_empty())
+                        .map(str::to_owned);
+                    let ahead = fields.next().and_then(|n| n.trim().parse::<usize>().ok());
+                    let behind = fields.next().and_then(|n| n.trim().parse::<usize>().ok());
+                    (top, branch, ahead.zip(behind))
+                }
+                _ => (None, None, None),
+            };
+            WorkspaceGitStatus {
+                workspace_id: item.workspace_id.clone(),
+                resolved_identity_cwd: item.resolved_identity_cwd.clone(),
+                status_cache_key: top
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| item.resolved_identity_cwd.clone()),
+                demand,
+                auto_label: crate::workspace::fallback_label_from_cwd(&item.resolved_identity_cwd),
+                branch: branch.filter(|_| demand.branch),
+                ahead_behind: ahead_behind.filter(|_| demand.ahead_behind),
+                space: None,
+            }
+        })
+        .collect()
 }
 
 fn deduplicate_git_refresh_items(
@@ -291,6 +389,44 @@ fn refresh_workspace_git_statuses_with_cache_and_demand(
 mod tests {
     use super::*;
     use crate::workspace::Workspace;
+
+    #[test]
+    fn another_machines_git_statuses_come_back_in_order() {
+        let item = |id: &str, cwd: &str| WorkspaceGitRefreshItem {
+            workspace_id: id.into(),
+            resolved_identity_cwd: PathBuf::from(cwd),
+            cache_key_hint: None,
+        };
+        let items = [
+            item("w1", "/home/u/repo/sub"),
+            item("w2", "/home/u/plain"),
+            item("w3", "/home/u/nowhere"),
+        ];
+        let stdout = b"G\t/home/u/repo\tmain\t2\t1\nN\nG\t/home/u/other\tdev\t\t\n";
+        let statuses = remote_git_statuses(&items, stdout, GitStatusRefreshDemand::ALL);
+        assert_eq!(statuses.len(), 3);
+        assert_eq!(statuses[0].branch.as_deref(), Some("main"));
+        assert_eq!(statuses[0].ahead_behind, Some((2, 1)));
+        assert_eq!(statuses[0].status_cache_key, PathBuf::from("/home/u/repo"));
+        // Named by its folder, as before.
+        assert_eq!(statuses[0].auto_label, "sub");
+        assert_eq!(statuses[1].branch, None);
+        assert_eq!(statuses[2].branch.as_deref(), Some("dev"));
+        assert_eq!(statuses[2].ahead_behind, None, "no upstream");
+        // Only what is shown is kept.
+        let branch_only = GitStatusRefreshDemand {
+            branch: true,
+            ahead_behind: false,
+        };
+        assert_eq!(
+            remote_git_statuses(&items, stdout, branch_only)[0].ahead_behind,
+            None
+        );
+        assert_eq!(
+            remote_git_input(&["/a".into(), "/b\nc".into()]),
+            b"/a\n/bc\n".to_vec()
+        );
+    }
 
     #[test]
     fn git_refresh_deduplicates_workspaces_with_same_cache_key() {
