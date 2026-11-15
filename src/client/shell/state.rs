@@ -525,6 +525,7 @@ pub(super) enum ClientContextMenuAction {
     Zoom,
     ToggleRightClickPassthrough,
     ClosePane,
+    PasteFromClipboard,
 }
 
 #[derive(Debug)]

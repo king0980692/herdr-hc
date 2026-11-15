@@ -56,7 +56,10 @@ impl ClientContextMenuOverlay {
                 right_click_passthrough,
                 ..
             } => {
-                let mut items = vec![item("Rename pane", Action::RenamePane)];
+                let mut items = vec![
+                    item("Paste", Action::PasteFromClipboard),
+                    item("Rename pane", Action::RenamePane),
+                ];
                 if *has_manual_label {
                     items.push(item("Clear pane name", Action::ClearPaneName));
                 }
@@ -448,7 +451,48 @@ impl ClientShellState {
                 outcome,
             ),
             ClientContextMenuAction::ClosePane => self.request_pane_close(pane_id, outcome),
+            ClientContextMenuAction::PasteFromClipboard => self.paste_clipboard_into_pane(
+                pane_id,
+                outcome,
+                crate::platform::read_clipboard_text,
+                crate::platform::read_clipboard_image,
+            ),
             _ => {}
         }
+    }
+
+    /// Pastes what the clipboard holds into the pane: text as a paste (the
+    /// pane's program gets it bracketed when it asked for that), or else an
+    /// image, as the image paste key does (on another machine, put there).
+    pub(super) fn paste_clipboard_into_pane(
+        &mut self,
+        pane_id: String,
+        outcome: &mut ClientShellInput,
+        read_text: impl FnOnce() -> Option<String>,
+        read_image: impl FnOnce() -> Option<crate::platform::ClipboardImage>,
+    ) {
+        if let Some(text) = read_text().filter(|text| !text.is_empty()) {
+            push_target_event(
+                ClientInputTarget::Pane(pane_id),
+                ClientPaneInputEvent::Paste(text),
+                outcome,
+            );
+            return;
+        }
+        let Some(image) = read_image() else {
+            return;
+        };
+        if image.bytes.len() > crate::protocol::MAX_CLIPBOARD_IMAGE_PAYLOAD {
+            tracing::warn!(
+                bytes = image.bytes.len(),
+                "clipboard image is too large to paste"
+            );
+            return;
+        }
+        outcome.requests.push(ClientMessage::ClipboardImage {
+            target: crate::protocol::ClientClipboardImageTarget::Pane(pane_id),
+            extension: image.extension.to_owned(),
+            data: image.bytes,
+        });
     }
 }

@@ -378,6 +378,65 @@ fn context_menus_capture_stable_targets_and_route_actions() {
 }
 
 #[test]
+fn pane_context_menu_pastes_the_clipboard_into_that_pane() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    state.compose(106, 20).expect("composed frame");
+    let pane = state.hits.panes[0].rect;
+    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Right),
+        column: pane.x + 1,
+        row: pane.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    let first = match state.overlay.as_ref() {
+        Some(ClientShellOverlay::ContextMenu(menu)) => menu.items()[0].action,
+        _ => panic!("pane context menu"),
+    };
+    assert_eq!(first, ClientContextMenuAction::PasteFromClipboard);
+
+    // Text: pasted into that pane.
+    let mut outcome = ClientShellInput::default();
+    state.paste_clipboard_into_pane(
+        "pane_1".into(),
+        &mut outcome,
+        || Some("hello\nworld".into()),
+        || panic!("text wins over an image"),
+    );
+    assert!(matches!(
+        &outcome.requests[..],
+        [ClientMessage::ClientShellPaneInput { pane_id, events }]
+            if pane_id == "pane_1"
+                && matches!(&events[..], [ClientPaneInputEvent::Paste(text)] if text == "hello\nworld")
+    ));
+
+    // Only an image: sent as the image paste key sends one.
+    let mut outcome = ClientShellInput::default();
+    state.paste_clipboard_into_pane(
+        "pane_1".into(),
+        &mut outcome,
+        || None,
+        || {
+            Some(crate::platform::ClipboardImage {
+                bytes: vec![1, 2, 3],
+                extension: "png",
+            })
+        },
+    );
+    assert!(matches!(
+        &outcome.requests[..],
+        [ClientMessage::ClipboardImage { target: crate::protocol::ClientClipboardImageTarget::Pane(pane_id), extension, data }]
+            if pane_id == "pane_1" && extension == "png" && data == &[1, 2, 3]
+    ));
+
+    // Nothing on the clipboard: nothing sent.
+    let mut outcome = ClientShellInput::default();
+    state.paste_clipboard_into_pane("pane_1".into(), &mut outcome, || None, || None);
+    assert!(outcome.requests.is_empty());
+}
+
+#[test]
 fn global_menu_opens_from_sidebar_and_routes_client_actions() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
