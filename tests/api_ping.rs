@@ -2209,6 +2209,107 @@ fn hc_pane_pin_is_the_cores_herdr_pinned_both_ways() {
 
 #[cfg(not(target_os = "macos"))]
 #[test]
+fn a_plugin_pane_stays_this_viewers_own_and_out_of_the_shared_layout() {
+    let _lock = test_lock();
+    let base = unique_test_dir();
+    let config_home = base.join("config");
+    let runtime_dir = base.join("runtime");
+    let socket_path = runtime_dir.join("herdr.sock");
+    let plugin = base.join("plugin");
+    std::fs::create_dir_all(&plugin).unwrap();
+    std::fs::write(
+        plugin.join("herdr-plugin.toml"),
+        r#"id = "own-pane-test"
+name = "Own pane test"
+version = "0.1.0"
+min_herdr_version = "0.6.10"
+platforms = ["linux", "macos"]
+
+[[panes]]
+id = "side"
+title = "Side"
+placement = "split"
+command = ["sleep", "300"]
+"#,
+    )
+    .unwrap();
+
+    let child = spawn_herdr(&config_home, &runtime_dir, &socket_path);
+    wait_for_socket(&socket_path, Duration::from_secs(5));
+    let created = send_request(
+        &socket_path,
+        &format!(
+            r#"{{"id":"own_ws","method":"workspace.create","params":{{"cwd":"{}","focus":true}}}}"#,
+            base.display()
+        ),
+    );
+    assert_eq!(created["result"]["type"], "workspace_created", "{created}");
+    let linked = support::hc::request(
+        &socket_path,
+        "plugin.link",
+        serde_json::json!({"path": plugin, "enabled": true}),
+    );
+    assert!(linked["error"].is_null(), "{linked}");
+    let opened = support::hc::request(
+        &socket_path,
+        "plugin.pane.open",
+        serde_json::json!({"plugin_id": "own-pane-test", "entrypoint": "side", "focus": false}),
+    );
+    assert!(opened["error"].is_null(), "{opened}");
+
+    let mut terminals = Vec::new();
+    assert!(
+        support::wait_until(Duration::from_secs(5), Duration::from_millis(50), || {
+            terminals = support::hc::terminals(&runtime_dir)
+                .into_iter()
+                .filter(|terminal| terminal["state"] == "live")
+                .collect();
+            terminals.len() == 2
+        }),
+        "{terminals:?}"
+    );
+    let (own, program): (Vec<_>, Vec<_>) = terminals
+        .into_iter()
+        .partition(|terminal| terminal["labels"]["herdr-native.hidden"] == "1");
+    let [own] = &own[..] else {
+        panic!("one plugin pane terminal: {own:?}");
+    };
+    assert_eq!(own["labels"]["herdr-native.role"], "plugin", "{own}");
+    assert!(
+        own["labels"]["herdr.space"].is_null(),
+        "herdr.app must not see it: {own}"
+    );
+    assert!(own["labels"]["herdr.tab"].is_null(), "{own}");
+    assert_eq!(own["keep"], false, "{own}");
+    let program_address = program[0]["address"].as_str().unwrap().to_owned();
+    let own_address = own["address"].as_str().unwrap().to_owned();
+
+    // The shared layout holds the program, never the plugin's pane.
+    let mut document = serde_json::Value::Null;
+    assert!(
+        support::wait_until(Duration::from_secs(10), Duration::from_millis(100), || {
+            document = support::hc::core_call(
+                &runtime_dir,
+                "doc.get",
+                serde_json::json!({"name": "herdr-app"}),
+            );
+            let text = document["value"].to_string();
+            text.contains(&format!("\"{program_address}\""))
+        }),
+        "{document}"
+    );
+    assert!(
+        !document["value"]
+            .to_string()
+            .contains(&format!("\"{own_address}\"")),
+        "{document}"
+    );
+
+    cleanup_spawned_herdr(child, base);
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
 fn hc_pane_keeps_tokens_a_plugin_reports() {
     let _lock = test_lock();
     let base = unique_test_dir();

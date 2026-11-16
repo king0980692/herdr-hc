@@ -691,10 +691,13 @@ impl TerminalFactory {
                 // herdr-hc, and Native sharing herdr.app's layout, label programs
                 // with their herdr.app space and tab, as herdr.app does its own.
                 let placed = crate::hc_entry::ENABLED || self.shares_herdr_app_layout();
+                // A plugin's pane stays this herdr-native's own: hidden from
+                // herdr.app and other viewers, never placed in the document.
+                let plugin_pane = placed && env.is_plugin_pane();
                 let labels = env
                     .workspace_and_tab()
                     // A shared machine's programs are placed in its own document.
-                    .filter(|_| placed && (!host.saved || host.shared))
+                    .filter(|_| placed && !plugin_pane && (!host.saved || host.shared))
                     .and_then(|(workspace, tab)| {
                         let mut placements = host.placements.lock().ok()?;
                         Some(placements.labels_for_new_program(
@@ -705,6 +708,11 @@ impl TerminalFactory {
                     })
                     .unwrap_or_default();
                 let placed_here = !labels.is_empty();
+                let labels = if plugin_pane {
+                    crate::hc_entry::plugin_pane_labels()
+                } else {
+                    labels
+                };
                 // On a shared machine with its bridge running, the program can
                 // reach herdr-native (an agent reports its session through it).
                 let bridge = self
@@ -923,13 +931,23 @@ async fn sync_layout_once(
         // Before the list: a program started after it is not judged by it.
         let started_now = started.lock().map(|s| s.clone()).unwrap_or_default();
         let list = client.call("terminal.list", json!({"all": false})).await?;
+        // A viewer's own terminals (plugin panes, helpers) are no programs
+        // of the shared layout: left out, and taken out of the document.
+        let hidden: std::collections::HashSet<String> = list["terminals"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|terminal| terminal["labels"][crate::hc_entry::HIDDEN_LABEL] == "1")
+            .filter_map(|terminal| terminal["address"].as_str())
+            .map(str::to_owned)
+            .collect();
         let live: std::collections::HashSet<String> = list["terminals"]
             .as_array()
             .into_iter()
             .flatten()
             .filter(|terminal| terminal["state"] == "live")
             .filter_map(|terminal| terminal["address"].as_str())
-            .filter(|address| !address.contains('/'))
+            .filter(|address| !address.contains('/') && !hidden.contains(*address))
             .map(str::to_owned)
             .collect();
         let mut left = live.clone();
@@ -950,6 +968,7 @@ async fn sync_layout_once(
             &base,
             &sent,
             &started_now,
+            &hidden,
             |address| live.contains(address),
             crate::hc_entry::new_placement_id,
         ) {

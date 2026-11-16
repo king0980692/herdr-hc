@@ -215,6 +215,20 @@ pub(crate) fn prepare_tui_launch(server_running: bool) -> Result<(), String> {
 /// shown as a program, nor placed in a layout.
 pub(crate) const HIDDEN_LABEL: &str = "herdr-native.hidden";
 
+/// What kind of herdr-native terminal a hidden one is (`plugin` for a
+/// plugin's pane, `bridge`/`install` for helpers).
+pub(crate) const ROLE_LABEL: &str = "herdr-native.role";
+pub(crate) const ROLE_PLUGIN: &str = "plugin";
+
+/// A plugin pane's labels: shown by this herdr-native only, so neither
+/// herdr.app (no `herdr.space`) nor another viewer takes it as a program.
+pub(crate) fn plugin_pane_labels() -> serde_json::Map<String, serde_json::Value> {
+    let mut labels = serde_json::Map::new();
+    labels.insert(HIDDEN_LABEL.into(), "1".into());
+    labels.insert(ROLE_LABEL.into(), ROLE_PLUGIN.into());
+    labels
+}
+
 /// Whether a terminal record carries [`HIDDEN_LABEL`].
 pub(crate) fn is_hidden(facts: &serde_json::Map<String, serde_json::Value>) -> bool {
     facts

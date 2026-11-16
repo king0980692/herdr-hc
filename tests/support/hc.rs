@@ -168,6 +168,38 @@ fn source_json(runtime: &Path, args: &[&str]) -> serde_json::Value {
     serde_json::from_slice(&output.stdout).expect("scratch hc JSON")
 }
 
+/// One request to the scratch core itself (`hc connect`), its result.
+pub fn core_call(runtime: &Path, method: &str, params: serde_json::Value) -> serde_json::Value {
+    use std::io::{BufRead, Write};
+    let mut command = Command::new("/bin/sh");
+    command.args(["-c", "exec hc connect", "hc-fixture"]);
+    configure(&mut command, runtime);
+    let mut child = command
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    for request in [
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"hello","params":{"generation":1}}),
+        serde_json::json!({"jsonrpc":"2.0","id":2,"method":method,"params":params}),
+    ] {
+        writeln!(stdin, "{request}").unwrap();
+    }
+    let mut result = serde_json::Value::Null;
+    for line in std::io::BufReader::new(child.stdout.take().unwrap()).lines() {
+        let reply: serde_json::Value = serde_json::from_str(&line.unwrap()).unwrap();
+        if reply["id"] == 2 {
+            result = reply["result"].clone();
+            break;
+        }
+    }
+    drop(stdin);
+    let _ = child.kill();
+    let _ = child.wait();
+    result
+}
+
 /// Sets labels on a terminal, as another viewer would.
 pub fn label(runtime: &Path, address: &str, pairs: &[&str]) -> serde_json::Value {
     let mut args = vec!["label", address];

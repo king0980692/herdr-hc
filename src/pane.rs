@@ -219,6 +219,12 @@ impl PaneLaunchEnv {
         self
     }
 
+    /// A plugin's own pane (its sidebar, say): herdr-native's interface, not
+    /// a program of the shared layout.
+    pub(crate) fn is_plugin_pane(&self) -> bool {
+        self.extra.iter().any(|(key, _)| key == PLUGIN_ID_ENV_VAR)
+    }
+
     /// The herdr workspace and tab a managed launch belongs to.
     pub(crate) fn workspace_and_tab(&self) -> Option<(&str, &str)> {
         match &self.identity {

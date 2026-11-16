@@ -138,6 +138,77 @@ fn rearranged_since_sent(
     *sent != canonical(current) && programs(current) == programs(document)
 }
 
+fn leaves(node: &Node, out: &mut Vec<PaneId>) {
+    match node {
+        Node::Pane(pane) => out.push(*pane),
+        Node::Split { first, second, .. } => {
+            leaves(first, out);
+            leaves(second, out);
+        }
+    }
+}
+
+/// A tab's own panes (a plugin's sidebar) peeled off its edge: each step
+/// keeps the split's direction, share and side. `None` when one sits inside
+/// the shared part instead, where it cannot be kept apart.
+struct Peeled {
+    steps: Vec<(Direction, f32, bool, Node)>,
+}
+
+fn peel_local(root: &Node, local: &HashSet<PaneId>) -> Option<Peeled> {
+    let all_local = |node: &Node| {
+        let mut out = Vec::new();
+        leaves(node, &mut out);
+        out.iter().all(|pane| local.contains(pane))
+    };
+    let mut steps = Vec::new();
+    let mut core = root;
+    while let Node::Split {
+        direction,
+        ratio,
+        first,
+        second,
+    } = core
+    {
+        if all_local(second) && !all_local(first) {
+            steps.push((*direction, *ratio, true, (**second).clone()));
+            core = first;
+        } else if all_local(first) && !all_local(second) {
+            steps.push((*direction, *ratio, false, (**first).clone()));
+            core = second;
+        } else {
+            break;
+        }
+    }
+    let mut rest = Vec::new();
+    leaves(core, &mut rest);
+    rest.iter()
+        .all(|pane| !local.contains(pane))
+        .then_some(Peeled { steps })
+}
+
+/// `shared` (rebuilt from the document) with the peeled panes back on its
+/// edges, each as it was.
+fn wrap_local(shared: Node, peeled: Peeled) -> Node {
+    peeled
+        .steps
+        .into_iter()
+        .rev()
+        .fold(shared, |inner, (direction, ratio, local_second, local)| {
+            let (first, second) = if local_second {
+                (inner, local)
+            } else {
+                (local, inner)
+            };
+            Node::Split {
+                direction,
+                ratio,
+                first: Box::new(first),
+                second: Box::new(second),
+            }
+        })
+}
+
 /// The same spaces, tabs, names and arrangements, in the same order.
 fn same(a: &[ShownSpace], b: &[ShownSpace]) -> bool {
     let tabs = |x: &ShownTab, y: &ShownTab| {
@@ -168,6 +239,9 @@ impl App {
         self.state
             .terminals
             .iter()
+            // This viewer's own panes (a plugin's sidebar) are no programs of
+            // the shared layout.
+            .filter(|(_, terminal)| !terminal.is_hc_hidden())
             .filter_map(|(id, terminal)| {
                 let binding = terminal.hc_binding.as_ref()?;
                 (binding["core_id"].as_str()? == core)
@@ -530,7 +604,29 @@ impl App {
                 .map(|(pane, _)| *pane)
                 .collect();
             changed |= !dropped.is_empty();
+            // Their own panes (a sidebar) go with them.
+            let own: Vec<PaneId> = self
+                .state
+                .workspaces
+                .iter()
+                .find(|w| w.id == ws_id)
+                .into_iter()
+                .flat_map(|w| &w.tabs)
+                .filter(|t| !order.contains(&t.number))
+                // Only when nothing but them would be left.
+                .filter(|t| {
+                    t.panes.keys().any(|pane| dropped.contains(pane))
+                        && t.panes.iter().all(|(pane, state)| {
+                            dropped.contains(pane)
+                                || self.is_own_pane_terminal(&state.attached_terminal_id)
+                        })
+                })
+                .flat_map(|t| t.panes.iter())
+                .filter(|(_, pane)| self.is_own_pane_terminal(&pane.attached_terminal_id))
+                .map(|(pane, _)| *pane)
+                .collect();
             self.detach_panes(&dropped);
+            changed |= self.end_own_panes(own);
             if let Some(workspace) = self.state.workspaces.iter_mut().find(|w| w.id == ws_id) {
                 for (target, number) in order.iter().enumerate() {
                     let Some(index) = workspace.tabs.iter().position(|t| t.number == *number)
@@ -559,7 +655,25 @@ impl App {
             .map(|(pane, _)| *pane)
             .collect();
         changed |= !dropped.is_empty();
+        let own: Vec<PaneId> = self
+            .state
+            .workspaces
+            .iter()
+            .filter(|w| !claimed.contains(&w.id))
+            .flat_map(|w| &w.tabs)
+            .filter(|t| {
+                t.panes.keys().any(|pane| dropped.contains(pane))
+                    && t.panes.iter().all(|(pane, state)| {
+                        dropped.contains(pane)
+                            || self.is_own_pane_terminal(&state.attached_terminal_id)
+                    })
+            })
+            .flat_map(|t| t.panes.iter())
+            .filter(|(_, pane)| self.is_own_pane_terminal(&pane.attached_terminal_id))
+            .map(|(pane, _)| *pane)
+            .collect();
         self.detach_panes(&dropped);
+        changed |= self.end_own_panes(own);
         changed
     }
 
@@ -572,6 +686,35 @@ impl App {
                 drop(runtime);
             }
         }
+    }
+
+    fn is_own_pane_terminal(&self, terminal: &crate::terminal::TerminalId) -> bool {
+        self.state
+            .terminals
+            .get(terminal)
+            .is_some_and(crate::terminal::TerminalState::is_hc_hidden)
+    }
+
+    /// Ends this viewer's own panes (a sidebar) whose tab the document
+    /// closed: unlike its programs, nothing else would ever show them.
+    fn end_own_panes(&mut self, panes: Vec<PaneId>) -> bool {
+        if panes.is_empty() {
+            return false;
+        }
+        let terminals: Vec<_> = self
+            .state
+            .workspaces
+            .iter()
+            .flat_map(|w| &w.tabs)
+            .flat_map(|t| &t.panes)
+            .filter(|(pane, _)| panes.contains(pane))
+            .map(|(_, state)| state.attached_terminal_id.clone())
+            .collect();
+        if let Err(error) = self.terminate_hc_terminals(terminals) {
+            tracing::warn!(%error, "a closed tab's own pane could not be ended");
+        }
+        self.detach_panes(&panes);
+        true
     }
 
     fn detach_panes(&mut self, panes: &[PaneId]) {
@@ -773,15 +916,39 @@ impl App {
         };
         let mut by_address: HashMap<String, PaneId> = HashMap::new();
         let mut terminal_of: HashMap<PaneId, crate::terminal::TerminalId> = HashMap::new();
+        let mut local: HashSet<PaneId> = HashSet::new();
         for (pane, state) in &tab.panes {
-            // A pane this round cannot place: leave the tab as it is.
             let Some(address) = addresses.get(&state.attached_terminal_id) else {
+                // This viewer's own pane (a sidebar): kept where it is.
+                if self
+                    .state
+                    .terminals
+                    .get(&state.attached_terminal_id)
+                    .is_some_and(crate::terminal::TerminalState::is_hc_hidden)
+                {
+                    local.insert(*pane);
+                    continue;
+                }
+                // A pane this round cannot place: leave the tab as it is.
                 self.layout_sync.skipped.insert(tab_id.to_owned());
                 return false;
             };
             by_address.insert(address.clone(), *pane);
             terminal_of.insert(*pane, state.attached_terminal_id.clone());
         }
+        // Own panes sit on the tab's edge; one inside the shared part cannot
+        // be kept apart, so that tab is left as it is.
+        let peeled = if local.is_empty() {
+            None
+        } else {
+            match peel_local(tab.layout.root(), &local) {
+                Some(peeled) => Some(peeled),
+                None => {
+                    self.layout_sync.skipped.insert(tab_id.to_owned());
+                    return false;
+                }
+            }
+        };
         let address = |raw: u32| {
             let pane = PaneId::from_raw(raw);
             by_address
@@ -867,6 +1034,10 @@ impl App {
             self.layout_sync.skipped.insert(tab_id.to_owned());
             return false;
         };
+        let root = match peeled {
+            Some(peeled) => wrap_local(root, peeled),
+            None => root,
+        };
         let gone: Vec<_> = removed
             .iter()
             .filter_map(|p| terminal_of.get(p).cloned())
@@ -917,6 +1088,55 @@ mod tests {
         assert!(!rearranged_since_sent(Some(&sent), &row(0.8, 0.2), &three));
         // Not in the round at all.
         assert!(!rearranged_since_sent(None, &row(0.8, 0.2), &row(0.5, 0.5)));
+    }
+
+    #[test]
+    fn a_tabs_own_panes_keep_their_edge_side_and_share_when_rebuilt() {
+        let pane = |raw: u32| Node::Pane(PaneId::from_raw(raw));
+        let split = |direction, ratio, first, second| Node::Split {
+            direction,
+            ratio,
+            first: Box::new(first),
+            second: Box::new(second),
+        };
+        // `[ column(1, 2) | sidebar 9 ]`, the sidebar at 0.2.
+        let root = split(
+            Direction::Horizontal,
+            0.8,
+            split(Direction::Vertical, 0.5, pane(1), pane(2)),
+            pane(9),
+        );
+        let local: HashSet<PaneId> = [PaneId::from_raw(9)].into();
+        let peeled = peel_local(&root, &local).expect("on the edge");
+        // The document changed the shared part (a third program).
+        let shared = split(
+            Direction::Vertical,
+            0.3,
+            pane(1),
+            split(Direction::Horizontal, 0.5, pane(2), pane(3)),
+        );
+        let rebuilt = wrap_local(shared.clone(), peeled);
+        assert_eq!(rebuilt, split(Direction::Horizontal, 0.8, shared, pane(9)));
+
+        // Docked left, and a second own pane further out: both kept.
+        let left = split(
+            Direction::Horizontal,
+            0.25,
+            pane(9),
+            split(Direction::Vertical, 0.9, pane(1), pane(8)),
+        );
+        let local: HashSet<PaneId> = [PaneId::from_raw(9), PaneId::from_raw(8)].into();
+        let rebuilt = wrap_local(pane(1), peel_local(&left, &local).unwrap());
+        assert_eq!(rebuilt, left);
+
+        // An own pane inside the shared part: not kept apart.
+        let inside = split(
+            Direction::Horizontal,
+            0.5,
+            split(Direction::Vertical, 0.5, pane(1), pane(9)),
+            pane(2),
+        );
+        assert!(peel_local(&inside, &[PaneId::from_raw(9)].into()).is_none());
     }
 
     #[test]

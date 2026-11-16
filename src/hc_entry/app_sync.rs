@@ -395,7 +395,15 @@ pub(crate) fn push_changes(
     shown: impl Fn(&str) -> bool,
     fresh_id: impl FnMut(&str) -> String,
 ) -> bool {
-    push_changes_started(document, base, native, &HashSet::new(), shown, fresh_id)
+    push_changes_started(
+        document,
+        base,
+        native,
+        &HashSet::new(),
+        &HashSet::new(),
+        shown,
+        fresh_id,
+    )
 }
 
 /// As [`push_changes`]; `started` are programs this viewer started itself.
@@ -406,10 +414,21 @@ pub(crate) fn push_changes_started(
     base: &[ShownSpace],
     native: &[ShownSpace],
     started: &HashSet<String>,
+    hidden: &HashSet<String>,
     shown: impl Fn(&str) -> bool,
     mut fresh_id: impl FnMut(&str) -> String,
 ) -> bool {
     let before = document.clone();
+    // A viewer's own terminals (a plugin's sidebar) have no place in the
+    // shared layout, whatever this viewer synced before (a first round after
+    // an upgrade has nothing synced).
+    for address in hidden {
+        for root in super::app_layout::tab_roots_mut(document) {
+            if remove_terminal(root, address) {
+                collapse(root);
+            }
+        }
+    }
     // Whether another viewer rearranged a tab is judged before this one's
     // own removals change it.
     let arranged: HashMap<String, Option<ShownLayout>> = before
@@ -972,6 +991,7 @@ mod tests {
             &base,
             &native,
             &started,
+            &HashSet::new(),
             |_| true,
             ids()
         ));
@@ -992,6 +1012,7 @@ mod tests {
             &mut document,
             &base,
             &native,
+            &HashSet::new(),
             &HashSet::new(),
             |_| true,
             ids(),
@@ -1079,6 +1100,7 @@ mod tests {
             &base,
             &sized,
             &started,
+            &HashSet::new(),
             |_| true,
             ids()
         ));
@@ -1096,6 +1118,7 @@ mod tests {
             &mut document,
             &base,
             &sized,
+            &HashSet::new(),
             &HashSet::new(),
             |_| true,
             ids(),
@@ -1121,6 +1144,33 @@ mod tests {
         assert!(!still_unsynced("t1", true, &live, &placed, &placed));
         // Known, live, not yet in the document from this viewer: waits.
         assert!(still_unsynced("t1", true, &live, &none, &placed));
+    }
+
+    #[test]
+    fn a_viewers_own_terminals_leave_the_document_even_with_nothing_synced() {
+        // An upgraded viewer's first round: no synced layout, the document
+        // still holding its sidebar beside a program.
+        let mut sidebar = block("p2", "t2");
+        sidebar["size"] = json!({"weight": 0.3});
+        let mut program = block("p1", "t1");
+        program["size"] = json!({"weight": 0.7});
+        let mut document = json!({"spaces": [{"id": "sp1", "name": "S", "folder": "/w",
+            "tabs": [{"id": "tb1", "name": "T",
+                "root": {"id": "tb1", "type": "row", "children": [program, sidebar]}}]}]});
+        let native = vec![space("sp1", vec![tab("tb1", p("t1"))])];
+        let hidden: HashSet<String> = ["t2".to_owned()].into();
+        assert!(push_changes_started(
+            &mut document,
+            &[],
+            &native,
+            &HashSet::new(),
+            &hidden,
+            |address| address != "t2",
+            ids()
+        ));
+        let mut held = Vec::new();
+        programs(&shown(&document)[0].tabs[0].layout, &mut held);
+        assert_eq!(held, ["t1"]);
     }
 
     #[test]

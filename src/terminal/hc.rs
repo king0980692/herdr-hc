@@ -101,6 +101,14 @@ impl TerminalState {
             .unwrap_or_default()
     }
 
+    /// A terminal herdr-native runs for itself (a plugin's pane): shown by
+    /// this viewer only, never part of the shared layout.
+    pub(crate) fn is_hc_hidden(&self) -> bool {
+        self.hc_snapshot
+            .as_ref()
+            .is_some_and(|snapshot| crate::hc_entry::is_hidden(&snapshot.terminal.facts))
+    }
+
     /// An hc pane's pin, from the core's labels: `None` off hc, else whether
     /// it is pinned and when (empty when another app pinned it).
     pub(crate) fn hc_pin(&self) -> Option<Option<String>> {

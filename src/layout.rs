@@ -70,6 +70,7 @@ pub enum NavDirection {
 }
 
 /// A node in the BSP tree. Public for serialization.
+#[derive(Clone, Debug, PartialEq)]
 pub enum Node {
     Pane(PaneId),
     Split {
