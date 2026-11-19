@@ -1050,10 +1050,11 @@
           "key": "ui.agent_panel_sort",
           "type": "enum",
           "default": "\"spaces\"",
-          "description": "Agent sidebar ordering. Saved values are \"spaces\" or \"priority\"; \"workspaces\" is accepted as an alias for \"spaces\".",
+          "description": "Agent sidebar ordering. Saved values are \"spaces\", \"priority\" or \"status\" (in sections: pinned, blocked, done, working, idle; idle starts folded, a section header click folds or unfolds it); \"workspaces\" is accepted as an alias for \"spaces\".",
           "values": [
             "spaces",
-            "priority"
+            "priority",
+            "status"
           ]
         },
         {

@@ -12,6 +12,7 @@ use super::*;
 
 pub(super) struct AgentRow {
     pub(super) pane_id: String,
+    pub(super) section: super::agent_sections::AgentSection,
     pub(super) status: crate::api::schema::AgentStatus,
     pub(super) focused: bool,
     pub(super) rows: Vec<Vec<crate::ui::ResolvedToken>>,
@@ -39,6 +40,11 @@ pub(super) fn ordered_agent_pane_ids(
             .collect();
     }
     let mut agents = snapshot.agents.iter().collect::<Vec<_>>();
+    if sort == crate::config::AgentPanelSortConfig::Status {
+        agents.sort_by_key(|agent| {
+            super::agent_sections::status_order_key(agent, agent.state_change_seq)
+        });
+    }
     if sort == crate::config::AgentPanelSortConfig::Priority {
         agents.sort_by_key(|agent| {
             (
@@ -60,6 +66,7 @@ pub(super) fn render_agent_panel(
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
     agent_scroll: &mut usize,
+    folded: &std::collections::HashSet<super::agent_sections::AgentSection>,
     hits: &mut ShellHitMap,
 ) {
     if !render_agent_panel_header(
@@ -73,6 +80,40 @@ pub(super) fn render_agent_panel(
     }
 
     let rows = agent_rows(snapshot, config, None);
+    if sections_shown(snapshot.agent_view_label.as_deref(), config) {
+        let items = super::agent_sections::with_headers(&rows, |row| row.section, folded);
+        render_agent_list(
+            buffer,
+            area,
+            &items,
+            None,
+            config,
+            agent_scroll,
+            hits,
+            |item| item.lines(|row| row.rows.len()),
+            |buffer, rect, item, hits| match item {
+                super::agent_sections::PanelItem::Header {
+                    section,
+                    count,
+                    folded,
+                    ..
+                } => super::agent_sections::render_header(
+                    buffer,
+                    rect,
+                    *section,
+                    *count,
+                    *folded,
+                    &config.palette,
+                    hits,
+                ),
+                super::agent_sections::PanelItem::Row(row) => {
+                    hits.agents.push((rect, row.pane_id.clone()));
+                    render_agent_row(buffer, rect, row, config);
+                }
+            },
+        );
+        return;
+    }
     render_agent_list(
         buffer,
         area,
@@ -90,6 +131,12 @@ pub(super) fn render_agent_panel(
             render_agent_row(buffer, rect, row, config);
         },
     );
+}
+
+/// The `status` order shows its sections; a custom agent view keeps its own.
+pub(super) fn sections_shown(agent_view_label: Option<&str>, config: &ClientShellConfig) -> bool {
+    agent_view_label.is_none()
+        && config.agent_panel_sort == crate::config::AgentPanelSortConfig::Status
 }
 
 pub(super) fn render_agent_panel_header(
@@ -126,6 +173,7 @@ pub(super) fn render_agent_panel_header(
     let sort_label = agent_view_label.unwrap_or(match config.agent_panel_sort {
         crate::config::AgentPanelSortConfig::Spaces => "grouped",
         crate::config::AgentPanelSortConfig::Priority => "priority",
+        crate::config::AgentPanelSortConfig::Status => "status",
     });
     let sort_width = display_width(sort_label).min(area.width as usize) as u16;
     let sort_rect = Rect::new(
@@ -329,6 +377,7 @@ pub(super) fn agent_row(
     }
     Some(AgentRow {
         pane_id: agent.pane_id.clone(),
+        section: super::agent_sections::AgentSection::of(agent),
         status: agent.agent_status,
         focused: agent.focused,
         rows,

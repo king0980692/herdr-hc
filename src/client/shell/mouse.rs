@@ -2046,6 +2046,9 @@ impl ClientShellState {
                             crate::config::AgentPanelSortConfig::Priority
                         }
                         crate::config::AgentPanelSortConfig::Priority => {
+                            crate::config::AgentPanelSortConfig::Status
+                        }
+                        crate::config::AgentPanelSortConfig::Status => {
                             crate::config::AgentPanelSortConfig::Spaces
                         }
                     };
@@ -2157,6 +2160,17 @@ impl ClientShellState {
                     .flatten();
                 if let Some(tab_press) = tab_press {
                     self.tab_press = Some(tab_press);
+                    return;
+                }
+                let section = self
+                    .hits
+                    .agent_sections
+                    .iter()
+                    .find(|(rect, _)| super::contains(*rect, point))
+                    .map(|(_, section)| *section);
+                if let Some(section) = section {
+                    self.toggle_agent_section(section);
+                    outcome.repaint = true;
                     return;
                 }
                 if self.handle_endpoint_agent_click(point, outcome) {

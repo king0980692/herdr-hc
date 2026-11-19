@@ -50,6 +50,7 @@ pub(super) fn render_expanded(
     active_endpoint_id: &ClientEndpointId,
     config: &ClientShellConfig,
     agent_scroll: &mut usize,
+    folded: &HashSet<super::agent_sections::AgentSection>,
     hits: &mut ShellHitMap,
 ) {
     if !super::agent_sidebar::render_agent_panel_header(
@@ -62,16 +63,8 @@ pub(super) fn render_expanded(
         return;
     }
     let rows = agent_rows(endpoints, active_endpoint_id, config);
-    super::agent_sidebar::render_agent_list(
-        buffer,
-        area,
-        &rows,
-        agent_view_label.map(|_| " no matching agents"),
-        config,
-        agent_scroll,
-        hits,
-        |row| row.agent.rows.len(),
-        |buffer, rect, row, hits| {
+    let render_row =
+        |buffer: &mut Buffer, rect: Rect, row: &EndpointAgentRow, hits: &mut ShellHitMap| {
             super::agent_sidebar::render_agent_row(buffer, rect, &row.agent, config);
             if row.stale {
                 buffer.set_style(
@@ -83,7 +76,48 @@ pub(super) fn render_expanded(
             }
             hits.endpoint_agents
                 .push((rect, row.endpoint_id.clone(), row.agent.pane_id.clone()));
-        },
+        };
+    if super::agent_sidebar::sections_shown(agent_view_label, config) {
+        let items = super::agent_sections::with_headers(&rows, |row| row.agent.section, folded);
+        super::agent_sidebar::render_agent_list(
+            buffer,
+            area,
+            &items,
+            None,
+            config,
+            agent_scroll,
+            hits,
+            |item| item.lines(|row| row.agent.rows.len()),
+            |buffer, rect, item, hits| match item {
+                super::agent_sections::PanelItem::Header {
+                    section,
+                    count,
+                    folded,
+                    ..
+                } => super::agent_sections::render_header(
+                    buffer,
+                    rect,
+                    *section,
+                    *count,
+                    *folded,
+                    &config.palette,
+                    hits,
+                ),
+                super::agent_sections::PanelItem::Row(row) => render_row(buffer, rect, row, hits),
+            },
+        );
+        return;
+    }
+    super::agent_sidebar::render_agent_list(
+        buffer,
+        area,
+        &rows,
+        agent_view_label.map(|_| " no matching agents"),
+        config,
+        agent_scroll,
+        hits,
+        |row| row.agent.rows.len(),
+        render_row,
     );
 }
 
@@ -98,17 +132,48 @@ impl ClientShellState {
             return;
         }
         let rows = agent_rows(&self.endpoints, &self.active_endpoint_id, &self.config);
-        let Some(target) = rows
-            .iter()
-            .position(|row| &row.endpoint_id == endpoint_id && row.agent.pane_id == pane_id)
-        else {
-            return;
+        let is_target = |row: &EndpointAgentRow| {
+            &row.endpoint_id == endpoint_id && row.agent.pane_id == pane_id
         };
-        let heights = rows
+        let label = self
+            .endpoints
             .iter()
-            .map(|row| row.agent.rows.len().max(1).min(u16::MAX as usize) as u16)
-            .collect::<Vec<_>>();
-        let mut gaps = vec![self.config.agents.row_gap; rows.len()];
+            .find(|endpoint| endpoint.endpoint_id == self.active_endpoint_id)
+            .and_then(|endpoint| endpoint.snapshot.as_deref())
+            .and_then(|snapshot| snapshot.agent_view_label.as_deref());
+        // With sections, the headers take lines too; an agent in a folded
+        // section has no line to reveal.
+        let (target, heights) = if super::agent_sidebar::sections_shown(label, &self.config) {
+            let items = super::agent_sections::with_headers(
+                &rows,
+                |row| row.agent.section,
+                &self.agent_sections_folded,
+            );
+            let Some(target) = items.iter().position(
+                |item| matches!(item, super::agent_sections::PanelItem::Row(row) if is_target(row)),
+            ) else {
+                return;
+            };
+            let heights = items
+                .iter()
+                .map(|item| {
+                    item.lines(|row| row.agent.rows.len())
+                        .max(1)
+                        .min(u16::MAX as usize) as u16
+                })
+                .collect::<Vec<_>>();
+            (target, heights)
+        } else {
+            let Some(target) = rows.iter().position(is_target) else {
+                return;
+            };
+            let heights = rows
+                .iter()
+                .map(|row| row.agent.rows.len().max(1).min(u16::MAX as usize) as u16)
+                .collect::<Vec<_>>();
+            (target, heights)
+        };
+        let mut gaps = vec![self.config.agents.row_gap; heights.len()];
         if let Some(last) = gaps.last_mut() {
             *last = 0;
         }

@@ -171,6 +171,13 @@ fn sort_aggregate_rows(
     rows: &mut [AggregateAgentRow<'_>],
     sort: crate::config::AgentPanelSortConfig,
 ) {
+    if sort == crate::config::AgentPanelSortConfig::Status {
+        rows.sort_by_key(|row| {
+            let (section, pinned, recency) =
+                super::agent_sections::status_order_key(row.agent, row.recency);
+            (section, pinned, row.endpoint.stale(), recency)
+        });
+    }
     if sort == crate::config::AgentPanelSortConfig::Priority {
         rows.sort_by_key(|row| {
             (

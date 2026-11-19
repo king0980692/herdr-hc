@@ -1115,6 +1115,131 @@ fn agent_sort_toggle_is_client_local_and_persists_per_endpoint() {
 }
 
 #[test]
+fn status_order_shows_counted_sections_and_a_header_click_unfolds_idle() {
+    use super::super::agent_sections::AgentSection;
+    let agent = |pane: &str, status: AgentStatus, seq: u64, pin: Option<&str>| ClientShellAgent {
+        pane_id: pane.into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        name: Some(pane.into()),
+        display_agent: None,
+        agent: None,
+        title: None,
+        terminal_title: None,
+        terminal_title_stripped: None,
+        agent_status: status,
+        state_change_seq: seq,
+        state_labels: Vec::new(),
+        tokens: pin
+            .map(|at| vec![("herdr-pin".to_owned(), at.to_owned())])
+            .unwrap_or_default(),
+        focused: false,
+    };
+    let mut projected = snapshot();
+    projected.agents = vec![
+        agent("idle_old", AgentStatus::Idle, 1, None),
+        agent("working", AgentStatus::Working, 2, None),
+        agent("pinned_idle", AgentStatus::Idle, 3, Some("5")),
+        agent("done", AgentStatus::Done, 4, None),
+        agent("idle_new", AgentStatus::Unknown, 5, None),
+    ];
+    // Pinned first, then by status, the latest change first within one.
+    assert_eq!(
+        super::super::agent_sidebar::ordered_agent_pane_ids(
+            &projected,
+            crate::config::AgentPanelSortConfig::Status
+        ),
+        ["pinned_idle", "done", "working", "idle_new", "idle_old"]
+    );
+
+    let mut config = Config::default();
+    config.ui.agent_panel_sort = crate::config::AgentPanelSortConfig::Status;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    // "done": seen working by this client, finished, not looked at since.
+    let mut before = projected.clone();
+    before.agents[3].agent_status = AgentStatus::Working;
+    state.set_snapshot(Box::new(before));
+    projected.revision += 1;
+    projected.agents[3].agent_status = AgentStatus::Idle;
+    projected.agents[3].state_change_seq = 6;
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.compose(106, 40).expect("agent sidebar frame");
+    let sections = |state: &ClientShellState| {
+        state
+            .hits
+            .agent_sections
+            .iter()
+            .map(|(_, section)| *section)
+            .collect::<Vec<_>>()
+    };
+    let shown = |state: &ClientShellState| {
+        state
+            .hits
+            .agents
+            .iter()
+            .chain(
+                state
+                    .hits
+                    .endpoint_agents
+                    .iter()
+                    .map(|(rect, _, pane)| (*rect, pane.clone()))
+                    .collect::<Vec<_>>()
+                    .iter(),
+            )
+            .map(|(_, pane)| pane.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        sections(&state),
+        [
+            AgentSection::Pinned,
+            AgentSection::Done,
+            AgentSection::Working,
+            AgentSection::Idle
+        ]
+    );
+    // Idle starts folded: only its header.
+    assert_eq!(shown(&state), ["pinned_idle", "done", "working"]);
+
+    let idle = state
+        .hits
+        .agent_sections
+        .iter()
+        .find(|(_, section)| *section == AgentSection::Idle)
+        .map(|(rect, _)| *rect)
+        .expect("idle header");
+    let click = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: idle.x + 1,
+        row: idle.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(click.actions.is_empty(), "a header focuses nothing");
+    let buffer = state
+        .compose(106, 40)
+        .expect("agent sidebar frame")
+        .to_ratatui_buffer()
+        .expect("buffer");
+    let lines = (0..buffer.area.height)
+        .map(|y| (0..26).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+        .collect::<Vec<_>>();
+    if std::env::var_os("HERDR_PRINT_PANEL").is_some() {
+        eprintln!("{}", lines.join("\n"));
+    }
+    for header in [" Pinned 1", " Done 1", " Working 1", " Idle 2"] {
+        assert!(
+            lines.iter().any(|line| line.starts_with(header)),
+            "{header:?} in {lines:#?}"
+        );
+    }
+    assert_eq!(
+        shown(&state),
+        ["pinned_idle", "done", "working", "idle_new", "idle_old"]
+    );
+}
+
+#[test]
 fn workspace_actions_preserve_selected_target_and_client_confirmation() {
     let mut snapshot = snapshot();
     let mut second = snapshot.workspaces[0].clone();
