@@ -844,8 +844,8 @@ impl HeadlessServer {
         self.sync_visible_server_config_diagnostic(false);
         if outer_terminal_focus == Some(true) {
             self.app.state.mark_active_tab_seen();
-            self.app.mark_hc_turns_seen();
         }
+        self.mark_viewed_hc_turns_seen();
         self.app.set_host_terminal_state(
             host_terminal_theme,
             host_terminal_appearance,
@@ -2406,6 +2406,8 @@ impl HeadlessServer {
                     if self.foreground_client_id == Some(client_id) {
                         self.app.state.outer_terminal_focus = Some(false);
                     }
+                    // No longer looking: its tab stops being marked seen.
+                    self.mark_viewed_hc_turns_seen();
                     if !another_focused_viewer {
                         if let Some(target) = self.shell_focus_target(client_id) {
                             self.send_shell_focus_target(&target, crate::ghostty::FocusEvent::Lost);

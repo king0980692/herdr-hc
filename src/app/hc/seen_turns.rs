@@ -1,8 +1,8 @@
 //! `herdr.seen` on an hc terminal is the last turn someone looked at, kept
 //! by every app that shows the program: herdr.app shows a finished program
-//! as done until then. Looking at a tab here (it is the active tab and an
-//! attached client's terminal has focus) moves `herdr.seen` on for its programs, so
-//! both apps stop showing them as done.
+//! as done until then. Looking at a tab here (a client shows it and its
+//! terminal has focus) moves `herdr.seen` on for its programs, so both apps
+//! stop showing them as done.
 use super::*;
 use std::collections::HashMap;
 
@@ -11,6 +11,10 @@ pub(crate) struct SeenTurns {
     /// The turn last written for each hc address, so one look writes once
     /// while the label change is on its way back.
     written: HashMap<String, u64>,
+    /// The tabs clients show with their terminal focused, by public id, as
+    /// the server tracks them; `None` where this app draws its own one view
+    /// (its active tab, when the terminal has focus).
+    viewed: Option<std::collections::HashSet<String>>,
 }
 
 /// The `herdr.seen` to write: the program's turn, when it is past the seen one
@@ -20,23 +24,35 @@ fn to_write(turn: u64, seen: u64, written: Option<u64>) -> Option<u64> {
 }
 
 impl App {
-    /// Moves `herdr.seen` on for the programs of the tab being looked at.
+    /// The tabs clients now show with their terminal focused (the server's
+    /// own record of who looks at what).
+    pub(crate) fn set_viewed_tabs(&mut self, tabs: std::collections::HashSet<String>) {
+        self.seen_turns.viewed = Some(tabs);
+    }
+
+    /// Moves `herdr.seen` on for the programs of the tabs being looked at.
     pub(crate) fn mark_hc_turns_seen(&mut self) {
-        // Someone looking: a client attached, its terminal focused.
-        if self.state.outer_terminal_focus != Some(true) {
-            return;
-        }
-        let Some(tab) = self
-            .state
-            .active
-            .and_then(|ws| self.state.workspaces.get(ws))
-            .and_then(crate::workspace::Workspace::active_tab)
-        else {
-            return;
+        let tabs: Vec<(usize, usize)> = match &self.seen_turns.viewed {
+            Some(viewed) => viewed
+                .iter()
+                .filter_map(|id| self.parse_tab_id(id))
+                .collect(),
+            // Someone looking: the terminal this app draws in has focus.
+            None if self.state.outer_terminal_focus == Some(true) => self
+                .state
+                .active
+                .and_then(|ws| {
+                    let tab = self.state.workspaces.get(ws)?.active_tab_index();
+                    Some((ws, tab))
+                })
+                .into_iter()
+                .collect(),
+            None => return,
         };
-        let due: Vec<(String, u64)> = tab
-            .panes
-            .values()
+        let due: Vec<(String, u64)> = tabs
+            .into_iter()
+            .filter_map(|(ws, tab)| self.state.workspaces.get(ws)?.tabs.get(tab))
+            .flat_map(|tab| tab.panes.values())
             .filter_map(|pane| self.state.terminals.get(&pane.attached_terminal_id))
             .filter(|terminal| terminal.hc_authority)
             .filter_map(|terminal| {

@@ -394,6 +394,14 @@ impl HeadlessServer {
         self.focus_target_for_surface(self.shell_target_for_client(client_id)?)
     }
 
+    /// Tells the app which tabs clients look at, and marks their programs'
+    /// turns seen (herdr.seen, shared with herdr.app).
+    pub(super) fn mark_viewed_hc_turns_seen(&mut self) {
+        let tabs = self.focused_shell_tabs();
+        self.app.set_viewed_tabs(tabs);
+        self.app.mark_hc_turns_seen();
+    }
+
     pub(super) fn focused_shell_tabs(&self) -> HashSet<String> {
         self.clients
             .iter()
@@ -475,6 +483,7 @@ impl HeadlessServer {
             self.shell_location_focus_transitions(focus_before, focused_tabs_before);
         self.app.accept_current_focus_without_events();
         self.send_shell_focus_transitions(&lost, &gained);
+        self.mark_viewed_hc_turns_seen();
     }
 
     pub(super) fn send_shell_navigation_focus_events(
@@ -949,6 +958,7 @@ impl HeadlessServer {
                 &focused_tabs_before,
                 &focused_tabs_after,
             );
+            self.mark_viewed_hc_turns_seen();
         }
         if focus_before != focus_after {
             if let Some(target) = focus_after {

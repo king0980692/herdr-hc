@@ -200,8 +200,14 @@ async fn hc_done_shows_until_its_turn_is_seen_and_a_look_marks_it_seen() {
         );
         assert!(app.seen_turns_written_for_test("t1").is_none());
     }
-    // A client looks at its tab: herdr.seen moves on to the turn.
+    // The server's clients look elsewhere: nothing is seen, focus or not.
     app.state.outer_terminal_focus = Some(true);
+    app.set_viewed_tabs(std::collections::HashSet::new());
+    app.mark_hc_turns_seen();
+    assert!(app.seen_turns_written_for_test("t1").is_none());
+    // A client shows its tab, terminal focused: herdr.seen moves on.
+    let tab = app.public_tab_id(0, 0).unwrap();
+    app.set_viewed_tabs([tab].into());
     app.mark_hc_turns_seen();
     assert_eq!(app.seen_turns_written_for_test("t1"), Some(4));
 }
