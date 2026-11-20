@@ -7291,6 +7291,59 @@ fn clipboard_write_targets_foreground_client_only() {
 }
 
 #[test]
+fn hc_pane_clipboard_writes_and_bells_reach_the_foreground_client() {
+    let mut server = test_headless_server();
+    let (foreground_tx, foreground_control_rx, _foreground_rx) = test_client_writer();
+    server.clients.insert(
+        2,
+        ClientConnection::new(
+            (80, 24),
+            crate::kitty_graphics::HostCellSize::default(),
+            2,
+            RenderEncoding::SemanticFrame,
+            Some(foreground_tx),
+        ),
+    );
+    server.foreground_client_id = Some(2);
+    server.sync_foreground_client_state();
+    let pane_id = crate::layout::PaneId::from_raw(1);
+
+    // Effects of an hc pane that is no longer current: dropped.
+    server.handle_internal_event_with_forwarding(AppEvent::HcTerminalEffects {
+        enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        pane_id,
+        bells: 1,
+        clipboard_writes: vec![b"stale".to_vec()],
+    });
+    assert!(foreground_control_rx
+        .recv_timeout(Duration::from_millis(50))
+        .is_err());
+
+    server.handle_internal_event_with_forwarding(AppEvent::HcTerminalEffects {
+        enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        pane_id,
+        bells: 1,
+        clipboard_writes: vec![b"test".to_vec()],
+    });
+    let mut received = Vec::new();
+    while let Ok(frame) = foreground_control_rx.recv_timeout(Duration::from_millis(100)) {
+        received.push(read_server_message(frame));
+    }
+    assert!(
+        received.iter().any(
+            |message| matches!(message, ServerMessage::Clipboard { data } if data == "dGVzdA==")
+        ),
+        "{received:?}"
+    );
+    assert!(
+        received
+            .iter()
+            .any(|message| matches!(message, ServerMessage::TerminalBell { count: 1 })),
+        "{received:?}"
+    );
+}
+
+#[test]
 fn clipboard_write_without_foreground_client_does_not_change_visual_state() {
     let mut server = test_headless_server();
     server.foreground_client_id = None;

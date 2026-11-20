@@ -302,6 +302,31 @@ impl HeadlessServer {
         if self.host_shutdown_requested() {
             return false;
         }
+        // An hc pane's bells and clipboard writes come together: each is
+        // forwarded like a local pane's (the app alone would drop them).
+        if let AppEvent::HcTerminalEffects {
+            enabled,
+            pane_id,
+            bells,
+            clipboard_writes,
+        } = ev
+        {
+            if !enabled.load(std::sync::atomic::Ordering::Acquire) {
+                return false;
+            }
+            let mut changed = false;
+            if bells != 0 {
+                changed |= self.handle_internal_event_with_forwarding(AppEvent::TerminalBell {
+                    pane_id,
+                    count: bells,
+                });
+            }
+            for content in clipboard_writes {
+                changed |= self
+                    .handle_internal_event_with_forwarding(AppEvent::ClipboardWrite { content });
+            }
+            return changed;
+        }
         let focus_response = match &mut ev {
             AppEvent::WorktreeAddFinished(result) => result
                 .api_request
