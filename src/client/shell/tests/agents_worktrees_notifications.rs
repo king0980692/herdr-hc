@@ -1240,6 +1240,75 @@ fn status_order_shows_counted_sections_and_a_header_click_unfolds_idle() {
 }
 
 #[test]
+fn pinned_agents_stay_at_the_top_while_the_others_scroll() {
+    let agent = |pane: &str, seq: u64, pin: Option<&str>| ClientShellAgent {
+        pane_id: pane.into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        name: Some(pane.into()),
+        display_agent: None,
+        agent: None,
+        title: None,
+        terminal_title: None,
+        terminal_title_stripped: None,
+        agent_status: AgentStatus::Working,
+        state_change_seq: seq,
+        state_labels: Vec::new(),
+        tokens: pin
+            .map(|at| vec![("herdr-pin".to_owned(), at.to_owned())])
+            .unwrap_or_default(),
+        focused: false,
+    };
+    for sort in [
+        crate::config::AgentPanelSortConfig::Status,
+        crate::config::AgentPanelSortConfig::Spaces,
+    ] {
+        let mut projected = snapshot();
+        projected.agents = (0..20)
+            .map(|index| agent(&format!("agent_{index:02}"), index, None))
+            .chain([agent("pinned", 99, Some("5"))])
+            .collect();
+        let mut config = Config::default();
+        config.ui.agent_panel_sort = sort;
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+        state.set_snapshot(Box::new(projected));
+        state.set_pane_surface(surface());
+        state.compose(106, 40).expect("agent sidebar frame");
+        let rows = |state: &ClientShellState| {
+            state
+                .hits
+                .agents
+                .iter()
+                .map(|(rect, pane)| (rect.y, pane.clone()))
+                .collect::<Vec<_>>()
+        };
+        let before = rows(&state);
+        assert_eq!(before[0].1, "pinned", "{sort:?}: {before:?}");
+        assert!(
+            state.hits.agent_max_scroll > 0,
+            "{sort:?}: the others must overflow"
+        );
+        let body = state.hits.agent_body;
+        for _ in 0..5 {
+            state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: body.x + 2,
+                row: body.bottom() - 1,
+                modifiers: KeyModifiers::empty(),
+            })]);
+        }
+        state.compose(106, 40).expect("agent sidebar frame");
+        let after = rows(&state);
+        assert_eq!(after[0], before[0], "{sort:?}: pinned stays put");
+        assert_ne!(after[1].1, before[1].1, "{sort:?}: the others scrolled");
+        assert!(
+            after[1..].iter().all(|(y, _)| *y > after[0].0),
+            "{sort:?}: scrolled rows stay below the pinned one: {after:?}"
+        );
+    }
+}
+
+#[test]
 fn workspace_actions_preserve_selected_target_and_client_confirmation() {
     let mut snapshot = snapshot();
     let mut second = snapshot.workspaces[0].clone();

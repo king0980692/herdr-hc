@@ -79,10 +79,12 @@ pub(super) fn render_expanded(
         };
     if super::agent_sidebar::sections_shown(agent_view_label, config) {
         let items = super::agent_sections::with_headers(&rows, |row| row.agent.section, folded);
+        let pinned = super::agent_sections::pinned_items(&items, |row| row.agent.section);
         super::agent_sidebar::render_agent_list(
             buffer,
             area,
             &items,
+            pinned,
             None,
             config,
             agent_scroll,
@@ -108,10 +110,15 @@ pub(super) fn render_expanded(
         );
         return;
     }
+    let pinned = rows
+        .iter()
+        .take_while(|row| row.agent.section == super::agent_sections::AgentSection::Pinned)
+        .count();
     super::agent_sidebar::render_agent_list(
         buffer,
         area,
         &rows,
+        pinned,
         agent_view_label.map(|_| " no matching agents"),
         config,
         agent_scroll,
@@ -143,7 +150,8 @@ impl ClientShellState {
             .and_then(|snapshot| snapshot.agent_view_label.as_deref());
         // With sections, the headers take lines too; an agent in a folded
         // section has no line to reveal.
-        let (target, heights) = if super::agent_sidebar::sections_shown(label, &self.config) {
+        let (target, heights, pinned) = if super::agent_sidebar::sections_shown(label, &self.config)
+        {
             let items = super::agent_sections::with_headers(
                 &rows,
                 |row| row.agent.section,
@@ -162,7 +170,8 @@ impl ClientShellState {
                         .min(u16::MAX as usize) as u16
                 })
                 .collect::<Vec<_>>();
-            (target, heights)
+            let pinned = super::agent_sections::pinned_items(&items, |row| row.agent.section);
+            (target, heights, pinned)
         } else {
             let Some(target) = rows.iter().position(is_target) else {
                 return;
@@ -171,8 +180,26 @@ impl ClientShellState {
                 .iter()
                 .map(|row| row.agent.rows.len().max(1).min(u16::MAX as usize) as u16)
                 .collect::<Vec<_>>();
-            (target, heights)
+            let pinned = rows
+                .iter()
+                .take_while(|row| row.agent.section == super::agent_sections::AgentSection::Pinned)
+                .count();
+            (target, heights, pinned)
         };
+        // Pinned rows stay at the top: always shown, and the others scroll
+        // in the lines below them.
+        let (pinned, pinned_height) = super::agent_sidebar::pinned_prefix(
+            &heights,
+            pinned,
+            self.config.agents.row_gap,
+            body_height,
+        );
+        if target < pinned {
+            return;
+        }
+        let target = target - pinned;
+        let heights = heights[pinned..].to_vec();
+        let body_height = body_height - pinned_height;
         let mut gaps = vec![self.config.agents.row_gap; heights.len()];
         if let Some(last) = gaps.last_mut() {
             *last = 0;

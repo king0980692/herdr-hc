@@ -121,6 +121,21 @@ pub(super) fn with_headers<'a, T>(
     items
 }
 
+/// The leading items that stay put while the rest scrolls: the Pinned
+/// header and its rows.
+pub(super) fn pinned_items<T>(
+    items: &[PanelItem<'_, T>],
+    section_of: impl Fn(&T) -> AgentSection,
+) -> usize {
+    items
+        .iter()
+        .take_while(|item| match item {
+            PanelItem::Header { section, .. } => *section == AgentSection::Pinned,
+            PanelItem::Row(row) => section_of(row) == AgentSection::Pinned,
+        })
+        .count()
+}
+
 /// Draws a header on the last line of `rect` and records where it is.
 pub(super) fn render_header(
     buffer: &mut Buffer,

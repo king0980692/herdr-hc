@@ -82,10 +82,12 @@ pub(super) fn render_agent_panel(
     let rows = agent_rows(snapshot, config, None);
     if sections_shown(snapshot.agent_view_label.as_deref(), config) {
         let items = super::agent_sections::with_headers(&rows, |row| row.section, folded);
+        let pinned = super::agent_sections::pinned_items(&items, |row| row.section);
         render_agent_list(
             buffer,
             area,
             &items,
+            pinned,
             None,
             config,
             agent_scroll,
@@ -114,10 +116,15 @@ pub(super) fn render_agent_panel(
         );
         return;
     }
+    let pinned = rows
+        .iter()
+        .take_while(|row| row.section == super::agent_sections::AgentSection::Pinned)
+        .count();
     render_agent_list(
         buffer,
         area,
         &rows,
+        pinned,
         snapshot
             .agent_view_label
             .as_ref()
@@ -204,10 +211,41 @@ pub(super) fn render_agent_panel_header(
     true
 }
 
+/// How many leading rows stay put while the rest scrolls (the pinned ones),
+/// and the lines they take with the gap after them. None stay put when
+/// they would leave no line to scroll.
+pub(super) fn pinned_prefix(
+    heights: &[u16],
+    pinned: usize,
+    row_gap: u16,
+    body_height: u16,
+) -> (usize, u16) {
+    let pinned = pinned.min(heights.len());
+    if pinned == 0 {
+        return (0, 0);
+    }
+    let gaps = if pinned < heights.len() {
+        pinned
+    } else {
+        pinned - 1
+    };
+    let height = heights[..pinned]
+        .iter()
+        .fold(0u16, |sum, height| sum.saturating_add(*height))
+        .saturating_add(row_gap.saturating_mul(gaps as u16));
+    if height >= body_height {
+        return (0, 0);
+    }
+    (pinned, height)
+}
+
+/// Agent rows under the panel header; the first `pinned` stay at the top
+/// while the others scroll below them.
 pub(super) fn render_agent_list<T>(
     buffer: &mut Buffer,
     area: Rect,
     rows: &[T],
+    pinned: usize,
     empty_message: Option<&str>,
     config: &ClientShellConfig,
     agent_scroll: &mut usize,
@@ -215,16 +253,36 @@ pub(super) fn render_agent_list<T>(
     row_lines: impl Fn(&T) -> usize,
     mut render_row: impl FnMut(&mut Buffer, Rect, &T, &mut ShellHitMap),
 ) {
-    let body = Rect::new(
+    let mut body = Rect::new(
         area.x,
         area.y.saturating_add(3),
         area.width,
         area.height.saturating_sub(3),
     );
     hits.agent_body = body;
+    let heights = rows
+        .iter()
+        .map(|row| row_lines(row).max(1).min(u16::MAX as usize) as u16)
+        .collect::<Vec<_>>();
+    let (pinned, pinned_height) =
+        pinned_prefix(&heights, pinned, config.agents.row_gap, body.height);
+    let mut y = body.y;
+    for (row, height) in rows[..pinned].iter().zip(&heights) {
+        render_row(buffer, Rect::new(body.x, y, body.width, *height), row, hits);
+        y = y
+            .saturating_add(*height)
+            .saturating_add(config.agents.row_gap);
+    }
+    body = Rect::new(
+        body.x,
+        body.y.saturating_add(pinned_height),
+        body.width,
+        body.height.saturating_sub(pinned_height),
+    );
+    let rows = &rows[pinned..];
     if body.is_empty() || rows.is_empty() {
         *agent_scroll = 0;
-        if let Some(message) = empty_message.filter(|_| !body.is_empty()) {
+        if let Some(message) = empty_message.filter(|_| !body.is_empty() && pinned == 0) {
             put_text(
                 buffer,
                 body.x,
@@ -239,10 +297,7 @@ pub(super) fn render_agent_list<T>(
         return;
     }
 
-    let row_heights = rows
-        .iter()
-        .map(|row| row_lines(row).max(1).min(u16::MAX as usize) as u16)
-        .collect::<Vec<_>>();
+    let row_heights = heights[pinned..].to_vec();
     let gaps = rows
         .iter()
         .enumerate()
