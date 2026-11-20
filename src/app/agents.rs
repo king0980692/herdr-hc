@@ -400,7 +400,15 @@ impl App {
             launch_pending: terminal.managed_agent_launch_pending(),
             interactive_ready: terminal.managed_agent_interactive_ready(),
             state_change_seq: terminal.last_agent_state_change_seq.unwrap_or(0),
-            completion_seq: terminal.last_agent_completion_seq,
+            // hc's own done (until someone looks) is the completion clients
+            // show; hc programs never get a locally synthesized one.
+            completion_seq: if terminal.hc_authority {
+                terminal
+                    .hc_unseen_done()
+                    .then(|| terminal.last_agent_state_change_seq.unwrap_or(0))
+            } else {
+                terminal.last_agent_completion_seq
+            },
             cwd: pane.cwd,
             foreground_cwd: pane.foreground_cwd,
             revision: pane.revision,

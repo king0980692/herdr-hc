@@ -844,6 +844,7 @@ impl HeadlessServer {
         self.sync_visible_server_config_diagnostic(false);
         if outer_terminal_focus == Some(true) {
             self.app.state.mark_active_tab_seen();
+            self.app.mark_hc_turns_seen();
         }
         self.app.set_host_terminal_state(
             host_terminal_theme,

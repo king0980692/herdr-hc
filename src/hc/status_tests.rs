@@ -130,3 +130,78 @@ async fn hc_status_events_match_queries_and_notify_only_live_explicit_transition
     }
     app.state.assert_invariants_for_test();
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn hc_done_shows_until_its_turn_is_seen_and_a_look_marks_it_seen() {
+    use crate::api::schema::AgentStatus;
+    let (client, mut server) = tests::test_client();
+    let (runtime, _, _) = runtime_tests::attach(client, &mut server).await;
+    let mut app = app_tests::app(TerminalFactory::Unavailable("test source".into()));
+    app_tests::restore_into(
+        &mut app,
+        &app_tests::saved(json!({"core_id":"core-test","address":"t1"})),
+    );
+    let pane = app.state.workspaces[0].tabs[0].root_pane;
+    let id = app.state.workspaces[0].terminal_id(pane).unwrap().clone();
+    let base = runtime.hc_snapshot().unwrap();
+    app.state
+        .terminals
+        .get_mut(&id)
+        .unwrap()
+        .apply_hc_snapshot(base.clone());
+    app.terminal_runtimes.insert(id.clone(), runtime);
+    let token = app.terminal_runtimes.hc_token(&id).unwrap();
+    let public = app.public_pane_id(0, pane).unwrap();
+    // Nobody looking (no client attached) until the last step.
+    app.state.outer_terminal_focus = None;
+    let status_of = |app: &mut crate::app::App| {
+        let response: Value = serde_json::from_str(
+            &app.handle_api_request(
+                serde_json::from_value(
+                    json!({"id":"status","method":"pane.get","params":{"pane_id":public}}),
+                )
+                .unwrap(),
+            ),
+        )
+        .unwrap();
+        serde_json::from_value::<AgentStatus>(response["result"]["pane"]["agent_status"].clone())
+            .unwrap()
+    };
+    for (state, turn, seen, expected) in [
+        ("working", 2, "2", AgentStatus::Working),
+        ("done", 3, "2", AgentStatus::Done),
+        // Looked at elsewhere (herdr.app moved herdr.seen on).
+        ("done", 3, "3", AgentStatus::Idle),
+        ("working", 3, "3", AgentStatus::Working),
+        ("done", 4, "3", AgentStatus::Done),
+    ] {
+        let mut snapshot = base.clone();
+        let facts = &mut snapshot.terminal.facts;
+        facts.insert("reported".into(), json!(true));
+        facts.insert("status".into(), json!({"state":state,"app":"claude-code"}));
+        facts.insert("turn".into(), json!(turn));
+        facts.insert("labels".into(), json!({"herdr.seen": seen}));
+        app.apply_hc_update(id.clone(), token.clone(), snapshot);
+        assert_eq!(status_of(&mut app), expected, "{state} {turn}/{seen}");
+        // Clients are told it is a completion only while it is done.
+        let agent: Value = serde_json::from_str(
+            &app.handle_api_request(
+                serde_json::from_value(
+                    json!({"id":"agent","method":"agent.get","params":{"target":public}}),
+                )
+                .unwrap(),
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            !agent["result"]["agent"]["completion_seq"].is_null(),
+            expected == AgentStatus::Done,
+            "{state} {turn}/{seen}"
+        );
+        assert!(app.seen_turns_written_for_test("t1").is_none());
+    }
+    // A client looks at its tab: herdr.seen moves on to the turn.
+    app.state.outer_terminal_focus = Some(true);
+    app.mark_hc_turns_seen();
+    assert_eq!(app.seen_turns_written_for_test("t1"), Some(4));
+}

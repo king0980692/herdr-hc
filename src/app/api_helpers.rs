@@ -111,12 +111,7 @@ pub(super) fn terminal_agent_status(
     seen: bool,
 ) -> crate::api::schema::AgentStatus {
     if terminal.hc_authority {
-        if terminal
-            .hc_status()
-            .and_then(|status| status.get("state"))
-            .and_then(serde_json::Value::as_str)
-            == Some("done")
-        {
+        if terminal.hc_unseen_done() {
             return crate::api::schema::AgentStatus::Done;
         }
         return pane_agent_status(terminal.state, true);

@@ -1105,6 +1105,13 @@ impl App {
         &mut self,
         request: crate::api::schema::Request,
     ) -> String {
+        let response = self.handle_drained_api_request(request);
+        // A request may have shown a tab (focus, a tab switch).
+        self.mark_hc_turns_seen();
+        response
+    }
+
+    fn handle_drained_api_request(&mut self, request: crate::api::schema::Request) -> String {
         let request = match self.unwrap_runtime_request(request) {
             Ok(request) => request,
             Err(response) => return response,

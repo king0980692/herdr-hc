@@ -8,6 +8,8 @@ pub(crate) const SHARED_TOKENS_LABEL: &str = "herdr-native.tokens";
 /// hc's agent pin, as Herdr.app writes it (`"1"`): the authority on whether
 /// an hc pane's agent is pinned.
 pub(crate) const PINNED_LABEL: &str = "herdr.pinned";
+/// The last turn someone looked at, kept by every app (herdr.app included).
+pub(crate) const SEEN_LABEL: &str = "herdr.seen";
 /// When this app pinned it (Unix ms), for the pin order.
 pub(crate) const PINNED_AT_LABEL: &str = "herdr-native.pinned_at";
 /// The token a pane's agent pin is shown to clients as (its value the pin
@@ -122,6 +124,31 @@ impl TerminalState {
             (label(PINNED_LABEL) == Some("1"))
                 .then(|| label(PINNED_AT_LABEL).unwrap_or_default().to_owned()),
         )
+    }
+
+    /// An hc program's turns: how many it has finished, and the last one
+    /// someone looked at (`herdr.seen`, kept by every app that shows it).
+    pub(crate) fn hc_turns(&self) -> Option<(u64, u64)> {
+        let facts = &self.hc_snapshot.as_ref()?.terminal.facts;
+        let turn = facts.get("turn").and_then(Value::as_u64)?;
+        let seen = facts
+            .get("labels")
+            .and_then(|labels| labels.get(SEEN_LABEL))
+            .and_then(Value::as_str)
+            .and_then(|seen| seen.parse().ok())
+            .unwrap_or(0);
+        Some((turn, seen))
+    }
+
+    /// Done with a turn nobody has looked at yet, as herdr.app shows it:
+    /// hc says done and its turn is past `herdr.seen` (a core reporting no
+    /// turn: done as it says).
+    pub(crate) fn hc_unseen_done(&self) -> bool {
+        self.hc_status()
+            .and_then(|status| status.get("state"))
+            .and_then(Value::as_str)
+            == Some("done")
+            && self.hc_turns().is_none_or(|(turn, seen)| turn > seen)
     }
 
     pub(crate) fn hc_status(&self) -> Option<&Value> {

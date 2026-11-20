@@ -4,12 +4,14 @@ mod appeared;
 mod bootstrap;
 mod layout_sync;
 mod reconnect;
+mod seen_turns;
 mod shared_tokens;
 use super::{actions::PaneStateUpdate, App};
 use crate::{events::AppEvent, hc::state::RuntimeSnapshot, terminal::TerminalId};
 pub(crate) use agent_session::HcAgentSessions;
 pub(crate) use layout_sync::LayoutSync;
 pub(crate) use reconnect::Recovery;
+pub(crate) use seen_turns::SeenTurns;
 pub(crate) use shared_tokens::SharedTokens;
 use std::sync::Arc;
 
@@ -232,12 +234,16 @@ impl App {
             old.connected != snapshot.connected
                 || old.attached != snapshot.attached
                 || old.error != snapshot.error
-                || ["status", "reported", "title", "cwd", "state"]
+                || ["status", "reported", "title", "cwd", "state", "turn"]
                     .iter()
                     .any(|key| old.terminal.facts.get(*key) != snapshot.terminal.facts.get(*key))
                 // A pin set by any app: agent lists reorder. (Other label
                 // changes, such as shared heartbeats, change nothing shown.)
-                || [crate::terminal::PINNED_LABEL, crate::terminal::PINNED_AT_LABEL]
+                || [
+                    crate::terminal::PINNED_LABEL,
+                    crate::terminal::PINNED_AT_LABEL,
+                    crate::terminal::SEEN_LABEL,
+                ]
                     .iter()
                     .any(|key| {
                         let label = |facts: &serde_json::Map<String, serde_json::Value>| {
@@ -265,6 +271,10 @@ impl App {
         for update in &updates {
             self.refresh_new_herdr_toast_context_for_update(update, &previous_toast);
             self.emit_pane_state_update(update);
+        }
+        // A turn finished in the tab being looked at is seen at once.
+        if changed {
+            self.mark_hc_turns_seen();
         }
         if changed {
             if updates.is_empty() {

@@ -240,7 +240,7 @@ pub(crate) fn is_hidden(facts: &serde_json::Map<String, serde_json::Value>) -> b
 pub(crate) const SPACE_LABEL: &str = "herdr.space";
 pub(crate) const TAB_LABEL: &str = "herdr.tab";
 /// herdr.app starts its own terminals at `herdr.seen=0` (herdr-app `docs/labels.md`).
-const SEEN_LABEL: &str = "herdr.seen";
+use crate::terminal::SEEN_LABEL;
 
 /// Which herdr.app space and tab each herdr-hc workspace and tab maps to,
 /// learned from the labels of the programs it shows. Keyed by herdr-hc's
