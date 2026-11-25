@@ -850,9 +850,15 @@ async fn run_client_loop(
                 &supervisor_tx,
             );
         }
-        // How this shell shows the files dock, whenever that changed.
+        // How this shell shows the files dock, whenever that changed. Not
+        // while switching machines: the switch owns the surface and its size
+        // until it completes, and the view follows right after.
         let pixel_mouse = state.pixel_mouse_available();
-        if let Some(shell) = state.shell.as_mut() {
+        if let Some(shell) = state
+            .shell
+            .as_mut()
+            .filter(|_| pending_activation.is_none() && scheduled_activation.is_none())
+        {
             for (endpoint_id, message) in
                 shell.take_session_terminal_views(state.reported_size.0, state.reported_size.1)
             {
