@@ -229,6 +229,23 @@ pub(crate) fn plugin_pane_labels() -> serde_json::Map<String, serde_json::Value>
     labels
 }
 
+/// The session terminal's labels: herdr-native's own, like a plugin pane, by
+/// its role (`files` for the files dock).
+pub(crate) fn session_terminal_labels(
+    role: &str,
+    owner: &str,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut labels = serde_json::Map::new();
+    labels.insert(HIDDEN_LABEL.into(), "1".into());
+    labels.insert(ROLE_LABEL.into(), role.into());
+    labels.insert(OWNER_LABEL.into(), owner.into());
+    labels
+}
+
+/// Which herdr-native (its app directory) runs a session terminal, so a
+/// restart ends only its own.
+pub(crate) const OWNER_LABEL: &str = "herdr-native.owner";
+
 /// Whether a terminal record carries [`HIDDEN_LABEL`].
 pub(crate) fn is_hidden(facts: &serde_json::Map<String, serde_json::Value>) -> bool {
     facts

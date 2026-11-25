@@ -197,6 +197,16 @@ impl App {
                     .and_then(serde_json::Value::as_str)
                     == Some("live")
             });
+        if finished
+            && self
+                .state
+                .session_terminal
+                .as_ref()
+                .is_some_and(|session| session.terminal_id == terminal_id)
+        {
+            self.handle_session_terminal_exit(std::time::Instant::now());
+            return (true, Vec::new());
+        }
         if finished {
             let mut panes: Vec<_> = self
                 .state

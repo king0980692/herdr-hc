@@ -346,6 +346,9 @@ impl ClientShellState {
             frame.cells[start..start + usize::from(bar.width)].to_vec()
         });
         blit_pane_surface(&mut frame, &surface.frame, layout.pane_surface);
+        let (dock_hit, dock_separator) = self.render_dock(&mut frame, &layout);
+        self.hits.dock = dock_hit;
+        self.hits.dock_separator = dock_separator;
         restore_mode_bar(&mut frame, mode_bar, mode_bar_cells.as_deref());
         let mut occlusion = crate::kitty_graphics::surface::Occlusion::default();
         let has_selection = self

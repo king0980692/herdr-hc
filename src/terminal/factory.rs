@@ -595,6 +595,42 @@ impl TerminalFactory {
         }
     }
 
+    /// Ends the session terminals of `role` this app left on its core (a
+    /// restart: hc kept them running). Others' (another session's) stay.
+    pub(crate) fn end_stale_session_terminals(&self, role: &str, owner: &str) {
+        let Self::Hc(host) = self else {
+            return;
+        };
+        let Ok(client) = host.client() else {
+            return;
+        };
+        let result: io::Result<usize> = host.block_on(async {
+            let list = client.call("terminal.list", json!({"all":false})).await?;
+            let mut ended = 0;
+            for record in list["terminals"].as_array().into_iter().flatten() {
+                let labels = &record["labels"];
+                let Some(address) = record["address"].as_str() else {
+                    continue;
+                };
+                if record["state"] == "live"
+                    && labels[crate::hc_entry::ROLE_LABEL] == role
+                    && labels[crate::hc_entry::OWNER_LABEL] == owner
+                {
+                    kill(&client, address).await?;
+                    ended += 1;
+                }
+            }
+            Ok(ended)
+        });
+        match result {
+            Ok(0) => {}
+            Ok(ended) => tracing::info!(ended, role, "ended session terminals left by a restart"),
+            Err(error) => {
+                tracing::warn!(%error, role, "stale session terminals could not be ended")
+            }
+        }
+    }
+
     pub(crate) fn runs_on_shared_machine(&self) -> bool {
         matches!(self, Self::Hc(host) if host.saved && host.shared)
     }
@@ -708,7 +744,9 @@ impl TerminalFactory {
                     })
                     .unwrap_or_default();
                 let placed_here = !labels.is_empty();
-                let labels = if plugin_pane {
+                let labels = if let Some(role) = env.session_terminal_role() {
+                    crate::hc_entry::session_terminal_labels(role, env.session_terminal_owner())
+                } else if plugin_pane {
                     crate::hc_entry::plugin_pane_labels()
                 } else {
                     labels

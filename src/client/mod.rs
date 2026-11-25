@@ -521,6 +521,17 @@ async fn run_client_loop(
                     })
                 }),
         );
+        shell.set_endpoint_session_terminal_supported(
+            &endpoint::ClientEndpointId::Local,
+            initial
+                .as_ref()
+                .and_then(|(_, handshake)| handshake.endpoint_capabilities.as_ref())
+                .is_some_and(|capabilities| {
+                    capabilities.iter().any(|capability| {
+                        capability == crate::protocol::session_terminal::CAPABILITY
+                    })
+                }),
+        );
         if local_unavailable {
             shell.set_endpoint_status(
                 &endpoint::ClientEndpointId::Local,
@@ -838,6 +849,28 @@ async fn run_client_loop(
                 },
                 &supervisor_tx,
             );
+        }
+        // How this shell shows the files dock, whenever that changed.
+        let pixel_mouse = state.pixel_mouse_available();
+        if let Some(shell) = state.shell.as_mut() {
+            for (endpoint_id, message) in
+                shell.take_session_terminal_views(state.reported_size.0, state.reported_size.1)
+            {
+                let _ = write_stream.send_to(&endpoint_id, &message);
+                // The dock changes how wide the tabs are.
+                if &endpoint_id == write_stream.active_id() {
+                    let resize = client_shell_resize_message(
+                        shell,
+                        state.reported_size.0,
+                        state.reported_size.1,
+                        state.reported_cell_size.0,
+                        state.reported_cell_size.1,
+                        pixel_mouse,
+                    );
+                    let _ = write_stream.send_to(&endpoint_id, &resize);
+                    shell.invalidate_pane_surface();
+                }
+            }
         }
         let timer_delay = state
             .shell
@@ -1458,6 +1491,11 @@ async fn run_client_loop(
                         shell.set_endpoint_agent_view_projection_supported(
                             &endpoint_id,
                             agent_view_projection_supported,
+                        );
+                        shell.set_endpoint_session_terminal_supported(
+                            &endpoint_id,
+                            negotiation
+                                .supports_capability(crate::protocol::session_terminal::CAPABILITY),
                         );
                         shell.compose(state.reported_size.0, state.reported_size.1)
                     });
@@ -2154,6 +2192,28 @@ async fn run_client_loop(
                         if state.shell.is_some() {
                             state.pane_keyboard_report_all = enabled;
                             sync_client_shell_keyboard_report_all(&mut state)?;
+                        }
+                    }
+                    ServerMessage::EndpointControl { kind, data }
+                        if kind == crate::protocol::session_terminal::UPDATE_KIND =>
+                    {
+                        match crate::protocol::session_terminal::decode_update(&data) {
+                            Ok(update) => {
+                                let shown = state.shell.as_mut().is_some_and(|shell| {
+                                    shell.set_endpoint_session_terminal(&endpoint_id, update)
+                                });
+                                if shown {
+                                    let composed = state.shell.as_mut().and_then(|shell| {
+                                        shell.compose(state.reported_size.0, state.reported_size.1)
+                                    });
+                                    if let Some(frame) = composed {
+                                        state.present_frame(frame);
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                debug!(%error, "ignoring an invalid session terminal update");
+                            }
                         }
                     }
                     ServerMessage::EndpointControl { kind, data } => {

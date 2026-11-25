@@ -82,6 +82,8 @@ mod native_graphics;
 mod notifications;
 mod render;
 mod retained_surface;
+mod session_terminal;
+pub(crate) use session_terminal::SessionTerminalSent;
 mod surface_interest;
 
 // Producers can refill even a bounded channel while it is being drained.
@@ -318,12 +320,23 @@ impl HeadlessServer {
     /// 2. Binds the client socket listener
     /// 3. Returns the server ready to run
     pub fn new(
-        app: app::App,
+        #[cfg_attr(not(feature = "files-dock"), allow(unused_mut))] mut app: app::App,
         config_diagnostics: &[String],
         api_tx: Option<api::ApiRequestSender>,
         api_server: Option<api::ServerHandle>,
         server_stop: ServerStop,
     ) -> io::Result<Self> {
+        // The files dock runs this build's sidebar, so only where this build
+        // runs it: not on a saved machine's core (another host, maybe
+        // another OS).
+        #[cfg(feature = "files-dock")]
+        if !app.terminal_factory.is_saved_source() {
+            app.session_terminal_spec = crate::files_dock::session_terminal_spec();
+        }
+        if app.session_terminal_available() {
+            app.end_stale_session_terminals();
+            crate::protocol::session_terminal::offer();
+        }
         let should_quit = server_stop.flag().clone();
         let client_path = client_socket_path();
         prepare_socket_path(&client_path)?;
@@ -535,6 +548,15 @@ impl HeadlessServer {
                 needs_graphics_render = false;
             }
 
+            if self.app.state.session_terminal.is_none()
+                && self
+                    .app
+                    .session_terminal_restart_deadline()
+                    .is_some_and(|at| now >= at)
+            {
+                self.maintain_session_terminal(now, false);
+                self.stream_session_terminal();
+            }
             self.drain_client_config_reload_request();
             self.sync_immediate_pty_sources();
             self.stream_host_mouse_capture_mode();
@@ -552,7 +574,14 @@ impl HeadlessServer {
                 && self.can_render_interactive(now);
             if needs_render && (render_cadence_due || presentation_due || interactive_due) {
                 crate::render_prof::event("render.attempt");
-                let render_request = self.app.render_dirty.take();
+                let mut render_request = self.app.render_dirty.take();
+                // The session terminal's output goes to shells on its own and
+                // never re-renders a tab surface.
+                if let Some(session) = self.app.state.session_terminal.as_ref() {
+                    if render_request.pty_sources.remove(&session.pane_id) {
+                        self.stream_session_terminal();
+                    }
+                }
                 let pty_dirty = !render_request.pty_sources.is_empty();
                 if pty_dirty {
                     crate::render_prof::event("render.attempt.pty_dirty");
@@ -595,6 +624,9 @@ impl HeadlessServer {
                 } else {
                     crate::render_prof::event("full_render.invoke");
                     self.render_and_stream();
+                    // An exit or a size change shows as the session terminal's
+                    // status or screen.
+                    self.stream_session_terminal();
                 }
                 self.app.record_render_attempt(now, !hidden_only);
                 if interactive_due {
@@ -616,6 +648,10 @@ impl HeadlessServer {
                 )
                 .map(|deadline| deadline.min(now + CLIENT_ACCEPT_POLL_INTERVAL))
                 .or(Some(now + CLIENT_ACCEPT_POLL_INTERVAL));
+            let next_deadline = match self.app.session_terminal_restart_deadline() {
+                Some(restart) => next_deadline.map(|deadline| deadline.min(restart)),
+                None => next_deadline,
+            };
             let next_deadline = self
                 .pending_alt_screen_reads
                 .iter()
@@ -1013,7 +1049,8 @@ impl HeadlessServer {
                     };
                     apply_client_pane_input_events(runtime, &[held.release])
                 }
-                ClientShellInputTarget::Popup(terminal_id) => {
+                ClientShellInputTarget::Popup(terminal_id)
+                | ClientShellInputTarget::SessionTerminal(terminal_id) => {
                     let Some(runtime) = self.runtime_for_terminal_id_string(&terminal_id) else {
                         continue;
                     };
@@ -2549,6 +2586,10 @@ impl HeadlessServer {
                 }
                 foreground_changed | geometry_changed || scroll_changed
             }
+            ServerEvent::ClientSessionTerminalView { client_id, view } => {
+                self.set_session_terminal_view(client_id, view);
+                false
+            }
             ServerEvent::ClientShellPopupInput {
                 client_id,
                 terminal_id,
@@ -2561,6 +2602,15 @@ impl HeadlessServer {
                         .is_some_and(ClientConnection::is_active_shell_client)
                 {
                     return false;
+                }
+                if self
+                    .app
+                    .state
+                    .session_terminal
+                    .as_ref()
+                    .is_some_and(|session| session.terminal_id.as_str() == terminal_id)
+                {
+                    return self.session_terminal_input(client_id, &terminal_id, events);
                 }
                 let pixel_mouse = self.clients.get(&client_id).is_some_and(|client| {
                     client.pixel_mouse && client.host_sgr_pixels_active == Some(true)

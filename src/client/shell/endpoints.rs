@@ -22,6 +22,11 @@ pub(crate) struct ClientShellEndpoint {
     pending_agent_view_projection: Option<ClientEndpointAgentViewProjection>,
     pub(crate) agent_view_projection_supported: bool,
     pub(crate) methods: Option<HashSet<String>>,
+    /// The endpoint runs a session terminal (the files dock) shells may show.
+    pub(crate) session_terminal_supported: bool,
+    /// Its latest screen and status.
+    pub(crate) session_terminal:
+        Option<Box<crate::protocol::session_terminal::SessionTerminalUpdate>>,
 }
 
 pub(super) struct MachineHit {
@@ -88,6 +93,9 @@ impl ClientShellState {
                 agent_view_projection_supported: previous
                     .is_some_and(|endpoint| endpoint.agent_view_projection_supported),
                 methods: previous.and_then(|endpoint| endpoint.methods.clone()),
+                session_terminal_supported: previous
+                    .is_some_and(|endpoint| endpoint.session_terminal_supported),
+                session_terminal: previous.and_then(|endpoint| endpoint.session_terminal.clone()),
             });
         }
 
@@ -167,6 +175,8 @@ impl ClientShellState {
             endpoint.agent_view_projection = None;
             endpoint.pending_agent_view_projection = None;
             endpoint.agent_view_projection_supported = false;
+            endpoint.session_terminal_supported = false;
+            endpoint.session_terminal = None;
         }
     }
 
@@ -204,6 +214,49 @@ impl ClientShellState {
             self.pane_scroll_in_flight.clear();
             self.pane_scroll_queued.clear();
         }
+    }
+
+    pub(crate) fn set_endpoint_session_terminal_supported(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        supported: bool,
+    ) {
+        if let Some(endpoint) = self
+            .endpoints
+            .iter_mut()
+            .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
+        {
+            endpoint.session_terminal_supported = supported;
+            if !supported {
+                endpoint.session_terminal = None;
+            }
+        }
+        // A new connection learns how this shell shows it afresh.
+        if self
+            .last_dock_view
+            .as_ref()
+            .is_some_and(|(sent_to, _)| sent_to == endpoint_id)
+        {
+            self.last_dock_view = None;
+        }
+    }
+
+    /// The session terminal's new screen; whether the active endpoint's
+    /// (shown now, so worth a repaint).
+    pub(crate) fn set_endpoint_session_terminal(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        update: crate::protocol::session_terminal::SessionTerminalUpdate,
+    ) -> bool {
+        let Some(endpoint) = self
+            .endpoints
+            .iter_mut()
+            .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
+        else {
+            return false;
+        };
+        endpoint.session_terminal = Some(Box::new(update));
+        endpoint_id == &self.active_endpoint_id
     }
 
     pub(crate) fn set_endpoint_agent_view_projection_supported(
@@ -776,5 +829,7 @@ pub(super) fn local_endpoint() -> ClientShellEndpoint {
         pending_agent_view_projection: None,
         agent_view_projection_supported: false,
         methods: None,
+        session_terminal_supported: false,
+        session_terminal: None,
     }
 }

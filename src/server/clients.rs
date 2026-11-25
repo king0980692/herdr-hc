@@ -28,6 +28,7 @@ pub(crate) type RenderTarget = (
 pub(crate) enum ClientShellInputTarget {
     Pane(String),
     Popup(String),
+    SessionTerminal(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -175,6 +176,11 @@ pub(crate) struct ClientConnection {
     pub(crate) staged_clipboard_files: Vec<PathBuf>,
     /// Connection-local workspace and tab projection for a client-owned shell.
     pub(crate) shell_location: Option<ClientShellLocation>,
+    /// How this shell shows the session terminal (`None`: it never asked).
+    pub(crate) session_terminal_view:
+        Option<crate::protocol::session_terminal::SessionTerminalView>,
+    /// What of the session terminal this shell last received.
+    pub(crate) session_terminal_sent: Option<crate::server::headless::SessionTerminalSent>,
     /// Last coherent shell replacement sent to this client.
     pub(crate) shell_snapshot: Option<crate::protocol::ClientShellSnapshot>,
     pub(crate) shell_agent_completions: Option<crate::protocol::endpoint::EndpointAgentCompletions>,
@@ -246,6 +252,8 @@ impl ClientConnection {
             shell_held_inputs: HashMap::new(),
             staged_clipboard_files: Vec::new(),
             shell_location: None,
+            session_terminal_view: None,
+            session_terminal_sent: None,
             shell_snapshot: None,
             shell_agent_completions: None,
             shell_agent_view: None,

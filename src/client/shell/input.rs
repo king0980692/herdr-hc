@@ -1167,8 +1167,10 @@ impl ClientShellState {
 
     fn popup_input_target(&self) -> Option<ClientInputTarget> {
         self.popup_terminal_id
-            .as_ref()
-            .map(|terminal_id| ClientInputTarget::Popup(terminal_id.clone()))
+            .clone()
+            // Keys go to the files dock while it has them.
+            .or_else(|| self.dock_input_terminal())
+            .map(ClientInputTarget::Popup)
     }
 
     fn push_pane_key(

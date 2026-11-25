@@ -512,6 +512,11 @@ pub(crate) enum ServerEvent {
         pane_id: String,
         events: Vec<ClientPaneInputEvent>,
     },
+    /// A client-owned shell shows the session terminal this way (or not).
+    ClientSessionTerminalView {
+        client_id: u64,
+        view: crate::protocol::session_terminal::SessionTerminalView,
+    },
     /// A client-owned shell delivered semantic input to its active popup terminal.
     ClientShellPopupInput {
         client_id: u64,
@@ -1343,6 +1348,17 @@ fn client_read_loop_with_endpoint_controls(
                         code,
                         message,
                     },
+                }
+            }
+            ClientMessage::EndpointControl { kind, data }
+                if kind == crate::protocol::session_terminal::VIEW_KIND =>
+            {
+                match crate::protocol::session_terminal::decode_view(&data) {
+                    Ok(view) => ServerEvent::ClientSessionTerminalView { client_id, view },
+                    Err(error) => {
+                        debug!(client_id, %error, "ignoring an invalid session terminal view");
+                        continue;
+                    }
                 }
             }
             ClientMessage::EndpointControl { kind, data }

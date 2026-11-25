@@ -101,6 +101,10 @@ where
 
 /// Set for a plugin pane's program, naming its plugin.
 pub(crate) const PLUGIN_ID_ENV_VAR: &str = "HERDR_PLUGIN_ID";
+/// Set on the session terminal (one of the whole session, outside every
+/// tab): what it is for.
+pub(crate) const SESSION_TERMINAL_ROLE_ENV_VAR: &str = "HERDR_SESSION_TERMINAL_ROLE";
+pub(crate) const SESSION_TERMINAL_OWNER_ENV_VAR: &str = "HERDR_SESSION_TERMINAL_OWNER";
 const HC_SOURCE_CLIENT_ENV: &[&str] = &[
     "HERDR_ENV",
     "HERDR_BIN_PATH",
@@ -223,6 +227,22 @@ impl PaneLaunchEnv {
     /// a program of the shared layout.
     pub(crate) fn is_plugin_pane(&self) -> bool {
         self.extra.iter().any(|(key, _)| key == PLUGIN_ID_ENV_VAR)
+    }
+
+    /// Who runs the session terminal this launches (its app directory).
+    pub(crate) fn session_terminal_owner(&self) -> &str {
+        self.extra
+            .iter()
+            .find(|(key, _)| key == SESSION_TERMINAL_OWNER_ENV_VAR)
+            .map_or("", |(_, owner)| owner.as_str())
+    }
+
+    /// The session terminal's role, when this launches it.
+    pub(crate) fn session_terminal_role(&self) -> Option<&str> {
+        self.extra
+            .iter()
+            .find(|(key, _)| key == SESSION_TERMINAL_ROLE_ENV_VAR)
+            .map(|(_, role)| role.as_str())
     }
 
     /// The herdr workspace and tab a managed launch belongs to.

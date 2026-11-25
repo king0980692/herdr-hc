@@ -157,6 +157,19 @@ impl EndpointClientHello {
 
 impl EndpointServerWelcome {
     pub fn compatible(methods: Vec<String>) -> Self {
+        let mut capabilities = vec![
+            super::surface_reuse::CAPABILITY.into(),
+            super::surface_delta::CAPABILITY.into(),
+            super::surface_scroll::CAPABILITY.into(),
+            SURFACE_INTEREST_CAPABILITY.into(),
+            PRESENTATION_EFFECTS_FENCE_CAPABILITY.into(),
+            HEALTH_CHECK_CAPABILITY.into(),
+            AGENT_VIEW_PROJECTION_CAPABILITY.into(),
+            AGENT_COMPLETIONS_CAPABILITY.into(),
+        ];
+        if super::session_terminal::offered() {
+            capabilities.push(super::session_terminal::CAPABILITY.into());
+        }
         Self {
             generation: ENDPOINT_PROTOCOL_GENERATION,
             server_version: crate::build_info::version(),
@@ -165,16 +178,7 @@ impl EndpointServerWelcome {
             input_codec: INPUT_CODEC_V1.into(),
             blob_codec: BLOB_CODEC_V1.into(),
             methods,
-            capabilities: vec![
-                super::surface_reuse::CAPABILITY.into(),
-                super::surface_delta::CAPABILITY.into(),
-                super::surface_scroll::CAPABILITY.into(),
-                SURFACE_INTEREST_CAPABILITY.into(),
-                PRESENTATION_EFFECTS_FENCE_CAPABILITY.into(),
-                HEALTH_CHECK_CAPABILITY.into(),
-                AGENT_VIEW_PROJECTION_CAPABILITY.into(),
-                AGENT_COMPLETIONS_CAPABILITY.into(),
-            ],
+            capabilities,
             error: None,
         }
     }

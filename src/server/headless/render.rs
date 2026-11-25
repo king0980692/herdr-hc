@@ -46,6 +46,21 @@ impl HeadlessServer {
                     .map(|runtime| (runtime, popup.pane_id));
             }
         }
+        // The files dock has the keys in this shell.
+        if self
+            .clients
+            .get(&client_id)
+            .and_then(|client| client.session_terminal_view)
+            .is_some_and(|view| view.visible && view.focused)
+        {
+            if let Some(session) = &self.app.state.session_terminal {
+                return self
+                    .app
+                    .terminal_runtimes
+                    .get(&session.terminal_id)
+                    .map(|runtime| (runtime, session.pane_id));
+            }
+        }
         let target = self.shell_target_for_client(client_id)?;
         let tab = self
             .app
@@ -331,6 +346,9 @@ impl HeadlessServer {
                     pane_ids.insert(popup.pane_id);
                 }
             }
+        }
+        if let Some(pane_id) = self.shown_session_terminal_pane() {
+            pane_ids.insert(pane_id);
         }
         self.app.render_dirty.set_immediate_pty_sources(pane_ids);
     }

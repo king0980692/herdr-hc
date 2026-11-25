@@ -23,6 +23,7 @@ mod ids;
 mod popup;
 mod runtime;
 mod session;
+pub(crate) mod session_terminal;
 pub mod state;
 mod tab_bar_status;
 mod terminal_targets;
@@ -110,6 +111,9 @@ pub struct App {
     pub(crate) hc_agent_sessions: hc::HcAgentSessions,
     pub(crate) shared_tokens: hc::SharedTokens,
     pub(crate) seen_turns: hc::SeenTurns,
+    /// What the session terminal runs (the files dock), when this build has one.
+    pub(crate) session_terminal_spec: Option<session_terminal::SessionTerminalSpec>,
+    pub(crate) session_terminal_life: session_terminal::SessionTerminalLife,
     pub(crate) terminal_runtimes: crate::terminal::TerminalRuntimeRegistry,
     // Drop the source executor after attachment runtimes; stopping it never kills hc programs.
     pub(crate) terminal_factory: crate::terminal::TerminalFactory,
@@ -604,6 +608,7 @@ impl App {
             ),
             plugin_panes: std::collections::HashMap::new(),
             popup_pane: None,
+            session_terminal: None,
             plugin_command_logs: Vec::new(),
             next_plugin_command_log_id: 1,
             plugin_commands_in_flight: 0,
@@ -678,6 +683,8 @@ impl App {
             layout_sync: hc::LayoutSync::default(),
             shared_tokens: hc::SharedTokens::default(),
             seen_turns: hc::SeenTurns::default(),
+            session_terminal_spec: None,
+            session_terminal_life: session_terminal::SessionTerminalLife::default(),
             hc_agent_sessions: hc::HcAgentSessions::new(
                 config.session.resume_agents_on_restore,
                 Duration::from_millis(config.session.startup_per_agent_delay_ms.into()),

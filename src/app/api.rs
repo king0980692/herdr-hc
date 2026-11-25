@@ -355,6 +355,10 @@ impl App {
 
         let mut worktree_restore_updates = Vec::new();
         if let AppEvent::PaneDied { pane_id, .. } = &ev {
+            if self.is_session_terminal_pane(*pane_id) {
+                self.handle_session_terminal_exit(std::time::Instant::now());
+                return Vec::new();
+            }
             if self
                 .state
                 .popup_pane

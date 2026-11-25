@@ -683,6 +683,18 @@ impl ClientShellState {
     pub(super) fn handle_mouse(&mut self, mouse: MouseEvent, outcome: &mut ClientShellInput) {
         self.update_link_hover(mouse, outcome);
         let point = (mouse.column, mouse.row);
+        // A click gives the files dock the keys, or takes them back.
+        if matches!(mouse.kind, MouseEventKind::Down(_)) && self.overlay.is_none() {
+            let in_dock = self
+                .hits
+                .dock
+                .as_ref()
+                .is_some_and(|hit| super::contains(hit.rect, point));
+            if self.dock_focused != in_dock {
+                self.dock_focused = in_dock;
+                outcome.repaint = true;
+            }
+        }
         if self.mode == ClientShellMode::Navigate
             && self.workspace_preview_action_blocked()
             && self.overlay.is_none()
@@ -943,6 +955,9 @@ impl ClientShellState {
             return;
         }
         if self.popup_terminal_id.is_some() {
+            return;
+        }
+        if self.handle_dock_mouse(point, mouse, outcome) {
             return;
         }
         if self.config.mouse_capture
@@ -2367,7 +2382,11 @@ impl ClientShellState {
         }
     }
 
-    fn pane_mouse_position(&self, hit: &PaneHit, mouse: MouseEvent) -> ClientMousePosition {
+    pub(super) fn pane_mouse_position(
+        &self,
+        hit: &PaneHit,
+        mouse: MouseEvent,
+    ) -> ClientMousePosition {
         let cell = ClientMousePosition::Cell {
             column: mouse.column.saturating_sub(hit.inner_rect.x),
             row: mouse.row.saturating_sub(hit.inner_rect.y),

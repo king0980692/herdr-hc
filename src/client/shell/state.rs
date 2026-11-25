@@ -59,6 +59,9 @@ pub(super) struct ClientShellLayout {
     pub tab_bar: Rect,
     pub mobile_header: Rect,
     pub pane_surface: Rect,
+    /// The files dock on the right, and the column between it and the tabs.
+    pub dock: Rect,
+    pub dock_separator: Rect,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,6 +95,9 @@ pub(super) struct ShellHitMap {
     pub(super) tabs: Vec<(Rect, String)>,
     pub(super) panes: Vec<PaneHit>,
     pub(super) popup: Option<PaneHit>,
+    /// The files dock (the session terminal) and its separator.
+    pub(super) dock: Option<PaneHit>,
+    pub(super) dock_separator: Rect,
     pub(super) pane_splits: Vec<PaneSplitHit>,
     pub(super) agents: Vec<(Rect, String)>,
     pub(super) endpoint_agents: Vec<(Rect, ClientEndpointId, String)>,
@@ -894,6 +900,16 @@ pub(crate) struct ClientShellState {
     pub(super) workspace_scroll: usize,
     pub(super) agent_scroll: usize,
     pub(super) agent_sections_folded: HashSet<super::agent_sections::AgentSection>,
+    /// The files dock: shown (when the endpoint has it), its width, and
+    /// whether keys go to it.
+    pub(super) dock_visible: bool,
+    pub(super) dock_width: u16,
+    pub(super) dock_focused: bool,
+    /// How the dock was last reported shown, and to which endpoint.
+    pub(super) last_dock_view: Option<(
+        ClientEndpointId,
+        crate::protocol::session_terminal::SessionTerminalView,
+    )>,
     pub(super) pending_agent_reveal: Option<(ClientEndpointId, String)>,
     pub(super) tab_scroll: usize,
     pub(super) mobile_switcher_scroll: usize,
@@ -1072,6 +1088,10 @@ impl ClientShellState {
             workspace_scroll: 0,
             agent_scroll: 0,
             agent_sections_folded: super::agent_sections::initially_folded(),
+            dock_visible: true,
+            dock_width: super::dock::DEFAULT_WIDTH,
+            dock_focused: false,
+            last_dock_view: None,
             pending_agent_reveal: None,
             tab_scroll: 0,
             mobile_switcher_scroll: 0,
@@ -1239,6 +1259,7 @@ impl ClientShellState {
             self.sidebar_collapsed,
             self.focused_tab_count(),
             self.sidebar_width,
+            self.shown_dock_width(),
         )
     }
 
