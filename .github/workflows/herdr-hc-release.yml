@@ -206,7 +206,9 @@ jobs:
 
   build-windows:
     needs: test
-    runs-on: windows-latest
+    # As ci.yml: windows-latest's MSVC headers want Clang 22, newer than the
+    # Clang in the Zig that builds libghostty-vt.
+    runs-on: windows-2022
     timeout-minutes: 40
     strategy:
       fail-fast: false
