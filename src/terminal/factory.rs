@@ -441,6 +441,49 @@ impl TerminalFactory {
         });
     }
 
+    /// Whether programs on the source's machine can reach this server (its
+    /// bridge runs there).
+    pub(crate) fn bridge_ready(&self) -> bool {
+        matches!(self, Self::Hc(host) if host
+            .bridge_socket
+            .lock()
+            .is_ok_and(|socket| socket.is_some()))
+    }
+
+    /// Runs one program on the source's machine and waits for it: its
+    /// stdout, or what it wrote on stderr when it failed.
+    pub(crate) fn exec_on_source_now(
+        &self,
+        argv: Vec<String>,
+        timeout_secs: u64,
+    ) -> Result<Vec<u8>, String> {
+        use base64::Engine as _;
+        let Self::Hc(host) = self else {
+            return Err("no hc source".into());
+        };
+        let client = host.client().map_err(|error| error.to_string())?;
+        let reply = host
+            .block_on(async move {
+                client
+                    .call(
+                        "machine.exec",
+                        json!({ "argv": argv, "timeout": timeout_secs }),
+                    )
+                    .await
+            })
+            .map_err(|error| error.to_string())?;
+        let decode = |field: &str| {
+            base64::engine::general_purpose::STANDARD
+                .decode(reply[field].as_str().unwrap_or_default())
+                .unwrap_or_default()
+        };
+        if reply["code"] == 0 {
+            Ok(decode("stdout"))
+        } else {
+            Err(String::from_utf8_lossy(&decode("stderr")).into_owned())
+        }
+    }
+
     /// Runs one program on the source's machine (no terminal) and delivers
     /// what `done` makes of its stdout to the app. False without an hc source.
     pub(crate) fn exec_on_source(
@@ -597,12 +640,13 @@ impl TerminalFactory {
 
     /// Ends the session terminals of `role` this app left on its core (a
     /// restart: hc kept them running). Others' (another session's) stay.
-    pub(crate) fn end_stale_session_terminals(&self, role: &str, owner: &str) {
+    /// Whether it could look (the core was reachable).
+    pub(crate) fn end_stale_session_terminals(&self, role: &str, owner: &str) -> bool {
         let Self::Hc(host) = self else {
-            return;
+            return true;
         };
         let Ok(client) = host.client() else {
-            return;
+            return false;
         };
         let result: io::Result<usize> = host.block_on(async {
             let list = client.call("terminal.list", json!({"all":false})).await?;
@@ -623,10 +667,14 @@ impl TerminalFactory {
             Ok(ended)
         });
         match result {
-            Ok(0) => {}
-            Ok(ended) => tracing::info!(ended, role, "ended session terminals left by a restart"),
+            Ok(0) => true,
+            Ok(ended) => {
+                tracing::info!(ended, role, "ended session terminals left by a restart");
+                true
+            }
             Err(error) => {
-                tracing::warn!(%error, role, "stale session terminals could not be ended")
+                tracing::warn!(%error, role, "stale session terminals could not be ended");
+                false
             }
         }
     }

@@ -40,6 +40,9 @@ const ALLOWED_METHODS: &[&str] = &[
     "tab.rename",
     "workspace.list",
     "workspace.get",
+    // The files dock there follows what this viewer looks at.
+    "session.viewed",
+    "pane.swap",
 ];
 
 /// A request line larger than this is refused.
@@ -741,6 +744,9 @@ mod tests {
     #[test]
     fn an_agent_on_that_machine_may_report_its_session() {
         assert!(allowed(br#"{"id":"1","method":"pane.report_agent_session","params":{}}"#).is_ok());
+        // The files dock there follows this viewer.
+        assert!(allowed(br#"{"id":"1","method":"session.viewed","params":{}}"#).is_ok());
+        assert!(allowed(br#"{"id":"1","method":"component_settings.set","params":{}}"#).is_err());
         assert!(allowed(br#"{"id":"1","method":"pane.report_agent","params":{}}"#).is_err());
     }
 

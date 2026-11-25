@@ -143,6 +143,8 @@ impl App {
         if source.client.is_some() {
             // Connected (again): the shared layout is synced once now.
             self.request_layout_sync();
+            // A files dock a previous run left there goes first.
+            self.end_stale_session_terminals();
         }
         let initial = self.hc_recovery.generation == 0;
         self.hc_recovery.generation = generation;

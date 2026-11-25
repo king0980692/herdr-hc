@@ -26,12 +26,17 @@ pub(crate) struct SessionTerminalSpec {
     /// A plugin it replaces: while that is still enabled, its first start
     /// says how to turn the plugin off.
     pub replaces_plugin: Option<String>,
+    /// It runs on the source's machine and reaches this server through its
+    /// bridge: it starts only once the bridge runs.
+    pub needs_bridge: bool,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct ComponentSettingsSpec {
     pub title: String,
     pub argv: Vec<String>,
+    /// Run on the source's machine (where the component keeps them).
+    pub on_source: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -53,6 +58,7 @@ pub(crate) struct SessionTerminalLife {
     restart_at: Option<Instant>,
     failed: bool,
     replaced_plugin_noted: bool,
+    stale_ended: bool,
 }
 
 impl SessionTerminalLife {
@@ -95,9 +101,15 @@ pub(crate) fn session_terminal_owner() -> String {
 impl App {
     /// Ends the session terminal a previous run of this app left on its hc
     /// core, before showing a new one.
-    pub(crate) fn end_stale_session_terminals(&self) {
+    /// Done once, as soon as the core is reachable (a view of another
+    /// machine may connect later than it starts), and before it starts one.
+    pub(crate) fn end_stale_session_terminals(&mut self) {
+        if self.session_terminal_life.stale_ended || self.state.session_terminal.is_some() {
+            return;
+        }
         if let Some(spec) = &self.session_terminal_spec {
-            self.terminal_factory
+            self.session_terminal_life.stale_ended = self
+                .terminal_factory
                 .end_stale_session_terminals(&spec.role, &session_terminal_owner());
         }
     }
@@ -149,6 +161,12 @@ impl App {
             self.session_terminal_life.retry();
         }
         if !self.session_terminal_life.may_start(now) {
+            return Ok(());
+        }
+        self.end_stale_session_terminals();
+        // Not before it can reach this server: look again shortly.
+        if spec.needs_bridge && !self.terminal_factory.bridge_ready() {
+            self.session_terminal_life.restart_at = Some(now + Duration::from_secs(2));
             return Ok(());
         }
         self.session_terminal_life.restart_at = None;
@@ -286,6 +304,7 @@ impl App {
             env: Vec::new(),
             settings: None,
             replaces_plugin: None,
+            needs_bridge: false,
         });
         self.state.session_terminal = Some(SessionTerminalState {
             pane_id,

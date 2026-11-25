@@ -28,7 +28,7 @@ impl App {
         let Some((id, settings, env)) = self.settings_component() else {
             return Ok(Vec::new());
         };
-        let output = run(&settings.argv, &env, &["--settings-list"])?;
+        let output = self.run_component(&settings, &env, &["--settings-list"])?;
         let settings = serde_json::from_slice(&output)
             .map_err(|error| format!("{id} settings are not understood: {error}"))?;
         Ok(vec![SettingsComponent {
@@ -61,15 +61,33 @@ impl App {
             );
         };
         let value = params.value.to_string();
-        if let Err(message) = run(
-            &settings.argv,
-            &env,
-            &["--settings-set", &params.key, &value],
-        ) {
+        if let Err(message) =
+            self.run_component(&settings, &env, &["--settings-set", &params.key, &value])
+        {
             return encode_error(id, "invalid_setting", message);
         }
         tracing::info!(component, key = %params.key, "component setting changed");
         self.handle_component_settings_list(id)
+    }
+}
+
+impl App {
+    /// The component's command with `args`: here, or on the source's
+    /// machine where it runs.
+    fn run_component(
+        &self,
+        settings: &crate::app::session_terminal::ComponentSettingsSpec,
+        env: &[(String, String)],
+        args: &[&str],
+    ) -> Result<Vec<u8>, String> {
+        if !settings.on_source {
+            return run(&settings.argv, env, args);
+        }
+        let mut argv = settings.argv.clone();
+        argv.extend(args.iter().map(|arg| (*arg).to_owned()));
+        self.terminal_factory
+            .exec_on_source_now(argv, ANSWER_WITHIN.as_secs())
+            .map_err(|message| component_error(&message))
     }
 }
 
@@ -115,15 +133,19 @@ fn run(argv: &[String], env: &[(String, String)], args: &[&str]) -> Result<Vec<u
     if output.status.success() {
         Ok(output.stdout)
     } else {
-        let message = String::from_utf8_lossy(&output.stderr);
-        Err(message
-            .trim()
-            .trim_start_matches("Error: ")
-            .trim_start_matches("Custom { kind: Other, error: ")
-            .trim_end_matches(" }")
-            .trim_matches('"')
-            .to_owned())
+        Err(component_error(&String::from_utf8_lossy(&output.stderr)))
     }
+}
+
+/// What a component said on failing, without Rust's error dressing.
+fn component_error(stderr: &str) -> String {
+    stderr
+        .trim()
+        .trim_start_matches("Error: ")
+        .trim_start_matches("Custom { kind: Other, error: ")
+        .trim_end_matches(" }")
+        .trim_matches('"')
+        .to_owned()
 }
 
 #[cfg(all(test, unix))]
@@ -154,8 +176,10 @@ esac"#,
             settings: Some(crate::app::session_terminal::ComponentSettingsSpec {
                 title: "Files".into(),
                 argv: vec!["sh".into(), "-c".into(), script, "component".into()],
+                on_source: false,
             }),
             replaces_plugin: None,
+            needs_bridge: false,
         });
         app
     }

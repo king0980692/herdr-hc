@@ -326,12 +326,15 @@ impl HeadlessServer {
         api_server: Option<api::ServerHandle>,
         server_stop: ServerStop,
     ) -> io::Result<Self> {
-        // The files dock runs this build's sidebar, so only where this build
-        // runs it: not on a saved machine's core (another host, maybe
-        // another OS).
+        // The files dock runs this build's sidebar here; on a view of a
+        // shared machine, that machine's herdr-native runs it.
         #[cfg(feature = "files-dock")]
         if !app.terminal_factory.is_saved_source() {
             app.session_terminal_spec = crate::files_dock::session_terminal_spec();
+        } else if app.terminal_factory.runs_on_shared_machine() {
+            // A view of another machine: its dock runs there, through the
+            // bridge this view keeps there.
+            app.session_terminal_spec = Some(crate::files_dock::remote_session_terminal_spec());
         }
         if app.session_terminal_available() {
             app.end_stale_session_terminals();
