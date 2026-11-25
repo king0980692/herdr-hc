@@ -20,6 +20,15 @@ pub(crate) struct SessionTerminalSpec {
     pub role: String,
     pub argv: Vec<String>,
     pub env: Vec<(String, String)>,
+    /// Its settings for the client's settings page: this command with
+    /// `--settings-list`, or `--settings-set <key> <json>`.
+    pub settings: Option<ComponentSettingsSpec>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ComponentSettingsSpec {
+    pub title: String,
+    pub argv: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -245,6 +254,7 @@ impl App {
             role: "files".into(),
             argv: vec!["true".into()],
             env: Vec::new(),
+            settings: None,
         });
         self.state.session_terminal = Some(SessionTerminalState {
             pane_id,

@@ -42,6 +42,13 @@ impl ClientShellState {
             integration_messages: Vec::new(),
             loading_integrations: false,
             installing_integrations: false,
+            files_available: self.active_endpoint_has_component_settings(),
+            components: Vec::new(),
+            loading_components: false,
+            component_message: None,
+            editing_text: None,
+            dock_visible: self.dock_visible,
+            dock_width: self.dock_width,
         }));
     }
 
@@ -51,7 +58,7 @@ impl ClientShellState {
             ClientSettingsSection::Indicators => indicator_index(self.config.status_indicators),
             ClientSettingsSection::Sound => usize::from(!self.config.sound_enabled),
             ClientSettingsSection::Toast => toast_index(self.config.toast_delivery),
-            ClientSettingsSection::Integrations => 0,
+            ClientSettingsSection::Integrations | ClientSettingsSection::Files => 0,
         }
     }
 
@@ -77,6 +84,9 @@ impl ClientShellState {
         if request_integrations {
             self.queue_integration_list(outcome, true);
         }
+        if section == ClientSettingsSection::Files {
+            self.queue_component_settings(None, outcome);
+        }
         outcome.repaint = true;
     }
 
@@ -84,13 +94,13 @@ impl ClientShellState {
         let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_ref() else {
             return;
         };
-        let current = ClientSettingsSection::ALL
+        let sections = settings.sections();
+        let current = sections
             .iter()
             .position(|section| *section == settings.section)
             .unwrap_or(0);
-        let next = (current as isize + delta).rem_euclid(ClientSettingsSection::ALL.len() as isize)
-            as usize;
-        self.select_settings_section(ClientSettingsSection::ALL[next], outcome);
+        let next = (current as isize + delta).rem_euclid(sections.len() as isize) as usize;
+        self.select_settings_section(sections[next], outcome);
     }
 
     fn settings_choice_count(&self) -> usize {
@@ -100,6 +110,7 @@ impl ClientShellState {
                 ClientSettingsSection::Indicators | ClientSettingsSection::Sound => 2,
                 ClientSettingsSection::Toast => 4,
                 ClientSettingsSection::Integrations => settings.integrations.len(),
+                ClientSettingsSection::Files => super::files_settings::rows(settings).len(),
             },
             _ => 0,
         }
@@ -223,6 +234,7 @@ impl ClientShellState {
                 );
             }
             ClientSettingsSection::Integrations => self.install_recommended_integrations(outcome),
+            ClientSettingsSection::Files => self.apply_files_setting(outcome),
         }
     }
 
@@ -343,6 +355,10 @@ impl ClientShellState {
                 };
                 (true, actions)
             }
+            PendingEndpointKind::ComponentSettings => {
+                self.receive_component_settings(result);
+                (true, Vec::new())
+            }
             _ => (false, Vec::new()),
         }
     }
@@ -354,6 +370,9 @@ impl ClientShellState {
     ) -> bool {
         if !matches!(self.overlay, Some(ClientShellOverlay::Settings(_))) {
             return false;
+        }
+        if self.route_files_text_key(key, outcome) {
+            return true;
         }
         let (code, modifiers) = crate::config::normalize_key_combo((key.code, key.modifiers));
         if code == KeyCode::Esc {

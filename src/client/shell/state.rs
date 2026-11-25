@@ -399,6 +399,8 @@ pub(super) enum ClientSettingsSection {
     Sound,
     Toast,
     Integrations,
+    /// The files dock (when the endpoint runs one).
+    Files,
 }
 
 impl ClientSettingsSection {
@@ -408,6 +410,7 @@ impl ClientSettingsSection {
         Self::Sound,
         Self::Toast,
         Self::Integrations,
+        Self::Files,
     ];
 
     pub(super) fn label(self) -> &'static str {
@@ -417,6 +420,7 @@ impl ClientSettingsSection {
             Self::Sound => "sound",
             Self::Toast => "toasts",
             Self::Integrations => "integrations",
+            Self::Files => "files",
         }
     }
 }
@@ -431,6 +435,16 @@ pub(super) struct ClientSettingsOverlay {
     pub(super) integration_messages: Vec<String>,
     pub(super) loading_integrations: bool,
     pub(super) installing_integrations: bool,
+    /// The endpoint runs components with settings (the files dock).
+    pub(super) files_available: bool,
+    pub(super) components: Vec<crate::api::schema::SettingsComponent>,
+    pub(super) loading_components: bool,
+    pub(super) component_message: Option<String>,
+    /// A text setting being typed: its component, key and text.
+    pub(super) editing_text: Option<(String, String, super::text_editor::TextEditor)>,
+    /// This client's dock, as the section shows it.
+    pub(super) dock_visible: bool,
+    pub(super) dock_width: u16,
 }
 
 #[derive(Debug)]
@@ -647,6 +661,7 @@ pub(super) enum PendingEndpointKind {
     ReloadConfig,
     IntegrationList,
     IntegrationInstall,
+    ComponentSettings,
     PrepareWorktreeCreate {
         workspace_id: String,
     },

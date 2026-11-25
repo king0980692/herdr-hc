@@ -843,6 +843,11 @@ pub(crate) fn handle_client_handshake(
         let welcome = EndpointServerWelcome::compatible(
             crate::server::client_commands::supported_client_shell_method_names()
                 .iter()
+                // Settings of components this server runs, when it runs any.
+                .filter(|method| {
+                    !method.starts_with("component_settings.")
+                        || crate::protocol::session_terminal::offered()
+                })
                 .map(|method| (*method).to_owned())
                 .collect(),
         );

@@ -51,6 +51,9 @@ pub enum ResponseResult {
     SessionSnapshot {
         snapshot: Box<SessionSnapshot>,
     },
+    ComponentSettings {
+        components: Vec<super::component_settings::SettingsComponent>,
+    },
     SessionViewed {
         #[serde(default)]
         viewed: Option<super::session::ViewedLocation>,

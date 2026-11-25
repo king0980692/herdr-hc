@@ -259,6 +259,15 @@ mod tests {
             actual.remove("pane.pin").as_deref(),
             Some("1628599b96e67cc03260620609fa67e7a184c3c43b1ca8ff94876461397912cd")
         );
+        // Settings of the session's components (the files dock).
+        assert_eq!(
+            actual.remove("component_settings.list").as_deref(),
+            Some("599cd09f1cc94b44df0d81312fc3c10a7973945594e3a7150b31a68d03101c14")
+        );
+        assert_eq!(
+            actual.remove("component_settings.set").as_deref(),
+            Some("b32ae877bde6cecdf09b54858853984d4171b458fa0ef967081382f397a42ea3")
+        );
 
         assert_eq!(
             actual, expected,

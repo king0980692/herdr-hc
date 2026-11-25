@@ -100,6 +100,7 @@ Raw socket method names use dot notation:
 | Notification | `notification.show` |
 | Client | `client.window_title.set`, `client.window_title.clear` |
 | Session | `session.snapshot`, `session.viewed` |
+| Component settings | `component_settings.list`, `component_settings.set` |
 | Runtime | `runtime.source`, `runtime.request`, `runtime.machines` |
 | Workspace | `workspace.create`, `workspace.list`, `workspace.get`, `workspace.focus`, `workspace.rename`, `workspace.move`, `workspace.move_block`, `workspace.report_metadata`, `workspace.close` |
 | Worktree | `worktree.list`, `worktree.create`, `worktree.open`, `worktree.remove` |
@@ -134,6 +135,15 @@ as JSON for clients and agents that want a simple bootstrap command.
 Each client may show its own tab; this follows the client used last. Without
 an attached client it reports the server's own active tab, and `viewed` is
 null when there is none.
+
+`component_settings.list` returns the settings of the components the server
+runs for the session (herdr-native's files dock), each with its `id`, `title`
+and `settings`: rows with a `key`, `label`, optional `help`, a `kind`
+(`toggle`, `choice` with `options`, or `text`), the current `value`, and
+whether it is `enabled`. `component_settings.set` takes `component`, `key` and
+`value` (a boolean, an option, or a string) and answers with the updated list.
+The settings are kept where the server runs. A server without such components
+does not advertise these methods to client shells.
 
 Pane control methods use public pane ids such as `w1:p1`. Methods whose
 schema makes `pane_id` optional use the server's active focused pane when it is

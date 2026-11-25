@@ -2,6 +2,7 @@ use std::time::{Duration, Instant};
 
 mod agent_view;
 mod agents;
+mod component_settings;
 mod env;
 mod integrations;
 mod layouts;
@@ -1361,6 +1362,12 @@ impl App {
             }
             Method::SessionSnapshot(_) => return self.handle_session_snapshot(request.id),
             Method::SessionViewed(_) => return self.handle_session_viewed(request.id),
+            Method::ComponentSettingsList(_) => {
+                return self.handle_component_settings_list(request.id)
+            }
+            Method::ComponentSettingsSet(params) => {
+                return self.handle_component_settings_set(request.id, params)
+            }
             Method::WorkspaceList(_) => return self.handle_workspace_list(request.id),
             Method::WorkspaceGet(target) => return self.handle_workspace_get(request.id, target),
             Method::WorkspaceCreate(params) => {

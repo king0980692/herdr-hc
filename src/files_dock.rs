@@ -31,5 +31,9 @@ pub(crate) fn session_terminal_spec() -> Option<crate::app::session_terminal::Se
             "--dock".to_owned(),
         ],
         env,
+        settings: Some(crate::app::session_terminal::ComponentSettingsSpec {
+            title: "Files".to_owned(),
+            argv: vec![program.display().to_string(), COMMAND.to_owned()],
+        }),
     })
 }

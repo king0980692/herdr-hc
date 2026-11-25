@@ -318,6 +318,13 @@ fn every_dialog_and_menu_occludes_its_panel_not_the_whole_screen() {
             integration_messages: Vec::new(),
             loading_integrations: false,
             installing_integrations: false,
+            files_available: false,
+            components: Vec::new(),
+            loading_components: false,
+            component_message: None,
+            editing_text: None,
+            dock_visible: true,
+            dock_width: 32,
         }),
     ];
     for overlay in overlays {

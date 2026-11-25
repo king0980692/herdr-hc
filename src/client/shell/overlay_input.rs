@@ -459,6 +459,12 @@ impl ClientShellState {
                 rename.input.insert(text);
                 true
             }
+            Some(ClientShellOverlay::Settings(settings)) if settings.editing_text.is_some() => {
+                if let Some((_, _, input)) = settings.editing_text.as_mut() {
+                    input.insert(text);
+                }
+                true
+            }
             Some(ClientShellOverlay::Help(help)) if help.search_focused => {
                 if help.query.insert(text) {
                     help.scroll = 0;

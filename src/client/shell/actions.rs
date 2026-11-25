@@ -840,7 +840,8 @@ impl ClientShellState {
                 return (repaint, Vec::new());
             }
             kind @ (PendingEndpointKind::IntegrationList
-            | PendingEndpointKind::IntegrationInstall) => {
+            | PendingEndpointKind::IntegrationInstall
+            | PendingEndpointKind::ComponentSettings) => {
                 return self.handle_settings_endpoint_result(kind, result);
             }
             kind => {

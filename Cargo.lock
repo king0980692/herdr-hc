@@ -949,7 +949,7 @@ dependencies = [
 [[package]]
 name = "herdr-sidebar"
 version = "0.16.5"
-source = "git+https://github.com/king0980692/herdr-sidebar?rev=fe5b5c701b8086a2e1ccd04e062dfe2b42aafdaa#fe5b5c701b8086a2e1ccd04e062dfe2b42aafdaa"
+source = "git+https://github.com/king0980692/herdr-sidebar?rev=2f825482a89d463ee223ee1996561e04e4061b4c#2f825482a89d463ee223ee1996561e04e4061b4c"
 dependencies = [
  "base64",
  "crossterm",

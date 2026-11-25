@@ -72,7 +72,7 @@ pub(super) fn render_settings_overlay(
             .any(|integration| integration.state == crate::api::schema::IntegrationState::Outdated);
     let mut tab_x = inner.x;
     let mut tab_hits = Vec::new();
-    for section in ClientSettingsSection::ALL {
+    for section in &settings.sections() {
         let badge = *section == ClientSettingsSection::Integrations && integration_badge;
         let label = if badge {
             format!(" ● {} ", section.label())
@@ -197,6 +197,15 @@ pub(super) fn render_settings_overlay(
         ClientSettingsSection::Integrations => {
             render_integrations(buffer, content, settings, palette);
         }
+        ClientSettingsSection::Files => {
+            super::super::files_settings::render(
+                buffer,
+                content,
+                settings,
+                palette,
+                &mut choice_hits,
+            );
+        }
     }
 
     let installable = settings
@@ -211,10 +220,10 @@ pub(super) fn render_settings_overlay(
         button(
             buffer,
             primary,
-            if settings.section == ClientSettingsSection::Integrations {
-                " ↵ install "
-            } else {
-                " ↵ apply "
+            match settings.section {
+                ClientSettingsSection::Integrations => " ↵ install ",
+                ClientSettingsSection::Files => " ↵ change ",
+                _ => " ↵ apply ",
             },
             Style::default()
                 .fg(contrast(palette))

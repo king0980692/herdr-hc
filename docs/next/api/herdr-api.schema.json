@@ -1759,6 +1759,23 @@
           ],
           "type": "object"
         },
+        "ComponentSettingSetParams": {
+          "properties": {
+            "component": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            },
+            "value": true
+          },
+          "required": [
+            "component",
+            "key",
+            "value"
+          ],
+          "type": "object"
+        },
         "EmptyParams": {
           "type": "object"
         },
@@ -4971,6 +4988,38 @@
         {
           "properties": {
             "method": {
+              "const": "component_settings.list",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "component_settings.set",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/ComponentSettingSetParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "workspace.create",
               "type": "string"
             },
@@ -6894,6 +6943,97 @@
             "no_foreground_client"
           ],
           "type": "string"
+        },
+        "ComponentSetting": {
+          "properties": {
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "help": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "key": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/schemas/success_response/$defs/ComponentSettingKind"
+            },
+            "label": {
+              "type": "string"
+            },
+            "value": true
+          },
+          "required": [
+            "key",
+            "label",
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        "ComponentSettingKind": {
+          "oneOf": [
+            {
+              "properties": {
+                "type": {
+                  "const": "toggle",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "options": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "choice",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "options"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "type": {
+                  "const": "text",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A kind this client does not know: shown, not changed.",
+              "properties": {
+                "type": {
+                  "const": "unknown",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            }
+          ]
         },
         "ConfigReloadStatus": {
           "enum": [
@@ -9403,6 +9543,25 @@
             },
             {
               "properties": {
+                "components": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/SettingsComponent"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "component_settings",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "components"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
                 "type": {
                   "const": "session_viewed",
                   "type": "string"
@@ -10833,6 +10992,29 @@
             "panes",
             "layouts",
             "agents"
+          ],
+          "type": "object"
+        },
+        "SettingsComponent": {
+          "properties": {
+            "id": {
+              "description": "What the component is (`files`).",
+              "type": "string"
+            },
+            "settings": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/ComponentSetting"
+              },
+              "type": "array"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "title",
+            "settings"
           ],
           "type": "object"
         },

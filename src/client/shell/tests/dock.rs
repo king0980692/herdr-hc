@@ -187,3 +187,131 @@ fn dragging_the_separator_resizes_the_dock_within_bounds() {
     ]);
     assert_eq!(state.dock_width, super::super::dock::MIN_WIDTH);
 }
+
+fn files_settings_result(follow: bool, editor: &str) -> crate::api::schema::ResponseResult {
+    use crate::api::schema::{ComponentSetting, ComponentSettingKind, SettingsComponent};
+    crate::api::schema::ResponseResult::ComponentSettings {
+        components: vec![SettingsComponent {
+            id: "files".into(),
+            title: "Files".into(),
+            settings: vec![
+                ComponentSetting {
+                    key: "follow_cwd".into(),
+                    label: "Follow the pane's folder".into(),
+                    help: None,
+                    kind: ComponentSettingKind::Toggle,
+                    value: serde_json::Value::Bool(follow),
+                    enabled: true,
+                },
+                ComponentSetting {
+                    key: "color_theme".into(),
+                    label: "Color theme".into(),
+                    help: None,
+                    kind: ComponentSettingKind::Choice {
+                        options: vec!["vscode".into(), "light".into()],
+                    },
+                    value: serde_json::Value::String("vscode".into()),
+                    enabled: true,
+                },
+                ComponentSetting {
+                    key: "custom_editor".into(),
+                    label: "Custom editor".into(),
+                    help: None,
+                    kind: ComponentSettingKind::Text,
+                    value: serde_json::Value::String(editor.into()),
+                    enabled: true,
+                },
+            ],
+        }],
+    }
+}
+
+fn the_set(input: &ClientShellInput) -> (String, crate::api::schema::ComponentSettingSetParams) {
+    let [ClientShellAction::Endpoint { request, .. }] = &input.actions[..] else {
+        panic!("one endpoint request: {:?}", input.actions.len());
+    };
+    let crate::api::schema::Method::ComponentSettingsSet(params) = &request.method else {
+        panic!("a component setting change");
+    };
+    (request.id.clone(), params.clone())
+}
+
+#[test]
+fn the_files_settings_section_changes_the_dock_and_the_endpoints_settings() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    // Without the endpoint method: no Files section.
+    state.open_settings_overlay();
+    let Some(ClientShellOverlay::Settings(settings)) = state.overlay.as_ref() else {
+        panic!("settings");
+    };
+    assert!(!settings.sections().contains(&ClientSettingsSection::Files));
+    state.cancel_settings_overlay();
+
+    state.set_endpoint_methods(Some(vec![
+        "component_settings.list".into(),
+        "component_settings.set".into(),
+    ]));
+    state.open_settings_overlay();
+    state.compose(150, 30).expect("settings");
+    for _ in 0..4 {
+        state.handle_input_bytes(b"\t");
+    }
+    let files = state.handle_input_bytes(b"\t");
+    let [ClientShellAction::Endpoint { request, .. }] = &files.actions[..] else {
+        panic!("the Files section asks for the settings");
+    };
+    assert!(matches!(
+        request.method,
+        crate::api::schema::Method::ComponentSettingsList(_)
+    ));
+    let request_id = request.id.clone();
+    assert!(
+        state
+            .handle_endpoint_result("boot-1", &request_id, Ok(files_settings_result(true, "")))
+            .0
+    );
+    let frame = state.compose(150, 30).expect("files section");
+    let text = frame_lines(&frame).join("\n");
+    for expected in [
+        "Show the files dock",
+        "Dock width",
+        "Follow the pane's folder",
+        "Color theme",
+        "not set",
+    ] {
+        assert!(text.contains(expected), "{expected:?} in\n{text}");
+    }
+
+    // The dock's own rows change this client.
+    let width = state.dock_width;
+    state.handle_input_bytes(b"j");
+    state.handle_input_bytes(b"\r");
+    assert!(state.dock_width > width);
+
+    // A toggle: the endpoint is asked to flip it.
+    state.handle_input_bytes(b"j");
+    let (id, params) = the_set(&state.handle_input_bytes(b"\r"));
+    assert_eq!(
+        (params.component.as_str(), params.key.as_str()),
+        ("files", "follow_cwd")
+    );
+    assert_eq!(params.value, serde_json::Value::Bool(false));
+    state.handle_endpoint_result("boot-1", &id, Ok(files_settings_result(false, "")));
+
+    // A choice: the next option.
+    state.handle_input_bytes(b"j");
+    let (id, params) = the_set(&state.handle_input_bytes(b"\r"));
+    assert_eq!(params.value, serde_json::Value::String("light".into()));
+    state.handle_endpoint_result("boot-1", &id, Ok(files_settings_result(false, "")));
+
+    // Text: typed in place, saved by Enter.
+    state.handle_input_bytes(b"j");
+    let edit = state.handle_input_bytes(b"\r");
+    assert!(edit.actions.is_empty());
+    state.handle_input_bytes(b"nvim");
+    let (_, params) = the_set(&state.handle_input_bytes(b"\r"));
+    assert_eq!(params.key, "custom_editor");
+    assert_eq!(params.value, serde_json::Value::String("nvim".into()));
+}
