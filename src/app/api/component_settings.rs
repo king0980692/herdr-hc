@@ -155,6 +155,7 @@ esac"#,
                 title: "Files".into(),
                 argv: vec!["sh".into(), "-c".into(), script, "component".into()],
             }),
+            replaces_plugin: None,
         });
         app
     }

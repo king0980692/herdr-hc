@@ -23,6 +23,9 @@ pub(crate) struct SessionTerminalSpec {
     /// Its settings for the client's settings page: this command with
     /// `--settings-list`, or `--settings-set <key> <json>`.
     pub settings: Option<ComponentSettingsSpec>,
+    /// A plugin it replaces: while that is still enabled, its first start
+    /// says how to turn the plugin off.
+    pub replaces_plugin: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -49,6 +52,7 @@ pub(crate) struct SessionTerminalLife {
     exits: VecDeque<Instant>,
     restart_at: Option<Instant>,
     failed: bool,
+    replaced_plugin_noted: bool,
 }
 
 impl SessionTerminalLife {
@@ -197,7 +201,33 @@ impl App {
             cols,
             rows,
         });
+        if let Some(plugin) = spec.replaces_plugin {
+            self.notify_replaced_plugin(&plugin);
+        }
         Ok(())
+    }
+
+    /// Once a session: the plugin this replaces is still enabled.
+    fn notify_replaced_plugin(&mut self, plugin: &str) {
+        if self.session_terminal_life.replaced_plugin_noted
+            || !self
+                .state
+                .installed_plugins
+                .get(plugin)
+                .is_some_and(|info| info.enabled)
+        {
+            return;
+        }
+        self.session_terminal_life.replaced_plugin_noted = true;
+        self.state.toast = Some(crate::app::state::ToastNotification {
+            kind: crate::app::state::ToastKind::UpdateInstalled,
+            title: format!("{plugin} is built in now"),
+            context: format!("turn the plugin off: herdr plugin disable {plugin}"),
+            position: None,
+            target: None,
+        });
+        self.render_dirty.request_generic();
+        self.render_notify.notify_one();
     }
 
     pub(crate) fn resize_session_terminal(&mut self, cols: u16, rows: u16) {
@@ -255,6 +285,7 @@ impl App {
             argv: vec!["true".into()],
             env: Vec::new(),
             settings: None,
+            replaces_plugin: None,
         });
         self.state.session_terminal = Some(SessionTerminalState {
             pane_id,
@@ -270,6 +301,44 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_still_enabled_replaced_plugin_is_noted_once() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &crate::config::Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        let plugin = |enabled: bool| -> crate::api::schema::InstalledPluginInfo {
+            serde_json::from_value(serde_json::json!({
+                "plugin_id": "old-sidebar", "name": "old", "version": "1",
+                "manifest_path": "", "plugin_root": "", "enabled": enabled,
+                "source": {"kind": "local", "path": "/x"}
+            }))
+            .expect("a plugin record")
+        };
+        // Disabled: nothing to say.
+        app.state
+            .installed_plugins
+            .insert("old-sidebar".into(), plugin(false));
+        app.notify_replaced_plugin("old-sidebar");
+        assert!(app.state.toast.is_none());
+        // Enabled: said once.
+        app.state
+            .installed_plugins
+            .insert("old-sidebar".into(), plugin(true));
+        app.notify_replaced_plugin("old-sidebar");
+        let toast = app.state.toast.take().expect("a notice");
+        assert!(
+            toast.context.contains("plugin disable old-sidebar"),
+            "{toast:?}"
+        );
+        app.notify_replaced_plugin("old-sidebar");
+        assert!(app.state.toast.is_none());
+    }
 
     #[test]
     fn exits_wait_longer_each_time_and_three_in_a_minute_fail_until_retried() {

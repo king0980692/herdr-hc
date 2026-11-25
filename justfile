@@ -6,6 +6,8 @@ python := if os() == "windows" { "python" } else { "python3" }
 # Run tests
 test:
     cargo nextest run --locked --status-level fail --final-status-level fail --failure-output final --success-output never
+    # The files dock (herdr-native's built-in sidebar) builds only with native-entry.
+    cargo nextest run --locked --features native-entry -E 'test(files_dock)' --status-level fail --final-status-level fail --failure-output final --success-output never
     just maintenance-test
     just ui-hot-path-architecture-test
     just integration-assets-test
