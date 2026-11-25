@@ -111,6 +111,16 @@ impl TerminalState {
             .is_some_and(|snapshot| crate::hc_entry::is_hidden(&snapshot.terminal.facts))
     }
 
+    /// An hc program this viewer has lost touch with (its core or the
+    /// connection to it is gone): what it shows is its last screen.
+    pub(crate) fn hc_disconnected(&self) -> bool {
+        self.hc_authority
+            && self
+                .hc_snapshot
+                .as_ref()
+                .is_some_and(|snapshot| !snapshot.connected || !snapshot.attached)
+    }
+
     /// An hc pane's pin, from the core's labels: `None` off hc, else whether
     /// it is pinned and when (empty when another app pinned it).
     pub(crate) fn hc_pin(&self) -> Option<Option<String>> {

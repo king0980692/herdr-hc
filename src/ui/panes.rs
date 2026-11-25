@@ -488,6 +488,32 @@ fn compute_pane_infos(
     )
 }
 
+/// One line at the top of a pane whose hc program is out of reach.
+fn render_disconnected_banner(
+    app: &AppState,
+    frame: &mut Frame,
+    area: Rect,
+    terminal: &crate::terminal::TerminalState,
+) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let reason = terminal
+        .restore_error
+        .as_deref()
+        .unwrap_or("its machine is out of reach");
+    let line = Rect::new(area.x, area.y, area.width, 1);
+    let style = Style::default()
+        .fg(app.palette.panel_bg)
+        .bg(app.palette.yellow)
+        .add_modifier(Modifier::BOLD);
+    frame.render_widget(ratatui::widgets::Clear, line);
+    frame.render_widget(
+        Paragraph::new(format!(" ⚠ disconnected: {reason} · reconnecting…")).style(style),
+        line,
+    );
+}
+
 pub(super) fn render_panes(
     app: &AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
@@ -511,6 +537,17 @@ pub(super) fn render_panes(
                 && app.pane_exposes_host_cursor(ws_idx, info.id);
             rt.render(frame, info.inner_rect, show_cursor);
             render_pane_scrollbar(app, frame, info, rt);
+            // A program on a core this viewer lost: its last screen stays, so
+            // say so over it rather than show it as if it were live.
+            if let Some(terminal) = ws
+                .tabs
+                .get(target.tab_index)
+                .and_then(|tab| tab.terminal_id(info.id))
+                .and_then(|id| app.terminals.get(id))
+                .filter(|terminal| terminal.hc_disconnected())
+            {
+                render_disconnected_banner(app, frame, info.inner_rect, terminal);
+            }
         } else if let Some(reason) = ws
             .tabs
             .get(target.tab_index)
@@ -996,6 +1033,78 @@ mod tests {
         let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
         assert!(text.contains("Saved directory is unavailable."));
         assert!(cursor.is_none_or(|cursor| !cursor.visible));
+    }
+
+    #[tokio::test]
+    async fn a_pane_whose_hc_core_is_lost_says_so_over_its_last_screen() {
+        let mut app = AppState::test_new();
+        let mut workspace = Workspace::test_new("remote");
+        let pane_id = workspace.tabs[0].root_pane;
+        workspace.insert_test_runtime(
+            pane_id,
+            TerminalRuntime::test_with_screen_bytes(80, 24, b"first line\r\nlast output"),
+        );
+        app.workspaces = vec![workspace];
+        app.active = Some(0);
+        app.ensure_test_terminals();
+        let terminal_id = app.workspaces[0].terminal_id(pane_id).unwrap().clone();
+        let snapshot = |connected: bool| crate::hc::state::RuntimeSnapshot {
+            binding: crate::hc::state::TerminalBinding {
+                core_id: "core".into(),
+                address: "t1".into(),
+            },
+            terminal: serde_json::from_value(serde_json::json!({"address": "t1"})).unwrap(),
+            connected,
+            attached: connected,
+            error: (!connected).then(|| "shared hc machine is unreachable".into()),
+        };
+        let render = |app: &AppState| {
+            let area = Rect::new(0, 0, 80, 24);
+            let layout = crate::ui::compute_tab_surface_for(
+                app,
+                &TerminalRuntimeRegistry::new(),
+                Some(crate::ui::TabSurfaceTarget {
+                    workspace_index: 0,
+                    tab_index: 0,
+                }),
+                area,
+                false,
+                Default::default(),
+            );
+            let (buffer, _, _, _) = crate::server::render_stream::render_tab_surface_virtual(
+                app,
+                &TerminalRuntimeRegistry::new(),
+                layout,
+                area,
+            );
+            buffer
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+        };
+        {
+            let terminal = app.terminals.get_mut(&terminal_id).unwrap();
+            terminal.hc_authority = true;
+            terminal.apply_hc_snapshot(snapshot(true));
+        }
+        let live = render(&app);
+        assert!(live.contains("last output"), "{live}");
+        assert!(!live.contains("disconnected"));
+
+        app.terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .apply_hc_snapshot(snapshot(false));
+        let lost = render(&app);
+        assert!(
+            lost.contains("disconnected: shared hc machine is unreachable"),
+            "{lost}"
+        );
+        assert!(
+            lost.contains("last output"),
+            "the last screen stays under it"
+        );
     }
 
     #[test]
