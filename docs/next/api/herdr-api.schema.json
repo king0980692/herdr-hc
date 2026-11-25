@@ -4955,6 +4955,22 @@
         {
           "properties": {
             "method": {
+              "const": "session.viewed",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "workspace.create",
               "type": "string"
             },
@@ -9388,6 +9404,29 @@
             {
               "properties": {
                 "type": {
+                  "const": "session_viewed",
+                  "type": "string"
+                },
+                "viewed": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/schemas/success_response/$defs/ViewedLocation"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "type": {
                   "const": "workspace_info",
                   "type": "string"
                 },
@@ -10840,6 +10879,34 @@
             "focused",
             "pane_count",
             "agent_status"
+          ],
+          "type": "object"
+        },
+        "ViewedLocation": {
+          "description": "What the session's foreground client is looking at: its workspace and\ntab, the tab's focused pane, and that pane's working directory.",
+          "properties": {
+            "cwd": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "tab_id": {
+              "type": "string"
+            },
+            "workspace_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "workspace_id",
+            "tab_id"
           ],
           "type": "object"
         },

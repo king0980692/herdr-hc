@@ -51,6 +51,10 @@ pub enum ResponseResult {
     SessionSnapshot {
         snapshot: Box<SessionSnapshot>,
     },
+    SessionViewed {
+        #[serde(default)]
+        viewed: Option<super::session::ViewedLocation>,
+    },
     WorkspaceInfo {
         workspace: WorkspaceInfo,
     },

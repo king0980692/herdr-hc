@@ -114,6 +114,8 @@ pub struct App {
     /// What the session terminal runs (the files dock), when this build has one.
     pub(crate) session_terminal_spec: Option<session_terminal::SessionTerminalSpec>,
     pub(crate) session_terminal_life: session_terminal::SessionTerminalLife,
+    /// The tab the foreground client shows (public id), as the server tracks.
+    pub(crate) viewed_tab_id: Option<String>,
     pub(crate) terminal_runtimes: crate::terminal::TerminalRuntimeRegistry,
     // Drop the source executor after attachment runtimes; stopping it never kills hc programs.
     pub(crate) terminal_factory: crate::terminal::TerminalFactory,
@@ -685,6 +687,7 @@ impl App {
             seen_turns: hc::SeenTurns::default(),
             session_terminal_spec: None,
             session_terminal_life: session_terminal::SessionTerminalLife::default(),
+            viewed_tab_id: None,
             hc_agent_sessions: hc::HcAgentSessions::new(
                 config.session.resume_agents_on_restore,
                 Duration::from_millis(config.session.startup_per_agent_delay_ms.into()),

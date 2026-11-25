@@ -309,6 +309,52 @@ fn event_by_kind<'a>(events: &'a [serde_json::Value], kind: &str) -> &'a serde_j
 }
 
 #[test]
+fn session_viewed_reports_the_tab_in_view_with_its_pane_and_directory() {
+    let _lock = test_lock();
+    let base = unique_test_dir();
+    let config_home = base.join("config");
+    let runtime_dir = base.join("runtime");
+    let socket_path = runtime_dir.join("herdr.sock");
+    let project = base.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+
+    let child = spawn_herdr(&config_home, &runtime_dir, &socket_path);
+    wait_for_socket(&socket_path, Duration::from_secs(5));
+    let created = send_request(
+        &socket_path,
+        &format!(
+            r#"{{"id":"ws","method":"workspace.create","params":{{"cwd":"{}","focus":true}}}}"#,
+            project.display()
+        ),
+    );
+    let workspace_id = created["result"]["workspace"]["workspace_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{created}"))
+        .to_owned();
+
+    // No client attached: the server's own active tab.
+    let viewed = send_request(
+        &socket_path,
+        r#"{"id":"viewed","method":"session.viewed","params":{}}"#,
+    );
+    assert_eq!(viewed["result"]["type"], "session_viewed", "{viewed}");
+    let location = &viewed["result"]["viewed"];
+    assert_eq!(location["workspace_id"], workspace_id, "{viewed}");
+    assert!(location["tab_id"]
+        .as_str()
+        .is_some_and(|tab| tab.starts_with(&workspace_id)));
+    assert!(location["pane_id"].as_str().is_some(), "{viewed}");
+    let cwd = std::path::PathBuf::from(location["cwd"].as_str().unwrap_or_default());
+    assert_eq!(
+        cwd.canonicalize().ok(),
+        project.canonicalize().ok(),
+        "{viewed}"
+    );
+
+    cleanup_spawned_herdr(child, base);
+}
+
+#[test]
 fn ping_over_socket_returns_version() {
     let _lock = test_lock();
     let base = unique_test_dir();

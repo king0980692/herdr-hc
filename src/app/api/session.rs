@@ -4,6 +4,42 @@ use crate::app::App;
 use super::responses::encode_success;
 
 impl App {
+    pub(super) fn handle_session_viewed(&mut self, id: String) -> String {
+        encode_success(
+            id,
+            ResponseResult::SessionViewed {
+                viewed: self.viewed_location(),
+            },
+        )
+    }
+
+    /// The tab the foreground client shows (the server's own active tab
+    /// when no client says), its focused pane and that pane's directory.
+    pub(crate) fn viewed_location(&self) -> Option<crate::api::schema::ViewedLocation> {
+        let (ws_idx, tab_idx) = self
+            .viewed_tab_id
+            .as_deref()
+            .and_then(|id| self.parse_tab_id(id))
+            .or_else(|| {
+                let ws_idx = self.state.active?;
+                Some((
+                    ws_idx,
+                    self.state.workspaces.get(ws_idx)?.active_tab_index(),
+                ))
+            })?;
+        let workspace = self.state.workspaces.get(ws_idx)?;
+        let tab = workspace.tabs.get(tab_idx)?;
+        let pane = tab.layout.focused();
+        Some(crate::api::schema::ViewedLocation {
+            workspace_id: self.public_workspace_id(ws_idx),
+            tab_id: self.public_tab_id(ws_idx, tab_idx)?,
+            pane_id: self.public_pane_id(ws_idx, pane),
+            cwd: tab
+                .cwd_for_pane(pane, &self.state.terminals, &self.terminal_runtimes)
+                .map(|cwd| cwd.display().to_string()),
+        })
+    }
+
     pub(super) fn handle_session_snapshot(&mut self, id: String) -> String {
         encode_success(
             id,

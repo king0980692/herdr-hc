@@ -5,6 +5,18 @@ use super::panes::{PaneInfo, PaneLayoutSnapshot};
 use super::tabs::TabInfo;
 use super::workspaces::WorkspaceInfo;
 
+/// What the session's foreground client is looking at: its workspace and
+/// tab, the tab's focused pane, and that pane's working directory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ViewedLocation {
+    pub workspace_id: String,
+    pub tab_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SessionSnapshot {
     pub version: String,

@@ -397,6 +397,14 @@ impl HeadlessServer {
     /// Tells the app which tabs clients look at, and marks their programs'
     /// turns seen (herdr.seen, shared with herdr.app).
     pub(super) fn mark_viewed_hc_turns_seen(&mut self) {
+        // What the foreground shell shows, for `session.viewed`.
+        self.app.viewed_tab_id = self
+            .foreground_client_id
+            .and_then(|id| self.shell_tab_id_for_client(id))
+            .or_else(|| {
+                crate::server::clients::latest_shell_client(&self.clients)
+                    .and_then(|id| self.shell_tab_id_for_client(id))
+            });
         let tabs = self.focused_shell_tabs();
         self.app.set_viewed_tabs(tabs);
         self.app.mark_hc_turns_seen();
