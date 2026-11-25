@@ -189,7 +189,16 @@ impl App {
                 self.learn_hc_placement(&terminal_id, labels);
             }
         }
-        let finished = snapshot.is_program_exit()
+        // A program ends when it exits; this viewer's own pane (a plugin's
+        // sidebar) also when it is killed: nothing would ever resume it.
+        let finished = (snapshot.is_program_exit()
+            || (terminal.is_hc_hidden()
+                && snapshot
+                    .terminal
+                    .facts
+                    .get("state")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("finished")))
             && terminal.hc_snapshot.as_ref().is_some_and(|old| {
                 old.terminal
                     .facts

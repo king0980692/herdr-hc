@@ -69,11 +69,12 @@ pub(crate) fn session_terminal_spec() -> Option<crate::app::session_terminal::Se
     })
 }
 
-/// herdr-native on another machine: the one in its PATH (`~/.local/bin`
-/// first), else the build this viewer's bridge installed there. Its files
-/// dock keeps its state there. `$@`: the sidebar's arguments.
+/// herdr-native on another machine: the build this viewer's bridge
+/// installed there (the viewer's own release), else one of its own
+/// (`~/.local/bin`, PATH). Its files dock keeps its state there. `$@`: the
+/// sidebar's arguments.
 const REMOTE_SIDEBAR: &str = r#"bin=""
-for candidate in "$HOME/.local/bin/herdr-native" "$HOME/.local/share/herdr-native/bin/herdr-native"; do
+for candidate in "$HOME/.local/share/herdr-native/bin/herdr-native" "$HOME/.local/bin/herdr-native"; do
     if [ -x "$candidate" ]; then bin=$candidate; break; fi
 done
 [ -n "$bin" ] || bin=$(command -v herdr-native) || {

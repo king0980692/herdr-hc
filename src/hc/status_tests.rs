@@ -211,3 +211,51 @@ async fn hc_done_shows_until_its_turn_is_seen_and_a_look_marks_it_seen() {
     app.mark_hc_turns_seen();
     assert_eq!(app.seen_turns_written_for_test("t1"), Some(4));
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_killed_plugin_pane_closes_but_a_killed_program_stays_to_resume() {
+    for (hidden, closes) in [(true, true), (false, false)] {
+        let (client, mut server) = tests::test_client();
+        let (runtime, _, _) = runtime_tests::attach(client, &mut server).await;
+        let mut app = app_tests::app(TerminalFactory::Unavailable("test source".into()));
+        app_tests::restore_into(
+            &mut app,
+            &app_tests::saved(json!({"core_id":"core-test","address":"t1"})),
+        );
+        let pane = app.state.workspaces[0].tabs[0].root_pane;
+        let id = app.state.workspaces[0].terminal_id(pane).unwrap().clone();
+        let labels = if hidden {
+            json!({"herdr-native.hidden": "1", "herdr-native.role": "plugin"})
+        } else {
+            json!({})
+        };
+        let mut live = runtime.hc_snapshot().unwrap();
+        live.terminal.facts.insert("labels".into(), labels.clone());
+        live.terminal.facts.insert("state".into(), json!("live"));
+        app.state
+            .terminals
+            .get_mut(&id)
+            .unwrap()
+            .apply_hc_snapshot(live.clone());
+        app.terminal_runtimes.insert(id.clone(), runtime);
+        let token = app.terminal_runtimes.hc_token(&id).unwrap();
+
+        let mut killed = live;
+        killed
+            .terminal
+            .facts
+            .insert("state".into(), json!("finished"));
+        killed
+            .terminal
+            .facts
+            .insert("reason".into(), json!("killed"));
+        app.apply_hc_update(id.clone(), token, killed);
+        let still_there = app.state.workspaces.iter().any(|workspace| {
+            workspace
+                .tabs
+                .iter()
+                .any(|tab| tab.panes.contains_key(&pane))
+        });
+        assert_eq!(!still_there, closes, "hidden={hidden}");
+    }
+}
