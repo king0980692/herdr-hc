@@ -30,42 +30,6 @@ fn seed_from_plugin(dock_dir: &std::path::Path, plugin_dir: &std::path::Path) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_dock_starts_from_the_plugins_state_only_once() {
-        let base = std::env::temp_dir().join(format!(
-            "herdr-files-dock-seed-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let (plugin, dock) = (base.join("plugin"), base.join("dock"));
-        std::fs::create_dir_all(&plugin).unwrap();
-        std::fs::write(plugin.join("roots.json"), "{\"a\":1}").unwrap();
-        std::fs::write(plugin.join("state.json"), "{}").unwrap();
-        std::fs::write(plugin.join("other.lock"), "").unwrap();
-        seed_from_plugin(&dock, &plugin);
-        assert_eq!(
-            std::fs::read_to_string(dock.join("roots.json")).unwrap(),
-            "{\"a\":1}"
-        );
-        assert!(!dock.join("other.lock").exists());
-        // The dock's own state wins from then on.
-        std::fs::write(plugin.join("roots.json"), "{\"b\":2}").unwrap();
-        seed_from_plugin(&dock, &plugin);
-        assert_eq!(
-            std::fs::read_to_string(dock.join("roots.json")).unwrap(),
-            "{\"a\":1}"
-        );
-        let _ = std::fs::remove_dir_all(base);
-    }
-}
-
 /// Runs the sidebar with the arguments after `sidebar`. It runs itself again
 /// (preview viewer, editor, transfer servers) through this same command.
 pub(crate) fn run(raw_args: &[String]) -> std::io::Result<()> {
@@ -101,4 +65,40 @@ pub(crate) fn session_terminal_spec() -> Option<crate::app::session_terminal::Se
         }),
         replaces_plugin: Some(REPLACED_PLUGIN.to_owned()),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_dock_starts_from_the_plugins_state_only_once() {
+        let base = std::env::temp_dir().join(format!(
+            "herdr-files-dock-seed-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let (plugin, dock) = (base.join("plugin"), base.join("dock"));
+        std::fs::create_dir_all(&plugin).unwrap();
+        std::fs::write(plugin.join("roots.json"), "{\"a\":1}").unwrap();
+        std::fs::write(plugin.join("state.json"), "{}").unwrap();
+        std::fs::write(plugin.join("other.lock"), "").unwrap();
+        seed_from_plugin(&dock, &plugin);
+        assert_eq!(
+            std::fs::read_to_string(dock.join("roots.json")).unwrap(),
+            "{\"a\":1}"
+        );
+        assert!(!dock.join("other.lock").exists());
+        // The dock's own state wins from then on.
+        std::fs::write(plugin.join("roots.json"), "{\"b\":2}").unwrap();
+        seed_from_plugin(&dock, &plugin);
+        assert_eq!(
+            std::fs::read_to_string(dock.join("roots.json")).unwrap(),
+            "{\"a\":1}"
+        );
+        let _ = std::fs::remove_dir_all(base);
+    }
 }
