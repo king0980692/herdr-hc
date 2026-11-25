@@ -26,13 +26,17 @@ include = [
 hc-entry = []
 # Build `herdr-native`: the Native frontend as its own app (its own app
 # directory), so it runs beside an installed herdr from any terminal.
-native-entry = []
+native-entry = ["files-dock"]
+# The files dock: herdr-sidebar built in, run as `herdr-native sidebar`.
+files-dock = ["dep:herdr-sidebar"]
 
 [workspace]
 members = ["crates/ghostty-vt"]
 default-members = [".", "crates/ghostty-vt"]
 
 [dependencies]
+# The files dock's sidebar (herdr-native only, `files-dock`).
+herdr-sidebar = { git = "https://github.com/king0980692/herdr-sidebar", rev = "a13b73abf199cfabc6cc58482936af05cb47a0d4", optional = true }
 ghostty-vt = { path = "crates/ghostty-vt" }
 base64 = "0.22.1"
 bincode = { version = "2", features = ["serde"] }

@@ -23,6 +23,8 @@ mod config;
 mod copy_mode;
 mod detect;
 mod events;
+#[cfg(feature = "files-dock")]
+mod files_dock;
 use ghostty_vt as ghostty;
 mod bridge;
 mod handoff_runtime;
@@ -526,6 +528,12 @@ fn main() -> io::Result<()> {
             std::process::exit(2);
         }
     };
+    // `herdr-native sidebar …`: the built-in sidebar, run as its own program
+    // (in the files dock, or as a plugin pane), before anything of herdr's.
+    #[cfg(feature = "files-dock")]
+    if raw_args.get(1).map(String::as_str) == Some(files_dock::COMMAND) {
+        return files_dock::run(&raw_args);
+    }
     if native_entry::ENABLED {
         native_entry::drop_foreign_pane_env();
     }
