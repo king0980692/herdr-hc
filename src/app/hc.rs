@@ -197,12 +197,18 @@ impl App {
                     .and_then(serde_json::Value::as_str)
                     == Some("live")
             });
-        if finished
-            && self
-                .state
-                .session_terminal
-                .as_ref()
-                .is_some_and(|session| session.terminal_id == terminal_id)
+        // The session terminal ends however it ends (exited or killed).
+        if self
+            .state
+            .session_terminal
+            .as_ref()
+            .is_some_and(|session| session.terminal_id == terminal_id)
+            && snapshot
+                .terminal
+                .facts
+                .get("state")
+                .and_then(serde_json::Value::as_str)
+                == Some("finished")
         {
             self.handle_session_terminal_exit(std::time::Instant::now());
             return (true, Vec::new());
