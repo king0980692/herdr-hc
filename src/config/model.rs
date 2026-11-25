@@ -460,6 +460,11 @@ pub struct KeysConfig {
     /// Pin the focused pane's agent to the top of the agents panel, or unpin
     /// it. Default: "prefix+shift+a"
     pub toggle_agent_pin: BindingConfig,
+    /// Show or hide the files dock on the right. Default: "prefix+f"
+    pub toggle_dock: BindingConfig,
+    /// Move the keys into the files dock, or back to the pane. Default:
+    /// "prefix+shift+f"
+    pub focus_dock: BindingConfig,
     /// Optional indexed shortcuts expanded over number keys 1-9.
     pub indexed: IndexedKeysConfig,
     /// Prefix-mode custom command bindings.
@@ -598,6 +603,8 @@ pub(crate) struct KeysConfigOverlay {
     toggle_sidebar: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     toggle_agent_pin: Option<BindingConfig>,
+    toggle_dock: Option<BindingConfig>,
+    focus_dock: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     indexed: Option<IndexedKeysConfig>,
     #[serde(skip_serializing)]
@@ -711,6 +718,8 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(resize_pane_right);
         apply_field!(toggle_sidebar);
         apply_field!(toggle_agent_pin);
+        apply_field!(toggle_dock);
+        apply_field!(focus_dock);
         apply_field!(indexed);
         apply_field!(command);
 
@@ -817,6 +826,8 @@ impl KeysConfig {
         copy_effective_action_field!(resize_pane_right, keybinds.resize_pane_right);
         copy_effective_action_field!(toggle_sidebar, keybinds.toggle_sidebar);
         copy_effective_action_field!(toggle_agent_pin, keybinds.toggle_agent_pin);
+        copy_effective_action_field!(toggle_dock, keybinds.toggle_dock);
+        copy_effective_action_field!(focus_dock, keybinds.focus_dock);
         copy_user_field!(indexed);
 
         profile
@@ -1192,6 +1203,8 @@ impl Default for KeysConfig {
             resize_pane_right: BindingConfig::empty(),
             toggle_sidebar: BindingConfig::one("prefix+b"),
             toggle_agent_pin: BindingConfig::one("prefix+shift+a"),
+            toggle_dock: BindingConfig::one("prefix+f"),
+            focus_dock: BindingConfig::one("prefix+shift+f"),
             indexed: IndexedKeysConfig::default(),
             command: Vec::new(),
             user_fields: BTreeSet::new(),

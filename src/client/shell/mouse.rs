@@ -1041,6 +1041,10 @@ impl ClientShellState {
                     self.set_sidebar_width_from_column(mouse.column, outcome);
                     return;
                 }
+                Some(&ClientChromeDrag::DockWidth { right }) => {
+                    self.set_dock_width_from_column(right, mouse.column, outcome);
+                    return;
+                }
                 Some(ClientChromeDrag::SidebarSection) => {
                     self.set_sidebar_section_from_row(mouse.row, outcome);
                     return;
@@ -1372,7 +1376,9 @@ impl ClientShellState {
                             );
                         }
                     }
-                    ClientChromeDrag::SidebarWidth | ClientChromeDrag::SidebarSection => {
+                    ClientChromeDrag::SidebarWidth
+                    | ClientChromeDrag::SidebarSection
+                    | ClientChromeDrag::DockWidth { .. } => {
                         self.persist_chrome_preferences(outcome);
                     }
                     ClientChromeDrag::WorkspaceScrollbar { .. }
@@ -1999,6 +2005,14 @@ impl ClientShellState {
                     } else {
                         self.chrome_drag = Some(ClientChromeDrag::SidebarWidth);
                         self.set_sidebar_width_from_column(mouse.column, outcome);
+                    }
+                    return;
+                }
+                if super::contains(self.hits.dock_separator, point) {
+                    if let Some(dock) = self.hits.dock.as_ref() {
+                        self.chrome_drag = Some(ClientChromeDrag::DockWidth {
+                            right: dock.rect.right(),
+                        });
                     }
                     return;
                 }

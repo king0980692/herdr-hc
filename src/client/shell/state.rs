@@ -195,6 +195,10 @@ pub(super) struct ClientTabPress {
 
 pub(super) enum ClientChromeDrag {
     SidebarWidth,
+    /// The files dock's separator: its width, from the right edge.
+    DockWidth {
+        right: u16,
+    },
     SidebarSection,
     WorkspaceScrollbar {
         grab_row_offset: u16,
@@ -1088,8 +1092,11 @@ impl ClientShellState {
             workspace_scroll: 0,
             agent_scroll: 0,
             agent_sections_folded: super::agent_sections::initially_folded(),
-            dock_visible: true,
-            dock_width: super::dock::DEFAULT_WIDTH,
+            dock_visible: preferences.dock_visible.unwrap_or(true),
+            dock_width: preferences
+                .dock_width
+                .unwrap_or(super::dock::DEFAULT_WIDTH)
+                .clamp(super::dock::MIN_WIDTH, super::dock::MAX_WIDTH),
             dock_focused: false,
             last_dock_view: None,
             pending_agent_reveal: None,

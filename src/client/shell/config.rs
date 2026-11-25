@@ -63,6 +63,8 @@ impl ClientShellState {
                 .then_some(self.config.agent_panel_sort),
             collapsed_groups,
             remote_collapsed_groups,
+            dock_visible: (!self.dock_visible).then_some(false),
+            dock_width: (self.dock_width != super::dock::DEFAULT_WIDTH).then_some(self.dock_width),
         };
         if let Err(error) = preferences::store(path, preferences) {
             self.set_endpoint_error(error);

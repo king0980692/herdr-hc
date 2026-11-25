@@ -10,6 +10,12 @@ impl ClientShellState {
             crate::input::KeybindMatch::Action(crate::input::KeybindAction::Detach) => {
                 outcome.detach = true;
             }
+            crate::input::KeybindMatch::Action(crate::input::KeybindAction::ToggleDock) => {
+                self.toggle_dock(outcome);
+            }
+            crate::input::KeybindMatch::Action(crate::input::KeybindAction::FocusDock) => {
+                self.toggle_dock_focus(outcome);
+            }
             crate::input::KeybindMatch::Action(crate::input::KeybindAction::ToggleAgentPin) => {
                 self.toggle_focused_agent_pin(outcome);
             }

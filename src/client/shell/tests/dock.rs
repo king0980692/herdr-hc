@@ -86,8 +86,47 @@ fn the_files_dock_shows_on_the_right_takes_its_clicks_and_keys_and_gives_them_ba
         &keys.requests[..],
         [ClientMessage::ClientShellPopupInput { terminal_id, .. }] if terminal_id == "term_dock"
     ));
+    let paste = state.handle_raw_events(vec![RawInputEvent::Paste("a.txt".into())]);
+    assert!(matches!(
+        &paste.requests[..],
+        [ClientMessage::ClientShellPopupInput { terminal_id, .. }] if terminal_id == "term_dock"
+    ));
+    // The prefix is still herdr's: prefix+shift+f gives the keys back.
+    let prefix = state.handle_input_bytes(b"\x02");
+    assert!(prefix.requests.is_empty());
+    state.handle_input_bytes(b"F");
+    assert!(!state.dock_focused, "prefix+shift+f gives the keys back");
+    let mut back = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::FocusDock),
+        &mut back,
+    );
+    assert!(state.dock_focused, "and takes them again");
+
+    // Hidden and shown again by its shortcut; hidden, it has no keys.
+    let mut toggle = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::ToggleDock),
+        &mut toggle,
+    );
+    assert!(!state.dock_visible && !state.dock_focused);
+    // The endpoint sends the tabs again at their new size.
+    state.set_pane_surface(surface());
+    state.compose(150, 20).expect("frame");
+    assert!(state.hits.dock.is_none());
+    assert_eq!(
+        state.surface_size(150, 20),
+        full,
+        "the tabs take the room back"
+    );
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::ToggleDock),
+        &mut toggle,
+    );
+    assert!(state.dock_visible);
 
     // A click in a pane takes the keys back.
+    state.set_pane_surface(surface());
     state.compose(150, 20).expect("frame");
     let pane = state.hits.panes[0].clone();
     click(&mut state, pane.inner_rect.x, pane.inner_rect.y);
@@ -111,4 +150,40 @@ fn a_window_too_narrow_for_tabs_and_dock_drops_the_dock() {
     assert!(views.iter().all(|(_, message)| matches!(message,
         ClientMessage::EndpointControl { data, .. }
             if !crate::protocol::session_terminal::decode_view(data).unwrap().visible)));
+}
+
+#[test]
+fn dragging_the_separator_resizes_the_dock_within_bounds() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    state.set_endpoint_session_terminal_supported(&ClientEndpointId::Local, true);
+    state.compose(150, 20).expect("frame");
+    let separator = state.hits.dock_separator;
+    assert_eq!(separator.width, 1);
+    let mouse = |kind, column| {
+        RawInputEvent::Mouse(crossterm::event::MouseEvent {
+            kind,
+            column,
+            row: 5,
+            modifiers: KeyModifiers::empty(),
+        })
+    };
+    state.handle_raw_events(vec![
+        mouse(MouseEventKind::Down(MouseButton::Left), separator.x),
+        mouse(MouseEventKind::Drag(MouseButton::Left), 99),
+        mouse(MouseEventKind::Up(MouseButton::Left), 99),
+    ]);
+    assert_eq!(state.dock_width, 50, "150 - 99 - 1");
+    state.set_pane_surface(surface());
+    state.compose(150, 20).expect("frame");
+    assert_eq!(state.hits.dock.as_ref().unwrap().rect.width, 50);
+    // Never past the bounds.
+    let separator = state.hits.dock_separator;
+    state.handle_raw_events(vec![
+        mouse(MouseEventKind::Down(MouseButton::Left), separator.x),
+        mouse(MouseEventKind::Drag(MouseButton::Left), 145),
+        mouse(MouseEventKind::Up(MouseButton::Left), 145),
+    ]);
+    assert_eq!(state.dock_width, super::super::dock::MIN_WIDTH);
 }

@@ -842,6 +842,18 @@
           "description": "Toggle sidebar collapse."
         },
         {
+          "key": "keys.toggle_dock",
+          "type": "keybinding",
+          "default": "\"prefix+f\"",
+          "description": "Show or hide the files dock on the right (herdr-native)."
+        },
+        {
+          "key": "keys.focus_dock",
+          "type": "keybinding",
+          "default": "\"prefix+shift+f\"",
+          "description": "Move the keys into the files dock, or back to the pane."
+        },
+        {
           "key": "keys.toggle_agent_pin",
           "type": "keybinding",
           "default": "\"prefix+shift+a\"",

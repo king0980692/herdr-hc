@@ -199,6 +199,10 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
     ) -> bool {
         use crossterm::event::MouseEventKind;
+        // Dragging the separator (or other chrome) over the dock.
+        if self.chrome_drag.is_some() {
+            return false;
+        }
         let Some(hit) = self.hits.dock.clone() else {
             return false;
         };
@@ -238,6 +242,50 @@ impl ClientShellState {
             MouseEventKind::Up(_) | MouseEventKind::Drag(_) | MouseEventKind::Moved => {}
         }
         true
+    }
+
+    /// Drags the separator: the dock spans from just right of `column` to
+    /// `right`.
+    pub(super) fn set_dock_width_from_column(
+        &mut self,
+        right: u16,
+        column: u16,
+        outcome: &mut ClientShellInput,
+    ) {
+        let width = right
+            .saturating_sub(column)
+            .saturating_sub(1)
+            .clamp(MIN_WIDTH, MAX_WIDTH);
+        if width != self.dock_width {
+            self.dock_width = width;
+            self.invalidate_pane_surface();
+            outcome.repaint = true;
+        }
+    }
+
+    /// Shows or hides the dock (kept for the next start).
+    pub(super) fn toggle_dock(&mut self, outcome: &mut ClientShellInput) {
+        self.dock_visible = !self.dock_visible;
+        if !self.dock_visible {
+            self.dock_focused = false;
+        }
+        self.invalidate_pane_surface();
+        outcome.repaint = true;
+        self.persist_chrome_preferences(outcome);
+    }
+
+    /// Moves the keys into the dock (showing it), or back to the pane.
+    pub(super) fn toggle_dock_focus(&mut self, outcome: &mut ClientShellInput) {
+        if !self.active_endpoint_has_dock() {
+            return;
+        }
+        if !self.dock_visible {
+            self.dock_visible = true;
+            self.invalidate_pane_surface();
+            self.persist_chrome_preferences(outcome);
+        }
+        self.dock_focused = !self.dock_focused;
+        outcome.repaint = true;
     }
 
     /// The terminal keys go to while the dock has them.

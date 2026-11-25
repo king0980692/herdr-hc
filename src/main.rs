@@ -202,6 +202,8 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # resize_pane_right = ""  # optional, e.g. "ctrl+shift+alt+right"
 # toggle_sidebar = "prefix+b"
 # toggle_agent_pin = "prefix+shift+a"  # pin the focused agent to the top of the agents panel
+# toggle_dock = "prefix+f"        # show or hide the files dock (herdr-native)
+# focus_dock = "prefix+shift+f"   # keys into the files dock, or back
 
 # Navigate-mode movement. These local shortcuts win while navigate mode is open.
 # They are independent from focus_pane_*. Do not include prefix+, esc, enter, tab, or 1..9 here.

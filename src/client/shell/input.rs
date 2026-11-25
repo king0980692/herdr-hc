@@ -681,7 +681,7 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return None;
                 }
-                self.focused_pane_id().map(ClientInputTarget::Pane)
+                self.terminal_input_target()
             }
             ClientShellMode::Prefix => {
                 let return_mode = if self.copy_mode.as_ref().is_some_and(|copy_mode| {
@@ -694,7 +694,7 @@ impl ClientShellState {
                 if self.config.keybinds.matches_prefix(key) {
                     self.mode = return_mode;
                     outcome.repaint = true;
-                    return self.focused_pane_id().map(ClientInputTarget::Pane);
+                    return self.terminal_input_target();
                 }
                 if key.code == KeyCode::Esc {
                     self.mode = return_mode;
@@ -1167,10 +1167,16 @@ impl ClientShellState {
 
     fn popup_input_target(&self) -> Option<ClientInputTarget> {
         self.popup_terminal_id
-            .clone()
-            // Keys go to the files dock while it has them.
-            .or_else(|| self.dock_input_terminal())
+            .as_ref()
+            .map(|terminal_id| ClientInputTarget::Popup(terminal_id.clone()))
+    }
+
+    /// Where typing goes in terminal mode: the files dock while it has the
+    /// keys (bindings and the prefix still apply), else the focused pane.
+    fn terminal_input_target(&self) -> Option<ClientInputTarget> {
+        self.dock_input_terminal()
             .map(ClientInputTarget::Popup)
+            .or_else(|| self.focused_pane_id().map(ClientInputTarget::Pane))
     }
 
     fn push_pane_key(
@@ -1185,8 +1191,8 @@ impl ClientShellState {
     }
 
     fn push_focused_pane_event(&self, event: ClientPaneInputEvent, outcome: &mut ClientShellInput) {
-        if let Some(pane_id) = self.focused_pane_id() {
-            super::push_target_event(ClientInputTarget::Pane(pane_id), event, outcome);
+        if let Some(target) = self.terminal_input_target() {
+            super::push_target_event(target, event, outcome);
         }
     }
 }
