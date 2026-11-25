@@ -136,6 +136,23 @@ pub(super) fn pinned_items<T>(
         .count()
 }
 
+/// How long the rule between groups of agents is.
+const RULE: &str = "──────────────";
+
+/// A short rule setting groups of agents apart.
+pub(super) fn render_rule(buffer: &mut Buffer, line: Rect, palette: &Palette) {
+    let style = Style::default().fg(palette.surface_dim);
+    for (offset, character) in RULE
+        .chars()
+        .take(usize::from(line.width.saturating_sub(1)))
+        .enumerate()
+    {
+        if let Some(cell) = buffer.cell_mut((line.x + 1 + offset as u16, line.y)) {
+            cell.set_char(character).set_style(style);
+        }
+    }
+}
+
 /// Draws a header on the last line of `rect` and records where it is.
 pub(super) fn render_header(
     buffer: &mut Buffer,
@@ -148,6 +165,10 @@ pub(super) fn render_header(
 ) {
     if rect.height == 0 || rect.width == 0 {
         return;
+    }
+    // The line above a section (not the first) is a short rule.
+    if rect.height >= 2 {
+        render_rule(buffer, Rect::new(rect.x, rect.y, rect.width, 1), palette);
     }
     let line = Rect::new(rect.x, rect.bottom() - 1, rect.width, 1);
     let title = format!(" {} ", section.title());

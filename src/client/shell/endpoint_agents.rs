@@ -89,6 +89,7 @@ pub(super) fn render_expanded(
             config,
             agent_scroll,
             hits,
+            false,
             |item| item.lines(|row| row.agent.rows.len()),
             |buffer, rect, item, hits| match item {
                 super::agent_sections::PanelItem::Header {
@@ -123,6 +124,7 @@ pub(super) fn render_expanded(
         config,
         agent_scroll,
         hits,
+        true,
         |row| row.agent.rows.len(),
         render_row,
     );
@@ -150,8 +152,8 @@ impl ClientShellState {
             .and_then(|snapshot| snapshot.agent_view_label.as_deref());
         // With sections, the headers take lines too; an agent in a folded
         // section has no line to reveal.
-        let (target, heights, pinned) = if super::agent_sidebar::sections_shown(label, &self.config)
-        {
+        let sections = super::agent_sidebar::sections_shown(label, &self.config);
+        let (target, heights, pinned) = if sections {
             let items = super::agent_sections::with_headers(
                 &rows,
                 |row| row.agent.section,
@@ -192,6 +194,8 @@ impl ClientShellState {
             &heights,
             pinned,
             self.config.agents.row_gap,
+            // Without sections, a rule sets the pinned ones apart.
+            !sections,
             body_height,
         );
         if target < pinned {

@@ -1233,6 +1233,22 @@ fn status_order_shows_counted_sections_and_a_header_click_unfolds_idle() {
             "{header:?} in {lines:#?}"
         );
     }
+    // A short rule above every section but the first.
+    for header in [" Done 1", " Working 1", " Idle 2"] {
+        let at = lines
+            .iter()
+            .position(|line| line.starts_with(header))
+            .unwrap();
+        assert!(
+            lines[at - 1].starts_with(" ──────────────"),
+            "a rule above {header:?}: {lines:#?}"
+        );
+    }
+    let first = lines
+        .iter()
+        .position(|line| line.starts_with(" Pinned 1"))
+        .unwrap();
+    assert!(!lines[first - 1].contains('─'), "none above the first");
     assert_eq!(
         shown(&state),
         ["pinned_idle", "done", "working", "idle_new", "idle_old"]
@@ -1284,6 +1300,19 @@ fn pinned_agents_stay_at_the_top_while_the_others_scroll() {
         };
         let before = rows(&state);
         assert_eq!(before[0].1, "pinned", "{sort:?}: {before:?}");
+        // Grouped: a short rule right under the pinned ones.
+        if sort == crate::config::AgentPanelSortConfig::Spaces {
+            let buffer = state
+                .compose(106, 40)
+                .expect("frame")
+                .to_ratatui_buffer()
+                .expect("buffer");
+            let rule_y = before[1].0 - 1;
+            let line = (0..26)
+                .map(|x| buffer[(x, rule_y)].symbol())
+                .collect::<String>();
+            assert!(line.starts_with(" ──────────────"), "{line:?}");
+        }
         assert!(
             state.hits.agent_max_scroll > 0,
             "{sort:?}: the others must overflow"

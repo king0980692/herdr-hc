@@ -92,6 +92,7 @@ pub(super) fn render_agent_panel(
             config,
             agent_scroll,
             hits,
+            false,
             |item| item.lines(|row| row.rows.len()),
             |buffer, rect, item, hits| match item {
                 super::agent_sections::PanelItem::Header {
@@ -132,6 +133,7 @@ pub(super) fn render_agent_panel(
         config,
         agent_scroll,
         hits,
+        true,
         |row| row.rows.len(),
         |buffer, rect, row, hits| {
             hits.agents.push((rect, row.pane_id.clone()));
@@ -218,6 +220,7 @@ pub(super) fn pinned_prefix(
     heights: &[u16],
     pinned: usize,
     row_gap: u16,
+    rule: bool,
     body_height: u16,
 ) -> (usize, u16) {
     let pinned = pinned.min(heights.len());
@@ -232,7 +235,9 @@ pub(super) fn pinned_prefix(
     let height = heights[..pinned]
         .iter()
         .fold(0u16, |sum, height| sum.saturating_add(*height))
-        .saturating_add(row_gap.saturating_mul(gaps as u16));
+        .saturating_add(row_gap.saturating_mul(gaps as u16))
+        // A short rule between them and the others.
+        .saturating_add(u16::from(rule && pinned < heights.len()));
     if height >= body_height {
         return (0, 0);
     }
@@ -250,6 +255,7 @@ pub(super) fn render_agent_list<T>(
     config: &ClientShellConfig,
     agent_scroll: &mut usize,
     hits: &mut ShellHitMap,
+    rule_after_pinned: bool,
     row_lines: impl Fn(&T) -> usize,
     mut render_row: impl FnMut(&mut Buffer, Rect, &T, &mut ShellHitMap),
 ) {
@@ -264,14 +270,26 @@ pub(super) fn render_agent_list<T>(
         .iter()
         .map(|row| row_lines(row).max(1).min(u16::MAX as usize) as u16)
         .collect::<Vec<_>>();
-    let (pinned, pinned_height) =
-        pinned_prefix(&heights, pinned, config.agents.row_gap, body.height);
+    let (pinned, pinned_height) = pinned_prefix(
+        &heights,
+        pinned,
+        config.agents.row_gap,
+        rule_after_pinned,
+        body.height,
+    );
     let mut y = body.y;
     for (row, height) in rows[..pinned].iter().zip(&heights) {
         render_row(buffer, Rect::new(body.x, y, body.width, *height), row, hits);
         y = y
             .saturating_add(*height)
             .saturating_add(config.agents.row_gap);
+    }
+    if rule_after_pinned && pinned > 0 && pinned < rows.len() {
+        super::agent_sections::render_rule(
+            buffer,
+            Rect::new(body.x, y, body.width, 1),
+            &config.palette,
+        );
     }
     body = Rect::new(
         body.x,
