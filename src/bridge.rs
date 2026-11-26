@@ -482,6 +482,17 @@ mod relay {
     }
 }
 
+/// The release a bridge relay was started from.
+#[cfg_attr(not(unix), allow(dead_code))]
+const RELAY_RELEASE_LABEL: &str = "herdr-native.release";
+
+/// Whether a relay with these labels runs `release` (any relay does when the
+/// viewer has no release of its own on that machine).
+#[cfg_attr(not(unix), allow(dead_code))]
+fn relay_is_current(labels: &serde_json::Value, release: Option<&str>) -> bool {
+    release.is_none_or(|release| labels[RELAY_RELEASE_LABEL].as_str() == Some(release))
+}
+
 #[cfg(all(unix, not(test)))]
 mod host {
     use super::*;
@@ -498,6 +509,10 @@ mod host {
     /// by a presenter that restarts.
     const ROLE_LABEL: &str = "herdr-native.role";
     const ROLE_BRIDGE: &str = "bridge";
+    /// This viewer's release, which `install` puts on the machine.
+    fn release_tag() -> Option<&'static str> {
+        option_env!("HERDR_RELEASE_TAG").filter(|tag| !tag.is_empty())
+    }
 
     /// Starts the relay on this core, or finds the one running, and answers
     /// its requests until the transport ends.
@@ -507,8 +522,10 @@ mod host {
         socket: &std::sync::Mutex<Option<String>>,
     ) -> io::Result<()> {
         let core = client.hello.core.id.clone();
-        install(client).await;
-        let address = match find_relay(client).await? {
+        // Only a machine that has this viewer's release now runs a relay
+        // from it.
+        let installed = install(client).await;
+        let address = match find_relay(client, release_tag().filter(|_| installed)).await? {
             Some(address) => address,
             None => start_relay(client, &core).await?,
         };
@@ -580,19 +597,40 @@ mod host {
         }
     }
 
-    async fn find_relay(client: &Client) -> io::Result<Option<String>> {
+    /// The relay running on this core. One from another release than
+    /// `release` (which `install` just put there) is ended: it still runs the
+    /// build that was replaced. Its socket path stays, so programs there
+    /// reconnect to the new one.
+    async fn find_relay(client: &Client, release: Option<&str>) -> io::Result<Option<String>> {
         let list = client.call("terminal.list", json!({"all": false})).await?;
-        Ok(list["terminals"]
+        let relays = list["terminals"]
             .as_array()
             .into_iter()
             .flatten()
             .filter(|terminal| terminal["state"] == "live")
-            .find(|terminal| {
+            .filter(|terminal| {
                 terminal["labels"][ROLE_LABEL] == ROLE_BRIDGE
                     && terminal["labels"][crate::hc_entry::HIDDEN_LABEL] == "1"
-            })
-            .and_then(|terminal| terminal["address"].as_str())
-            .map(str::to_owned))
+            });
+        let mut found = None;
+        for relay in relays {
+            let Some(address) = relay["address"].as_str() else {
+                continue;
+            };
+            if super::relay_is_current(&relay["labels"], release) && found.is_none() {
+                found = Some(address.to_owned());
+                continue;
+            }
+            if !super::relay_is_current(&relay["labels"], release) {
+                if let Err(error) = client
+                    .call("terminal.kill", json!({ "terminal": address }))
+                    .await
+                {
+                    tracing::warn!(%error, address, "an outdated bridge relay could not be ended");
+                }
+            }
+        }
+        Ok(found)
     }
 
     /// The relay is herdr-native's own build on that machine (installed under
@@ -609,6 +647,9 @@ exec "$bin" bridge-relay --socket "$HOME/.local/state/herdr-native/run/$1.sock""
         let mut labels = serde_json::Map::new();
         labels.insert(crate::hc_entry::HIDDEN_LABEL.into(), "1".into());
         labels.insert(ROLE_LABEL.into(), ROLE_BRIDGE.into());
+        if let Some(release) = release_tag() {
+            labels.insert(super::RELAY_RELEASE_LABEL.into(), release.into());
+        }
         let reply = client
             .call(
                 "terminal.run",
@@ -629,7 +670,7 @@ exec "$bin" bridge-relay --socket "$HOME/.local/state/herdr-native/run/$1.sock""
     /// Sets this machine up (herdr-native's build, plugin copies and their
     /// binaries) in a hidden terminal, and waits for it. Failures are logged:
     /// what was already there keeps working.
-    async fn install(client: &Client) {
+    async fn install(client: &Client) -> bool {
         let plugins: Vec<RemotePlugin> = crate::persist::plugin_registry::load()
             .into_iter()
             .filter(|plugin| plugin.enabled)
@@ -642,16 +683,14 @@ exec "$bin" bridge-relay --socket "$HOME/.local/state/herdr-native/run/$1.sock""
                 )
             })
             .collect();
-        let release = option_env!("HERDR_RELEASE_TAG")
-            .filter(|tag| !tag.is_empty())
-            .map(|tag| {
-                (
-                    option_env!("HERDR_RELEASE_REPO").unwrap_or("king0980692/herdr-hc"),
-                    tag,
-                )
-            });
+        let release = release_tag().map(|tag| {
+            (
+                option_env!("HERDR_RELEASE_REPO").unwrap_or("king0980692/herdr-hc"),
+                tag,
+            )
+        });
         if release.is_none() && plugins.is_empty() {
-            return;
+            return false;
         }
         let script = install_script(release, &plugins);
         let mut labels = serde_json::Map::new();
@@ -673,7 +712,7 @@ exec "$bin" bridge-relay --socket "$HOME/.local/state/herdr-native/run/$1.sock""
             .and_then(|reply| reply["address"].as_str().map(str::to_owned))
         else {
             tracing::warn!("remote plugin install could not start");
-            return;
+            return false;
         };
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(300);
         let mut record = serde_json::Value::Null;
@@ -697,6 +736,7 @@ exec "$bin" bridge-relay --socket "$HOME/.local/state/herdr-native/run/$1.sock""
         let _ = client
             .call("terminal.rm", json!({"terminal": address}))
             .await;
+        record["exit_code"] == 0
     }
 
     /// One request line to this presenter's own API.
@@ -719,6 +759,25 @@ exec "$bin" bridge-relay --socket "$HOME/.local/state/herdr-native/run/$1.sock""
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_relay_from_another_release_is_outdated() {
+        let labels = |release: Option<&str>| {
+            let mut labels =
+                serde_json::json!({"herdr-native.role": "bridge", "herdr-native.hidden": "1"});
+            if let Some(release) = release {
+                labels[RELAY_RELEASE_LABEL] = serde_json::json!(release);
+            }
+            labels
+        };
+        assert!(relay_is_current(&labels(Some("r2")), Some("r2")));
+        // Started from the build that was replaced, or before relays said.
+        assert!(!relay_is_current(&labels(Some("r1")), Some("r2")));
+        assert!(!relay_is_current(&labels(None), Some("r2")));
+        // No release put there (a local build, or the install failed): kept.
+        assert!(relay_is_current(&labels(Some("r1")), None));
+        assert!(relay_is_current(&labels(None), None));
+    }
 
     #[test]
     fn the_relay_socket_is_read_from_its_command() {
