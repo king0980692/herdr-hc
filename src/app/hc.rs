@@ -206,6 +206,30 @@ impl App {
                     .and_then(serde_json::Value::as_str)
                     == Some("live")
             });
+        // The session terminal keeps the size its shells show it at, even when
+        // something else on that machine resized it.
+        if let Some(session) = self
+            .state
+            .session_terminal
+            .as_ref()
+            .filter(|session| session.terminal_id == terminal_id)
+        {
+            let size = |key: &str| {
+                snapshot
+                    .terminal
+                    .facts
+                    .get(key)
+                    .and_then(serde_json::Value::as_u64)
+            };
+            let reported = (size("cols"), size("rows"));
+            if reported.0.is_some()
+                && reported != (Some(u64::from(session.cols)), Some(u64::from(session.rows)))
+            {
+                if let Some(runtime) = self.terminal_runtimes.get(&terminal_id) {
+                    runtime.resize(session.rows, session.cols, 0, 0);
+                }
+            }
+        }
         // The session terminal ends however it ends (exited or killed).
         if self
             .state
