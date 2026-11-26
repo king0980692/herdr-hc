@@ -259,3 +259,20 @@ async fn a_killed_plugin_pane_closes_but_a_killed_program_stays_to_resume() {
         assert_eq!(!still_there, closes, "hidden={hidden}");
     }
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_viewed_location_is_where_the_pane_works_now_not_where_it_started() {
+    let (client, mut server) = tests::test_client();
+    // Started in /remote/shell; its foreground program is in /remote/work.
+    let (runtime, _, _) = runtime_tests::attach(client, &mut server).await;
+    let mut app = app_tests::app(TerminalFactory::Unavailable("test source".into()));
+    app_tests::restore_into(
+        &mut app,
+        &app_tests::saved(json!({"core_id":"core-test","address":"t1"})),
+    );
+    let pane = app.state.workspaces[0].tabs[0].root_pane;
+    let id = app.state.workspaces[0].terminal_id(pane).unwrap().clone();
+    app.terminal_runtimes.insert(id, runtime);
+    let viewed = app.viewed_location().expect("a viewed location");
+    assert_eq!(viewed.cwd.as_deref(), Some("/remote/work"));
+}

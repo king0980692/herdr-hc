@@ -34,8 +34,13 @@ impl App {
             workspace_id: self.public_workspace_id(ws_idx),
             tab_id: self.public_tab_id(ws_idx, tab_idx)?,
             pane_id: self.public_pane_id(ws_idx, pane),
+            // Where the pane works now (its foreground program's folder,
+            // which follows a cd), not where it was started.
             cwd: tab
-                .cwd_for_pane(pane, &self.state.terminals, &self.terminal_runtimes)
+                .terminal_id(pane)
+                .and_then(|id| self.terminal_runtimes.get(id))
+                .and_then(crate::terminal::TerminalRuntime::follow_cwd)
+                .or_else(|| tab.cwd_for_pane(pane, &self.state.terminals, &self.terminal_runtimes))
                 .map(|cwd| cwd.display().to_string()),
         })
     }
