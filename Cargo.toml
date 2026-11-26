@@ -36,7 +36,7 @@ default-members = [".", "crates/ghostty-vt"]
 
 [dependencies]
 # The files dock's sidebar (herdr-native only, `files-dock`).
-herdr-sidebar = { git = "https://github.com/king0980692/herdr-sidebar", rev = "2f825482a89d463ee223ee1996561e04e4061b4c", optional = true }
+herdr-sidebar = { git = "https://github.com/king0980692/herdr-sidebar", rev = "d4f496d620f488c562848b5242ea441dd7061160", optional = true }
 ghostty-vt = { path = "crates/ghostty-vt" }
 base64 = "0.22.1"
 bincode = { version = "2", features = ["serde"] }
