@@ -983,11 +983,7 @@ async fn sync_layout_once(
     base: Option<Vec<crate::hc_entry::app_layout::ShownSpace>>,
     native: Vec<crate::hc_entry::app_layout::ShownSpace>,
     started: &std::sync::Mutex<std::collections::HashSet<String>>,
-) -> io::Result<(
-    Value,
-    Vec<String>,
-    Vec<crate::hc_entry::app_layout::ShownSpace>,
-)> {
+) -> io::Result<crate::hc_entry::app_layout::LayoutRound> {
     use crate::hc_entry::{
         app_layout::{shown_spaces, DOCUMENT},
         app_sync::{all_programs, held_terminals, push_changes_started, restricted, union},
@@ -1036,6 +1032,17 @@ async fn sync_layout_once(
             .filter(|address| !address.contains('/') && !hidden.contains(*address))
             .map(str::to_owned)
             .collect();
+        // Every program the core still has, ended ones too (the list above
+        // has only live ones).
+        let all = client.call("terminal.list", json!({"all": true})).await?;
+        let mut existing: Vec<String> = all["terminals"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|terminal| terminal["address"].as_str())
+            .map(str::to_owned)
+            .collect();
+        existing.sort();
         let mut left = live.clone();
         let shown = shown_spaces(&document, |address| left.remove(address));
         // Panes of programs that ended stay open here; they are not layout.
@@ -1103,7 +1110,7 @@ async fn sync_layout_once(
         }
         let mut live: Vec<String> = live.into_iter().collect();
         live.sort();
-        return Ok((document, live, sent));
+        return Ok((document, live, sent, existing));
     }
     Err(io::Error::other("herdr.app layout kept changing"))
 }

@@ -395,7 +395,7 @@ impl App {
     pub(crate) fn finish_layout_sync(
         &mut self,
         generation: u64,
-        outcome: Result<(serde_json::Value, Vec<String>, Vec<ShownSpace>), String>,
+        outcome: Result<crate::hc_entry::app_layout::LayoutRound, String>,
     ) {
         self.layout_sync.in_flight = false;
         let current = self
@@ -410,8 +410,9 @@ impl App {
                 }
             }
             Ok(_) if current != Some(generation) => self.layout_sync.again = true,
-            Ok((document, live, sent)) => {
+            Ok((document, live, sent, existing)) => {
                 self.layout_sync.reported = None;
+                let existing: HashSet<String> = existing.into_iter().collect();
                 let mut left: HashSet<String> = live.into_iter().collect();
                 let view = shown_spaces(&document, |address| left.remove(address));
                 if self.layout_sync.base.is_none() && !self.layout_sync.backed_up {
@@ -457,6 +458,19 @@ impl App {
                         .map(|(_, address)| address)
                         .collect();
                     known.extend(ended);
+                    // Removed from the core (not merely ended: an ended one's
+                    // pane stays): the core no longer has it, and nothing here
+                    // shows it running (a program made since the list was read
+                    // is shown running here).
+                    let gone: Vec<String> = self
+                        .shared_addresses(&core)
+                        .into_iter()
+                        .filter(|(id, address)| {
+                            !existing.contains(address) && !self.shows_running(id)
+                        })
+                        .map(|(_, address)| address)
+                        .collect();
+                    known.extend(gone);
                 }
                 let changed = self.apply_shared_layout(&view, &known);
                 self.layout_sync.sent_layouts.clear();
@@ -686,6 +700,17 @@ impl App {
                 drop(runtime);
             }
         }
+    }
+
+    /// Whether this viewer may be showing `terminal` running: attached, and
+    /// no facts yet (just made) or facts that say live.
+    fn shows_running(&self, terminal: &crate::terminal::TerminalId) -> bool {
+        self.terminal_runtimes.get(terminal).is_some()
+            && self.state.terminals.get(terminal).is_some_and(|state| {
+                state.hc_snapshot.as_ref().is_none_or(|snapshot| {
+                    snapshot.terminal.facts.get("state") == Some(&serde_json::Value::from("live"))
+                })
+            })
     }
 
     fn is_own_pane_terminal(&self, terminal: &crate::terminal::TerminalId) -> bool {

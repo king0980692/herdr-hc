@@ -860,3 +860,44 @@ fn hc_source_launch_names_the_pane_only_to_programs_routed_back_to_herdr() {
         .windows(2)
         .any(|pair| pair == ["-u", crate::integration::HERDR_PANE_ID_ENV_VAR]));
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_tab_follows_the_shared_layout_once_one_of_its_programs_was_removed() {
+    // t2 removed from the core (`hc rm`): its pane goes with it, and the tab
+    // follows the document again. t2 only ended (the core still has it):
+    // its pane stays, as an ended program's does.
+    for (removed, panes_left) in [(true, 1), (false, 2)] {
+        let (client, _server) = tests::test_client();
+        let mut app = app(TerminalFactory::Unavailable("offline core".into()));
+        let pane = |address: &str| json!({"cwd":"/remote","hc_binding":{"core_id":"core-test","address":address}});
+        let snapshot: persist::SessionSnapshot = serde_json::from_value(json!({
+            "version":3,"active":0,"selected":0,"workspaces":[{
+            "id":"wA","identity_cwd":"/remote",
+            "tabs":[{"layout":{"Split":{"direction":"Horizontal","ratio":0.5,
+                "first":{"Pane":41},"second":{"Pane":42}}},
+                "panes":{"41":pane("t1"),"42":pane("t2")},"zoomed":false,"focused":41,"root_pane":41}]}]}))
+        .unwrap();
+        restore_into(&mut app, &snapshot);
+        app.terminal_factory = TerminalFactory::test_hc(client);
+        let generation = app.terminal_factory.source_state().unwrap().generation;
+        // Another viewer's document: the tab holds t1 alone.
+        let document = json!({"spaces":[{"id":"sp1","name":"","tabs":[{"id":"tb1","name":"",
+            "root":{"type":"row","id":"tb1","children":[
+                {"type":"block","id":"b1","content":{"terminal":"t1"}}]}}]}]});
+        let existing: Vec<String> = if removed {
+            vec!["t1".into()]
+        } else {
+            vec!["t1".into(), "t2".into()]
+        };
+        app.finish_layout_sync(
+            generation,
+            Ok((document, vec!["t1".into()], Vec::new(), existing)),
+        );
+        assert_eq!(
+            app.state.workspaces[0].tabs[0].panes.len(),
+            panes_left,
+            "removed={removed}"
+        );
+        app.state.assert_invariants_for_test();
+    }
+}

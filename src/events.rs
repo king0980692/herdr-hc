@@ -98,18 +98,10 @@ pub enum AppEvent {
     HcLayoutChanged {
         generation: u64,
     },
-    /// One round of keeping the shared layout in step finished: the document
-    /// as it now is, the core's live programs, and the layout this viewer sent.
+    /// One round of keeping the shared layout in step finished.
     HcLayoutSynced {
         generation: u64,
-        outcome: Result<
-            (
-                serde_json::Value,
-                Vec<String>,
-                Vec<crate::hc_entry::app_layout::ShownSpace>,
-            ),
-            String,
-        >,
+        outcome: Result<crate::hc_entry::app_layout::LayoutRound, String>,
     },
     HcTerminalEffects {
         enabled: std::sync::Arc<std::sync::atomic::AtomicBool>,

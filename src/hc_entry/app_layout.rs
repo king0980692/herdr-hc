@@ -337,6 +337,11 @@ pub(super) fn shown_layout(
 /// The spaces and tabs of herdr.app's document holding programs `take`
 /// accepts (it is asked once per block and should accept an address once).
 /// Empty tabs and spaces are left out; a malformed document gives none.
+/// One round of keeping the shared layout in step: the document as it now
+/// is, the core's live programs, the layout this viewer sent, and every
+/// program the core still has (live or ended; one it removed is not there).
+pub(crate) type LayoutRound = (serde_json::Value, Vec<String>, Vec<ShownSpace>, Vec<String>);
+
 pub(crate) fn shown_spaces(
     document: &Value,
     mut take: impl FnMut(&str) -> bool,
