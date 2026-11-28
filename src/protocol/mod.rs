@@ -1,6 +1,7 @@
 //! Shared wire protocol and presentation encoding code.
 
 pub mod endpoint;
+pub mod file_drop;
 pub(crate) mod render_ansi;
 pub mod session_terminal;
 pub(crate) mod surface_delta;

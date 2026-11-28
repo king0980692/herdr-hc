@@ -2971,6 +2971,28 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
         path: String::new(),
     });
     assert!(input_rx.try_recv().is_err());
+    // Dropped files sent to the pane's machine: their paths there, escaped
+    // as a dropped path is, in one paste; nothing when sending failed.
+    server.handle_server_event_with_render_impact(ServerEvent::ClientFileDropDone {
+        client_id: 11,
+        target: crate::protocol::ClientClipboardImageTarget::Pane(pane_id.clone()),
+        placed: Ok(vec![
+            "/r/files/t3/herdr-drop-1/a.txt".into(),
+            "/r/files/t3/herdr-drop-2/My Report.pdf".into(),
+        ]),
+    });
+    assert_eq!(
+        input_rx.try_recv().expect("pasted remote paths"),
+        Bytes::from_static(
+            b"/r/files/t3/herdr-drop-1/a.txt /r/files/t3/herdr-drop-2/My\\ Report.pdf"
+        )
+    );
+    server.handle_server_event_with_render_impact(ServerEvent::ClientFileDropDone {
+        client_id: 11,
+        target: crate::protocol::ClientClipboardImageTarget::Pane(pane_id.clone()),
+        placed: Err("big.bin is 300.0 MB".into()),
+    });
+    assert!(input_rx.try_recv().is_err());
 
     let (workspace_index, runtime_pane_id) = server
         .app

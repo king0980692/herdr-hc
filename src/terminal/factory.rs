@@ -419,6 +419,37 @@ impl TerminalFactory {
         true
     }
 
+    /// Sends local files beside the hc terminal `address` (see
+    /// [`super::file_send`]): `status` reports progress, `done` their paths
+    /// there. False without an hc source.
+    pub(crate) fn send_files_beside_terminal<E: Send + 'static>(
+        &self,
+        address: &str,
+        paths: Vec<std::path::PathBuf>,
+        events: tokio::sync::mpsc::Sender<E>,
+        status: impl Fn(crate::protocol::file_drop::FileDropStatus) -> E + Send + Sync + 'static,
+        done: impl FnOnce(Result<Vec<String>, String>) -> E + Send + 'static,
+    ) -> bool {
+        let Self::Hc(host) = self else {
+            return false;
+        };
+        let Ok(client) = host.client() else {
+            return false;
+        };
+        let address = address.to_owned();
+        host.executor.spawn(async move {
+            let progress = events.clone();
+            let placed = super::file_send::send_files(&client, &address, &paths, |update| {
+                // Progress that finds the queue full is skipped; the next
+                // update or the end says more.
+                let _ = progress.try_send(status(update));
+            })
+            .await;
+            let _ = events.send(done(placed)).await;
+        });
+        true
+    }
+
     /// Runs one program on the source's machine and lets it finish on its own
     /// (housekeeping whose outcome nobody waits for).
     pub(crate) fn run_on_source(&self, argv: Vec<String>, timeout_secs: u64) {

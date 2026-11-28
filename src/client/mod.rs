@@ -967,6 +967,48 @@ async fn run_client_loop(
                                 "clipboard image paste trigger received, but local clipboard has no image"
                             );
                         }
+                        // Files dropped on a pane of another machine go there.
+                        if !is_remote_client
+                            && state
+                                .shell
+                                .as_ref()
+                                .is_some_and(|shell| shell.active_endpoint_takes_file_drops())
+                        {
+                            match clipboard_images::file_drop(&data) {
+                                clipboard_images::FileDrop::Text => {}
+                                clipboard_images::FileDrop::Send(paths) => {
+                                    info!(files = paths.len(), "sending dropped files");
+                                    write_to_server(
+                                        &mut write_stream,
+                                        &crate::protocol::file_drop::request_message(
+                                            &crate::protocol::file_drop::FileDropRequest {
+                                                target,
+                                                paths,
+                                            },
+                                        ),
+                                    )
+                                    .map_err(ClientError::ConnectionLost)?;
+                                    continue;
+                                }
+                                clipboard_images::FileDrop::Refuse(reason) => {
+                                    let composed = state.shell.as_mut().and_then(|shell| {
+                                        shell.show_file_drop_status(
+                                            &crate::protocol::file_drop::FileDropStatus {
+                                                state:
+                                                    crate::protocol::file_drop::FileDropState::Failed,
+                                                title: "Files not sent".into(),
+                                                detail: reason,
+                                            },
+                                        );
+                                        shell.compose(state.reported_size.0, state.reported_size.1)
+                                    });
+                                    if let Some(frame) = composed {
+                                        state.present_frame(frame);
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
                         if let Some(image) =
                             read_image_file_from_terminal_drop(&data, image_bridge_active)
                         {
@@ -1502,6 +1544,10 @@ async fn run_client_loop(
                             &endpoint_id,
                             negotiation
                                 .supports_capability(crate::protocol::session_terminal::CAPABILITY),
+                        );
+                        shell.set_endpoint_file_drop_supported(
+                            &endpoint_id,
+                            negotiation.supports_capability(crate::protocol::file_drop::CAPABILITY),
                         );
                         shell.compose(state.reported_size.0, state.reported_size.1)
                     });
@@ -2198,6 +2244,29 @@ async fn run_client_loop(
                         if state.shell.is_some() {
                             state.pane_keyboard_report_all = enabled;
                             sync_client_shell_keyboard_report_all(&mut state)?;
+                        }
+                    }
+                    ServerMessage::EndpointControl { kind, data }
+                        if kind == crate::protocol::file_drop::STATUS_KIND =>
+                    {
+                        match crate::protocol::file_drop::decode_status(&data) {
+                            Ok(status) => {
+                                let composed = state.shell.as_mut().and_then(|shell| {
+                                    shell
+                                        .show_file_drop_status(&status)
+                                        .then(|| {
+                                            shell.compose(
+                                                state.reported_size.0,
+                                                state.reported_size.1,
+                                            )
+                                        })
+                                        .flatten()
+                                });
+                                if let Some(frame) = composed {
+                                    state.present_frame(frame);
+                                }
+                            }
+                            Err(error) => debug!(%error, "ignoring an invalid file drop status"),
                         }
                     }
                     ServerMessage::EndpointControl { kind, data }

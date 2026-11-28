@@ -455,6 +455,23 @@ pub(crate) enum ServerEvent {
         target: crate::protocol::ClientClipboardImageTarget,
         path: String,
     },
+    /// A client on this machine dropped local files on a pane of another
+    /// machine: send them there.
+    ClientFileDrop {
+        client_id: u64,
+        request: crate::protocol::file_drop::FileDropRequest,
+    },
+    /// How sending a client's dropped files goes.
+    ClientFileDropStatus {
+        client_id: u64,
+        status: crate::protocol::file_drop::FileDropStatus,
+    },
+    /// A client's dropped files were sent (their paths there) or not.
+    ClientFileDropDone {
+        client_id: u64,
+        target: crate::protocol::ClientClipboardImageTarget,
+        placed: Result<Vec<String>, String>,
+    },
     /// A client requested direct attach to one terminal.
     ClientAttachTerminal {
         client_id: u64,
@@ -1353,6 +1370,18 @@ fn client_read_loop_with_endpoint_controls(
                         code,
                         message,
                     },
+                }
+            }
+            ClientMessage::EndpointControl { kind, data }
+                if kind == crate::protocol::file_drop::REQUEST_KIND
+                    && crate::protocol::file_drop::offered() =>
+            {
+                match crate::protocol::file_drop::decode_request(&data) {
+                    Ok(request) => ServerEvent::ClientFileDrop { client_id, request },
+                    Err(error) => {
+                        debug!(client_id, %error, "ignoring an invalid file drop");
+                        continue;
+                    }
                 }
             }
             ClientMessage::EndpointControl { kind, data }

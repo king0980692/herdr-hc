@@ -340,6 +340,10 @@ impl HeadlessServer {
             app.end_stale_session_terminals();
             crate::protocol::session_terminal::offer();
         }
+        // A view of another machine sends files dropped on its panes there.
+        if app.terminal_factory.is_saved_source() {
+            crate::protocol::file_drop::offer();
+        }
         let should_quit = server_stop.flag().clone();
         let client_path = client_socket_path();
         prepare_socket_path(&client_path)?;
@@ -2280,6 +2284,122 @@ impl HeadlessServer {
                         true
                     }
                 }
+            }
+            ServerEvent::ClientFileDrop { client_id, request } => {
+                use crate::protocol::file_drop::{FileDropState, FileDropStatus};
+                let report = |server: &mut Self, state, title: &str, detail: String| {
+                    server.send_to_client(
+                        client_id,
+                        crate::protocol::file_drop::status_message(&FileDropStatus {
+                            state,
+                            title: title.to_owned(),
+                            detail,
+                        }),
+                    );
+                };
+                if request.paths.is_empty()
+                    || !self.client_clipboard_image_target_is_valid(client_id, &request.target)
+                {
+                    return false;
+                }
+                let Some(address) =
+                    self.clipboard_image_target_hc_address(client_id, &request.target)
+                else {
+                    report(
+                        self,
+                        FileDropState::Failed,
+                        "Files not sent",
+                        "this pane has no program on another machine".into(),
+                    );
+                    return false;
+                };
+                let target = request.target;
+                let paths: Vec<std::path::PathBuf> =
+                    request.paths.into_iter().map(Into::into).collect();
+                let count = paths.len();
+                let started = self.app.terminal_factory.send_files_beside_terminal(
+                    &address,
+                    paths,
+                    self.server_event_tx.clone(),
+                    move |status| ServerEvent::ClientFileDropStatus { client_id, status },
+                    move |placed| ServerEvent::ClientFileDropDone {
+                        client_id,
+                        target,
+                        placed,
+                    },
+                );
+                if started {
+                    let title = if count == 1 {
+                        "Sending a file".to_owned()
+                    } else {
+                        format!("Sending {count} files")
+                    };
+                    report(self, FileDropState::Sending, &title, String::new());
+                } else {
+                    report(
+                        self,
+                        FileDropState::Failed,
+                        "Files not sent",
+                        "the pane's machine cannot be reached".into(),
+                    );
+                }
+                false
+            }
+            ServerEvent::ClientFileDropStatus { client_id, status } => {
+                self.send_to_client(
+                    client_id,
+                    crate::protocol::file_drop::status_message(&status),
+                );
+                false
+            }
+            ServerEvent::ClientFileDropDone {
+                client_id,
+                target,
+                placed,
+            } => {
+                use crate::protocol::file_drop::{FileDropState, FileDropStatus};
+                let status = match placed {
+                    Ok(placed)
+                        if self.client_clipboard_image_target_is_valid(client_id, &target) =>
+                    {
+                        let count = placed.len();
+                        let text = placed
+                            .iter()
+                            .map(|path| crate::protocol::file_drop::shell_word(path))
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        let changed =
+                            self.paste_client_clipboard_image_path(client_id, target, text);
+                        self.send_to_client(
+                            client_id,
+                            crate::protocol::file_drop::status_message(&FileDropStatus {
+                                state: FileDropState::Done,
+                                title: if count == 1 {
+                                    "File sent".to_owned()
+                                } else {
+                                    format!("{count} files sent")
+                                },
+                                detail: String::new(),
+                            }),
+                        );
+                        return changed;
+                    }
+                    Ok(_) => FileDropStatus {
+                        state: FileDropState::Failed,
+                        title: "Files sent, not pasted".to_owned(),
+                        detail: "the pane is no longer there".to_owned(),
+                    },
+                    Err(error) => FileDropStatus {
+                        state: FileDropState::Failed,
+                        title: "Files not sent".to_owned(),
+                        detail: error,
+                    },
+                };
+                self.send_to_client(
+                    client_id,
+                    crate::protocol::file_drop::status_message(&status),
+                );
+                false
             }
             ServerEvent::ClientClipboardImagePlaced {
                 client_id,

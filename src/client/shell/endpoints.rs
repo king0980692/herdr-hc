@@ -27,6 +27,8 @@ pub(crate) struct ClientShellEndpoint {
     /// Its latest screen and status.
     pub(crate) session_terminal:
         Option<Box<crate::protocol::session_terminal::SessionTerminalUpdate>>,
+    /// The endpoint sends files dropped on its panes to their machine.
+    pub(crate) file_drop_supported: bool,
 }
 
 pub(super) struct MachineHit {
@@ -96,6 +98,7 @@ impl ClientShellState {
                 session_terminal_supported: previous
                     .is_some_and(|endpoint| endpoint.session_terminal_supported),
                 session_terminal: previous.and_then(|endpoint| endpoint.session_terminal.clone()),
+                file_drop_supported: previous.is_some_and(|endpoint| endpoint.file_drop_supported),
             });
         }
 
@@ -177,6 +180,7 @@ impl ClientShellState {
             endpoint.agent_view_projection_supported = false;
             endpoint.session_terminal_supported = false;
             endpoint.session_terminal = None;
+            endpoint.file_drop_supported = false;
         }
     }
 
@@ -214,6 +218,34 @@ impl ClientShellState {
             self.pane_scroll_in_flight.clear();
             self.pane_scroll_queued.clear();
         }
+    }
+
+    pub(crate) fn set_endpoint_file_drop_supported(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        supported: bool,
+    ) {
+        if let Some(endpoint) = self
+            .endpoints
+            .iter_mut()
+            .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
+        {
+            endpoint.file_drop_supported = supported;
+        }
+    }
+
+    /// Whether files dropped now are sent to the pane's machine: the active
+    /// endpoint is a view of another machine served from this one (it can
+    /// read the files by their paths here) and sends them.
+    // Windows reads drops from console events, which do not send files yet.
+    #[cfg_attr(windows, allow(dead_code))]
+    pub(crate) fn active_endpoint_takes_file_drops(&self) -> bool {
+        matches!(self.active_endpoint_id, ClientEndpointId::Hc(_))
+            && self
+                .endpoints
+                .iter()
+                .find(|endpoint| endpoint.endpoint_id == self.active_endpoint_id)
+                .is_some_and(|endpoint| endpoint.file_drop_supported)
     }
 
     pub(crate) fn set_endpoint_session_terminal_supported(
@@ -831,5 +863,6 @@ pub(super) fn local_endpoint() -> ClientShellEndpoint {
         methods: None,
         session_terminal_supported: false,
         session_terminal: None,
+        file_drop_supported: false,
     }
 }

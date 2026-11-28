@@ -74,6 +74,11 @@ pub(super) fn render_notice(
             ClientEndpointNoticeKind::Timeout | ClientEndpointNoticeKind::Unavailable => {
                 palette.yellow
             }
+            ClientEndpointNoticeKind::FileDrop(state) => match state {
+                crate::protocol::file_drop::FileDropState::Done => palette.green,
+                crate::protocol::file_drop::FileDropState::Failed => palette.red,
+                _ => palette.accent,
+            },
         },
         palette,
     )

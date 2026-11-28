@@ -723,6 +723,8 @@ pub(super) enum ClientEndpointNoticeKind {
     Rejected,
     Timeout,
     Unavailable,
+    /// How sending dropped files to the pane's machine goes.
+    FileDrop(crate::protocol::file_drop::FileDropState),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

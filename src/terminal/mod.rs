@@ -1,5 +1,6 @@
 pub(crate) mod connection;
 mod factory;
+pub(crate) mod file_send;
 mod hc;
 mod history_read;
 mod id;

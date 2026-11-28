@@ -57,6 +57,12 @@ Click a machine's arrow to collapse or expand its workspace list without switchi
 
 Local remains independent of saved-machine failures. A stalled source cannot take selection away from the machine you are using. Multiple clients may still select different tabs; see [Client and server](/docs/concepts/#client-and-server).
 
+## Drop files on another machine's panes
+
+Dropping local files on a pane of a connected machine sends them to that machine and pastes their paths there, so a program in the pane can open them. Any file type works, several at once, up to 256 MB each. A notice shows progress for large files. The pasted path appears only once a file has arrived whole, in a folder of its own beside the pane's terminal; drops older than a day are cleared on the next send.
+
+Folders, and files over the limit, are refused with a notice and nothing is pasted. Dropping on a Local pane still pastes the local path. Sending files needs a POSIX shell on the source machine; `herdr --remote` sessions keep sending clipboard images only.
+
 ## Reconnect and close safely
 
 A source transport interruption detaches viewers, not programs. Herdr reconnects the transport, then asynchronously attaches each saved terminal by its **permanent hc core ID and canonical terminal address**. Public workspace, tab, and pane IDs remain presentation identities, not hc addresses.

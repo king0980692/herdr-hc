@@ -934,3 +934,85 @@ fn hc_native_live_smoke() {
         Err(panic) => std::panic::resume_unwind(panic),
     }
 }
+
+async fn exercise_file_send(target: &Target) -> io::Result<()> {
+    let client = Client::connect(target.command(&["connect"])).await?;
+    refuse_protected_core(
+        &client.hello.core.id,
+        std::env::var(PROTECTED_CORES_ENV).ok().as_deref(),
+    )?;
+    let run = client
+        .call(
+            "terminal.run",
+            json!({"argv":["/bin/cat"],"cwd":"/var/tmp",
+                "size":{"cols":80,"rows":24},"no_parent":true,"no_notify":true}),
+        )
+        .await?;
+    let address = run["address"]
+        .as_str()
+        .ok_or_else(|| invalid("run has no address"))?
+        .to_owned();
+    // A file of four parts with every byte value, and a small one whose
+    // name a shell would split.
+    let local = PathBuf::from(&target.scratch).join("to-send");
+    std::fs::create_dir_all(&local)?;
+    let big: Vec<u8> = (0..13 * 1024 * 1024 + 7).map(|i| (i % 251) as u8).collect();
+    let big_path = local.join("big.bin");
+    std::fs::write(&big_path, &big)?;
+    let small_path = local.join("My Report.txt");
+    std::fs::write(&small_path, b"hello there")?;
+    let updates = std::sync::Mutex::new(Vec::new());
+    let placed = crate::terminal::file_send::send_files(
+        &client,
+        &address,
+        &[big_path, small_path],
+        |status| updates.lock().unwrap().push(status.detail),
+    )
+    .await
+    .map_err(io::Error::other)?;
+    let updates = updates.into_inner().unwrap();
+    println!("file send progress: {updates:?}");
+    if placed.len() != 2
+        || std::fs::read(&placed[0])? != big
+        || std::fs::read(&placed[1])? != b"hello there"
+        || !placed[1].ends_with("/My Report.txt")
+        || updates.len() < 4
+    {
+        return Err(invalid("sent files differ"));
+    }
+    // Only the placed files are left: no hidden part.
+    let terminal_folder = PathBuf::from(&placed[0])
+        .parent()
+        .and_then(|folder| folder.parent())
+        .ok_or_else(|| invalid("placed outside a terminal folder"))?
+        .to_owned();
+    let leftovers: Vec<_> = std::fs::read_dir(&terminal_folder)?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with('.'))
+        .collect();
+    if !leftovers.is_empty() {
+        return Err(invalid("a hidden part was left behind"));
+    }
+    client
+        .call("terminal.kill", json!({"terminal": address}))
+        .await?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "needs installed upstream hc; creates only an isolated scratch core"]
+fn hc_file_send_live() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("file send executor");
+    let target = runtime.block_on(target()).expect("scratch target");
+    let outcome = runtime.block_on(exercise_file_send(&target));
+    let cleanup = runtime.block_on(target.cleanup());
+    assert!(
+        cleanup.is_ok(),
+        "cleanup failed for {}: {cleanup:?}",
+        target.scratch
+    );
+    assert!(outcome.is_ok(), "file send failed: {outcome:?}");
+}

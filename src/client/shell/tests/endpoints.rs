@@ -3055,3 +3055,54 @@ fn external_jump_request_activates_online_endpoints_only() {
     assert!(outcome.actions.is_empty());
     assert!(!outcome.repaint);
 }
+
+#[test]
+fn only_a_view_of_another_machine_that_sends_files_takes_file_drops() {
+    use crate::protocol::file_drop::{FileDropState, FileDropStatus};
+    let (mut state, ssh) = state_with_remote();
+    let sources = crate::client::endpoint::SharedEndpoint::from_graph(
+        crate::hc::machines::MachineGraph::from_reply(
+            crate::hc::CoreInfo {
+                id: "registry".into(),
+                name: "local".into(),
+            },
+            serde_json::json!({"machines":[{"id":"owner","name":"remote","target":"ssh-remote",
+                "session":null,"host":"host","version":"0.1.20","state":"connected"}]}),
+        )
+        .unwrap(),
+    );
+    let shared = ClientEndpointId::Hc(sources[0].key.clone());
+    state.set_shared_endpoint_catalog(&sources);
+    // This machine's own server, and an SSH one (its files are elsewhere):
+    // never, whatever they say.
+    for endpoint in [ClientEndpointId::Local, ssh] {
+        state.set_endpoint_file_drop_supported(&endpoint, true);
+        state.active_endpoint_id = endpoint;
+        assert!(!state.active_endpoint_takes_file_drops());
+    }
+    // A view of another machine: when its server sends files.
+    state.active_endpoint_id = shared.clone();
+    assert!(!state.active_endpoint_takes_file_drops());
+    state.set_endpoint_file_drop_supported(&shared, true);
+    assert!(state.active_endpoint_takes_file_drops());
+
+    // How sending goes shows as a notice; a state this build does not know
+    // shows nothing.
+    assert!(state.show_file_drop_status(&FileDropStatus {
+        state: FileDropState::Sending,
+        title: "Sending big.bin".into(),
+        detail: "40% of 120.0 MB".into(),
+    }));
+    let notice = state.visible_endpoint_notice.as_ref().expect("a notice");
+    assert_eq!(notice.title, "Sending big.bin");
+    assert_eq!(notice.body, "40% of 120.0 MB");
+    assert!(!state.show_file_drop_status(&FileDropStatus {
+        state: FileDropState::Unknown,
+        title: "later".into(),
+        detail: String::new(),
+    }));
+    assert_eq!(
+        state.visible_endpoint_notice.as_ref().unwrap().title,
+        "Sending big.bin"
+    );
+}

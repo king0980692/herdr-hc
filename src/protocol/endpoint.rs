@@ -170,6 +170,9 @@ impl EndpointServerWelcome {
         if super::session_terminal::offered() {
             capabilities.push(super::session_terminal::CAPABILITY.into());
         }
+        if super::file_drop::offered() {
+            capabilities.push(super::file_drop::CAPABILITY.into());
+        }
         Self {
             generation: ENDPOINT_PROTOCOL_GENERATION,
             server_version: crate::build_info::version(),

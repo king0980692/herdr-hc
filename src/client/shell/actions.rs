@@ -319,6 +319,32 @@ impl ClientShellState {
         self.push_endpoint_method_with_kind(method, PendingEndpointKind::Generic, outcome);
     }
 
+    /// Shows how sending dropped files goes: while sending, until the next
+    /// word (or a minute); done briefly; failed for longer, to be read.
+    pub(crate) fn show_file_drop_status(
+        &mut self,
+        status: &crate::protocol::file_drop::FileDropStatus,
+    ) -> bool {
+        use crate::protocol::file_drop::FileDropState;
+        let seconds = match status.state {
+            FileDropState::Sending => 60,
+            FileDropState::Done => 4,
+            FileDropState::Failed => 12,
+            FileDropState::Unknown => return false,
+        };
+        self.visible_endpoint_notice = Some(ClientVisibleEndpointNotice {
+            key: ClientEndpointNoticeKey {
+                boot_id: "file-drop".to_owned(),
+                kind: ClientEndpointNoticeKind::FileDrop(status.state),
+                code: "file-drop".to_owned(),
+            },
+            title: status.title.clone(),
+            body: status.detail.clone(),
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(seconds),
+        });
+        true
+    }
+
     pub(super) fn push_endpoint_notice(
         &mut self,
         kind: ClientEndpointNoticeKind,

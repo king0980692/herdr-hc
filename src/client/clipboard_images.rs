@@ -119,6 +119,39 @@ pub(super) fn should_bridge_clipboard_image_events(
     )
 }
 
+/// What a drop (or paste) on a pane of another machine holds.
+#[cfg(unix)]
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum FileDrop {
+    /// Not only paths of local files: typed into the pane as it is.
+    Text,
+    /// Local files to send there; their paths there are pasted.
+    Send(Vec<String>),
+    /// Files that cannot be sent (a folder, too large): nothing is pasted.
+    Refuse(String),
+}
+
+#[cfg(unix)]
+pub(super) fn file_drop(data: &[u8]) -> FileDrop {
+    let Some(paths) = std::str::from_utf8(data)
+        .ok()
+        .and_then(crate::protocol::file_drop::dropped_paths)
+    else {
+        return FileDrop::Text;
+    };
+    if let Some(refusal) = paths
+        .iter()
+        .find_map(|path| crate::terminal::file_send::refusal(path))
+    {
+        return FileDrop::Refuse(refusal);
+    }
+    let paths: Option<Vec<String>> = paths
+        .into_iter()
+        .map(|path| path.to_str().map(str::to_owned))
+        .collect();
+    paths.map_or(FileDrop::Text, FileDrop::Send)
+}
+
 #[cfg(unix)]
 pub(super) fn read_image_file_from_terminal_drop(
     data: &[u8],
@@ -250,5 +283,48 @@ fn recognized_image_extension(extension: &str) -> Option<&'static str> {
         Some("bmp")
     } else {
         None
+    }
+}
+
+#[cfg(all(test, unix))]
+mod file_drop_tests {
+    use super::*;
+
+    #[test]
+    fn a_drop_of_local_files_is_sent_and_one_that_cannot_be_is_refused() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-client-drop-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let a = root.join("a.txt");
+        let b = root.join("My Report.pdf");
+        std::fs::write(&a, b"x").unwrap();
+        std::fs::write(&b, b"y").unwrap();
+        let word =
+            |path: &std::path::Path| crate::protocol::file_drop::shell_word(path.to_str().unwrap());
+        let drop = format!("\x1b[200~{} {}\x1b[201~", word(&a), word(&b));
+        assert_eq!(
+            file_drop(drop.as_bytes()),
+            FileDrop::Send(vec![
+                a.to_str().unwrap().to_owned(),
+                b.to_str().unwrap().to_owned()
+            ])
+        );
+        // A folder among them: refused, by name.
+        let folder = format!("{} {}", word(&a), word(&root));
+        assert!(matches!(
+            file_drop(folder.as_bytes()),
+            FileDrop::Refuse(reason) if reason.contains("folders are not sent yet")
+        ));
+        // Typing and text that is not only paths go through as they are.
+        assert_eq!(file_drop(b"hello"), FileDrop::Text);
+        assert_eq!(file_drop(b"\x1b[200~ls -la\x1b[201~"), FileDrop::Text);
+        assert_eq!(file_drop(&[0xff, 0xfe]), FileDrop::Text);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
